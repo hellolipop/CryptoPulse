@@ -24,36 +24,151 @@ const NewsAnalyzer = {
     ],
 
     /**
-     * 获取加密货币新闻
+     * 获取加密货币新闻（多源聚合）
      * @param {string} coinId - 币种ID
      * @returns {Promise<Array>} 新闻列表
      */
     async fetchNews(coinId = 'bitcoin') {
+        const allNews = [];
+        const errors = [];
+
+        // 映射币种到 API 分类
+        const categoryMap = {
+            'bitcoin': 'bitcoin',
+            'ethereum': 'general',
+            'binancecoin': 'general',
+            'solana': 'general',
+            'ripple': 'general',
+            'cardano': 'general',
+            'dogecoin': 'general',
+            'polkadot': 'general'
+        };
+        const category = categoryMap[coinId] || 'general';
+
+        // ========== 源1: cryptocurrency.cv 新闻 API ==========
+        // 免费、无需Key、支持CORS、多源聚合（CoinDesk, The Block, Decrypt等）
         try {
-            // 尝试从 CoinGecko 获取新闻
-            const response = await fetch(
-                `https://api.coingecko.com/api/v3/news?categories=${coinId}&per_page=15`
+            const categories = ['general', category, 'etf', 'defi'].filter((v, i, a) => a.indexOf(v) === i);
+            const fetchPromises = categories.slice(0, 3).map(cat =>
+                fetch(`https://cryptocurrency.cv/api/news?category=${cat}&limit=10`)
+                    .then(r => r.json())
+                    .then(d => {
+                        if (d.articles && Array.isArray(d.articles)) {
+                            return d.articles.map(item => ({
+                                id: item.id || item.url,
+                                title: item.title || '',
+                                description: item.description || item.summary || '',
+                                url: item.url || item.link || '#',
+                                source: item.source || item.publisher || 'CryptoNews',
+                                image: item.image || item.thumbnail || '',
+                                publishedAt: item.publishedAt || item.date || new Date().toISOString(),
+                                categories: item.categories || [cat],
+                                _source: 'cryptocurrency.cv'
+                            }));
+                        }
+                        return [];
+                    })
             );
-            
-            if (!response.ok) {
-                throw new Error('News API request failed');
-            }
-            
-            const data = await response.json();
-            
-            if (data && data.data && Array.isArray(data.data)) {
-                return this.processNewsData(data.data);
-            }
-            
-            throw new Error('Invalid news data format');
-        } catch (error) {
-            console.warn('获取新闻失败，使用模拟数据:', error.message);
-            return this.getMockNews(coinId);
+
+            const results = await Promise.allSettled(fetchPromises);
+            results.forEach(result => {
+                if (result.status === 'fulfilled' && Array.isArray(result.value)) {
+                    allNews.push(...result.value);
+                }
+            });
+        } catch (e) {
+            errors.push(`cryptocurrency.cv: ${e.message}`);
         }
+
+        // ========== 源2: Binance 公告（通过 CORS 代理）==========
+        try {
+            const bnResp = await fetch(
+                'https://corsproxy.io/?' + encodeURIComponent(
+                    'https://www.binance.com/bapi/composite/v1/public/cms/article/list/query?type=1&pageNo=1&pageSize=5'
+                )
+            );
+            if (bnResp.ok) {
+                const bnData = await bnResp.json();
+                const articles = bnData.data?.articles || [];
+                if (articles.length > 0) {
+                    allNews.push(...articles.slice(0, 5).map(item => ({
+                        id: item.id || Date.now() + Math.random(),
+                        title: item.title || '',
+                        description: item.digest || item.intro || '',
+                        url: `https://www.binance.com/en/support/announcement/${item.code || item.id}`,
+                        source: 'Binance 公告',
+                        image: '',
+                        publishedAt: item.publishDate || new Date(item.publishTime).toISOString() || new Date().toISOString(),
+                        categories: ['exchange', 'binance'],
+                        _source: 'binance'
+                    })));
+                }
+            }
+        } catch (e) {
+            errors.push(`binance: ${e.message}`);
+        }
+
+        // ========== 去重 + 处理 ==========
+        if (allNews.length > 0) {
+            // 按标题去重
+            const seen = new Set();
+            const uniqueNews = allNews.filter(item => {
+                const key = item.title?.substring(0, 50);
+                if (!key || seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+
+            // 按时间排序（最新的在前）
+            uniqueNews.sort((a, b) => {
+                return new Date(b.publishedAt) - new Date(a.publishedAt);
+            });
+
+            // 情感分析
+            const processedNews = uniqueNews.slice(0, 15).map(item => {
+                const sentiment = this.analyzeSentiment(item.title + ' ' + item.description);
+                return {
+                    ...item,
+                    sentiment: sentiment.score,
+                    sentimentLabel: sentiment.label,
+                    keywords: this.extractKeywords(item.title + ' ' + item.description)
+                };
+            });
+
+            return processedNews;
+        }
+
+        // ========== 兜底：模拟数据 ==========
+        console.warn('所有新闻源获取失败，使用模拟数据:', errors.join(', '));
+        return this.getMockNews(coinId);
     },
 
     /**
-     * 处理新闻数据
+     * 提取关键词
+     * @param {string} text - 文本
+     * @returns {Array<string>} 关键词数组
+     */
+    extractKeywords(text) {
+        const keywords = [
+            'Bitcoin', 'Ethereum', 'BTC', 'ETH', 'ETF', 'SEC', '监管', 'BTC现货ETF',
+            '上涨', '下跌', '突破', '新高', '新低', '牛市', '熊市', '反弹', '回调',
+            '机构', '鲸鱼', '大额', '增持', '减持', '买入', '卖出',
+            '升级', '硬分叉', '软分叉', 'Layer2', 'DeFi', 'NFT', 'Web3',
+            '黑客', '攻击', '安全', '漏洞', '被盗',
+            '合作', '伙伴', '上线', '上市', '融资', '投资'
+        ];
+        const found = [];
+        const lowerText = text.toLowerCase();
+        keywords.forEach(kw => {
+            if (lowerText.includes(kw.toLowerCase()) && found.length < 5) {
+                found.push(kw);
+            }
+        });
+        return found;
+    },
+
+    /**
+     * 处理新闻数据（兼容旧格式）
      * @param {Array} newsData - 原始新闻数据
      * @returns {Array} 处理后的新闻列表
      */
@@ -62,7 +177,7 @@ const NewsAnalyzer = {
             const title = item.title || '';
             const description = item.description || '';
             const sentiment = this.analyzeSentiment(title + ' ' + description);
-            
+
             return {
                 id: item.id || Date.now() + Math.random(),
                 title: title,
@@ -73,7 +188,8 @@ const NewsAnalyzer = {
                 publishedAt: item.published_at || new Date().toISOString(),
                 sentiment: sentiment.score,
                 sentimentLabel: sentiment.label,
-                categories: item.categories || []
+                categories: item.categories || [],
+                keywords: this.extractKeywords(title + ' ' + description)
             };
         }).filter(item => item.title && item.title.length > 0);
     },
