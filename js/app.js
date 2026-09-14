@@ -20,6 +20,138 @@ const CryptoPulseApp = {
         showSignalMarkers: true
     },
 
+    // 信号详细解释字典
+    signalInfoMap: {
+        'MACD金叉': {
+            type: 'buy',
+            strength: 'medium',
+            strengthText: '中等',
+            desc: 'MACD金叉是指MACD线上穿信号线形成的交叉信号，是趋势由空转多的重要标志。当快线从下方穿过慢线向上时，表明多头力量正在增强。',
+            condition: 'MACD线（DIF）从下方向上穿越信号线（DEA），形成金叉形态。',
+            advice: '可考虑轻仓试探性买入，配合成交量放大信号可靠性更高。若同时处于零轴上方，趋势确认度更强。'
+        },
+        'MACD死叉': {
+            type: 'sell',
+            strength: 'medium',
+            strengthText: '中等',
+            desc: 'MACD死叉是指MACD线下穿信号线形成的交叉信号，是趋势由多转空的重要标志。当快线从上方穿过慢线向下时，表明空头力量正在增强。',
+            condition: 'MACD线（DIF）从上方向下跌破信号线（DEA），形成死叉形态。',
+            advice: '可考虑减仓或设置止损。若同时跌破零轴，趋势转空确认度更高。'
+        },
+        'KDJ金叉': {
+            type: 'buy',
+            strength: 'medium',
+            strengthText: '中等',
+            desc: 'KDJ金叉是指K线上穿D线形成的交叉，表明短期动能由弱转强。KDJ指标通过价格波动的快慢来判断超买超卖和趋势转折。',
+            condition: 'K线从下方上穿D线，形成金叉。',
+            advice: '短期买入信号，可关注后续K线能否站稳D线上方。配合其他指标综合判断更佳。'
+        },
+        'KDJ超卖金叉': {
+            type: 'buy',
+            strength: 'strong',
+            strengthText: '强',
+            desc: 'KDJ在超卖区域（20以下）形成金叉，是强烈的买入信号。价格经过充分回调后，动能开始修复，往往对应阶段性底部。',
+            condition: 'K值和D值均处于20以下的超卖区域，同时K线上穿D线形成金叉。',
+            advice: '强烈买入信号，可考虑分批建仓。超卖区域金叉的反弹力度通常较大，但需设好止损以防假突破。'
+        },
+        'KDJ死叉': {
+            type: 'sell',
+            strength: 'medium',
+            strengthText: '中等',
+            desc: 'KDJ死叉是指K线下穿D线形成的交叉，表明短期动能由强转弱，价格可能进入调整阶段。',
+            condition: 'K线从上方下穿D线，形成死叉。',
+            advice: '短期卖出信号，可考虑减仓观望。若同时跌破重要支撑位，需提高警惕。'
+        },
+        'KDJ超买死叉': {
+            type: 'sell',
+            strength: 'strong',
+            strengthText: '强',
+            desc: 'KDJ在超买区域（80以上）形成死叉，是强烈的卖出信号。价格经过充分上涨后，动能开始衰竭，往往对应阶段性顶部。',
+            condition: 'K值和D值均处于80以上的超买区域，同时K线下穿D线形成死叉。',
+            advice: '强烈卖出信号，可考虑大幅减仓或止盈。超买区域死叉的回调幅度通常较大。'
+        },
+        'RSI超卖回升': {
+            type: 'buy',
+            strength: 'strong',
+            strengthText: '强',
+            desc: 'RSI从超卖区域（30以下）回升至30以上，表明下跌动能衰竭，买方开始占据主动，是经典的抄底信号之一。',
+            condition: 'RSI指标从30以下的超卖区域回升，突破30关口。',
+            advice: '可考虑逢低分批买入。RSI超卖回升后，往往会有技术性反弹，但需确认底部形态是否成立。'
+        },
+        'RSI超买回落': {
+            type: 'sell',
+            strength: 'strong',
+            strengthText: '强',
+            desc: 'RSI从超买区域（70以上）回落至70以下，表明上涨动能衰竭，卖方开始占据主动，是经典的逃顶信号之一。',
+            condition: 'RSI指标从70以上的超买区域回落，跌破70关口。',
+            advice: '可考虑止盈减仓。RSI超买回落后，往往会有技术性回调，注意控制仓位风险。'
+        },
+        '均线金叉': {
+            type: 'buy',
+            strength: 'medium',
+            strengthText: '中等',
+            desc: '短期均线上穿长期均线形成金叉，表明短期平均成本超过长期平均成本，市场情绪由空转多，是趋势反转的重要信号。',
+            condition: '短期均线（如MA7）从下方向上穿越长期均线（如MA25）。',
+            advice: '趋势性买入信号，可考虑建仓并持有。均线金叉的可靠性较高，但需注意是否为假突破。'
+        },
+        '均线死叉': {
+            type: 'sell',
+            strength: 'medium',
+            strengthText: '中等',
+            desc: '短期均线下穿长期均线形成死叉，表明短期平均成本跌破长期平均成本，市场情绪由多转空，是趋势走坏的重要信号。',
+            condition: '短期均线（如MA7）从上方向下跌破长期均线（如MA25）。',
+            advice: '趋势性卖出信号，可考虑减仓或离场。均线死叉往往预示着中期调整的开始。'
+        },
+        '布林下轨反弹': {
+            type: 'buy',
+            strength: 'medium',
+            strengthText: '中等',
+            desc: '价格触及布林带下轨后反弹，表明在超卖位置获得支撑。布林带反映了价格的波动区间，下轨通常代表较强的支撑位。',
+            condition: '价格触及或跌破布林带下轨后，快速回升至下轨上方。',
+            advice: '短线买入信号，可轻仓参与反弹。若同时伴随成交量放大和其他指标配合，可靠性更高。'
+        },
+        '布林上轨回落': {
+            type: 'sell',
+            strength: 'medium',
+            strengthText: '中等',
+            desc: '价格触及布林带上轨后回落，表明在超买位置遇到压力。布林带上轨通常代表较强的阻力位，价格触及后容易出现回调。',
+            condition: '价格触及或突破布林带上轨后，快速回落至上轨下方。',
+            advice: '短线卖出信号，可考虑部分止盈。若价格多次触及上轨不破，形成双顶的概率增大。'
+        },
+        'StochRSI超卖金叉': {
+            type: 'buy',
+            strength: 'strong',
+            strengthText: '强',
+            desc: 'Stochastic RSI在超卖区域（20以下）形成金叉，是比普通RSI更灵敏的买入信号。StochRSI结合了RSI和KDJ的优点，对短期动能变化更敏感。',
+            condition: 'StochRSI的%K和%D均处于20以下超卖区，同时%K上穿%D形成金叉。',
+            advice: '强烈短线买入信号，反弹速度通常较快。但由于灵敏度高，信号也较多，建议配合其他指标过滤。'
+        },
+        'StochRSI超买死叉': {
+            type: 'sell',
+            strength: 'strong',
+            strengthText: '强',
+            desc: 'Stochastic RSI在超买区域（80以上）形成死叉，是比普通RSI更灵敏的卖出信号。价格经过快速上涨后，动能出现衰竭迹象。',
+            condition: 'StochRSI的%K和%D均处于80以上超买区，同时%K下穿%D形成死叉。',
+            advice: '强烈短线卖出信号，回调速度通常较快。可考虑快速止盈，避免利润回吐。'
+        },
+        '高点': {
+            type: 'sell',
+            strength: 'weak',
+            strengthText: '弱',
+            desc: '局部高点是指价格在一段时间内达到的相对高位，前后几根K线的最高点都低于该位置。高点可能是短期压力位或反转信号。',
+            condition: '当前K线高点高于前后各3根K线的高点，形成局部最高点。',
+            advice: '注意短期回调风险，持仓者可考虑部分止盈。若高点伴随放量长上影线，见顶信号更可靠。'
+        },
+        '低点': {
+            type: 'buy',
+            strength: 'weak',
+            strengthText: '弱',
+            desc: '局部低点是指价格在一段时间内达到的相对低位，前后几根K线的最低点都高于该位置。低点可能是短期支撑位或反弹信号。',
+            condition: '当前K线低点低于前后各3根K线的低点，形成局部最低点。',
+            advice: '关注反弹机会，激进者可轻仓抄底。若低点伴随放量长下影线，见底信号更可靠。'
+        }
+    },
+
     // 币安 API 基础地址
     binanceApiBase: 'https://data-api.binance.vision/api/v3',
 
@@ -171,11 +303,32 @@ const CryptoPulseApp = {
                 }
             });
         }
+
+        // 信号解释弹窗
+        const closeSignalDetailBtn = document.getElementById('closeSignalDetailBtn');
+        if (closeSignalDetailBtn) {
+            closeSignalDetailBtn.addEventListener('click', () => {
+                this.hideSignalDetail();
+            });
+        }
+
+        const signalDetailModal = document.getElementById('signalDetailModal');
+        if (signalDetailModal) {
+            signalDetailModal.addEventListener('click', (e) => {
+                if (e.target.id === 'signalDetailModal') {
+                    this.hideSignalDetail();
+                }
+            });
+        }
     },
 
     // 初始化图表
     initChart() {
         ChartManager.init('chartContainer');
+        // 设置信号标记点击回调
+        ChartManager.setMarkerClickCallback((signalText, price, time) => {
+            this.showSignalDetail(signalText, price, time);
+        });
     },
 
     // 加载自选列表
@@ -1522,6 +1675,78 @@ const CryptoPulseApp = {
     // 隐藏资讯详情
     hideNewsDetail() {
         const modal = document.getElementById('newsDetailModal');
+        if (modal) {
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+            document.body.style.overflow = '';
+        }
+    },
+
+    // 显示信号详情弹窗
+    showSignalDetail(signalText, price, time) {
+        const modal = document.getElementById('signalDetailModal');
+        if (!modal) return;
+
+        const info = this.signalInfoMap[signalText];
+        if (!info) return;
+
+        const isBuy = info.type === 'buy';
+
+        // 图标和颜色
+        const iconEl = document.getElementById('signalDetailIcon');
+        const typeEl = document.getElementById('signalDetailType');
+        const nameEl = document.getElementById('signalDetailName');
+
+        if (isBuy) {
+            iconEl.className = 'w-12 h-12 rounded-xl flex items-center justify-center bg-crypto-green/15';
+            iconEl.innerHTML = `<svg class="w-6 h-6 text-crypto-green" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
+            </svg>`;
+            typeEl.textContent = '买入信号';
+            typeEl.className = 'text-xs text-crypto-green mb-0.5';
+            nameEl.className = 'text-lg font-bold text-crypto-green';
+        } else {
+            iconEl.className = 'w-12 h-12 rounded-xl flex items-center justify-center bg-crypto-red/15';
+            iconEl.innerHTML = `<svg class="w-6 h-6 text-crypto-red" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 17h8m0 0V9m0 8l-8-8-4 4-6-6"></path>
+            </svg>`;
+            typeEl.textContent = '卖出信号';
+            typeEl.className = 'text-xs text-crypto-red mb-0.5';
+            nameEl.className = 'text-lg font-bold text-crypto-red';
+        }
+        nameEl.textContent = signalText;
+
+        // 信号强度
+        const strengthTextEl = document.getElementById('signalDetailStrengthText');
+        const bars = ['sigBar1', 'sigBar2', 'sigBar3'];
+        const strengthMap = { weak: 1, medium: 2, strong: 3 };
+        const level = strengthMap[info.strength] || 1;
+        strengthTextEl.textContent = info.strengthText;
+
+        const barColor = isBuy ? 'bg-crypto-green' : 'bg-crypto-red';
+        const grayColor = 'bg-crypto-border';
+        strengthTextEl.className = `text-sm font-semibold ${isBuy ? 'text-crypto-green' : 'text-crypto-red'}`;
+        bars.forEach((id, idx) => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.className = `w-1.5 h-4 rounded-full ${idx < level ? barColor : grayColor}`;
+            }
+        });
+
+        // 价格和时间
+        document.getElementById('signalDetailDesc').textContent = info.desc;
+        document.getElementById('signalDetailCondition').textContent = info.condition;
+        document.getElementById('signalDetailAdvice').textContent = info.advice;
+
+        // 显示弹窗
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+        document.body.style.overflow = 'hidden';
+    },
+
+    // 隐藏信号详情弹窗
+    hideSignalDetail() {
+        const modal = document.getElementById('signalDetailModal');
         if (modal) {
             modal.classList.add('hidden');
             modal.classList.remove('flex');

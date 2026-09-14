@@ -561,6 +561,68 @@
         </div>
     </div>
 
+    <!-- 信号解释弹窗 -->
+    <div id="signalDetailModal" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-crypto-card rounded-2xl border border-crypto-border max-w-md w-full overflow-hidden">
+            <div class="px-5 py-4 border-b border-crypto-border flex items-start justify-between gap-3">
+                <div class="flex items-center gap-3">
+                    <div id="signalDetailIcon" class="w-12 h-12 rounded-xl flex items-center justify-center bg-crypto-gold/10">
+                        <svg class="w-6 h-6 text-crypto-gold" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
+                        </svg>
+                    </div>
+                    <div>
+                        <p id="signalDetailType" class="text-xs text-gray-400 mb-0.5">买入信号</p>
+                        <h3 id="signalDetailName" class="text-lg font-bold">MACD金叉</h3>
+                    </div>
+                </div>
+                <button id="closeSignalDetailBtn" class="flex-shrink-0 p-1.5 rounded-lg hover:bg-crypto-dark transition-colors text-gray-400 hover:text-white">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+            <div class="px-5 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
+                <!-- 信号强度 -->
+                <div class="flex items-center justify-between p-3 rounded-xl bg-crypto-dark/50 border border-crypto-border/50">
+                    <span class="text-sm text-gray-400">信号强度</span>
+                    <div class="flex items-center gap-2">
+                        <span id="signalDetailStrengthText" class="text-sm font-semibold text-crypto-gold">中等</span>
+                        <div class="flex gap-0.5">
+                            <div id="sigBar1" class="w-1.5 h-4 rounded-full bg-crypto-border"></div>
+                            <div id="sigBar2" class="w-1.5 h-4 rounded-full bg-crypto-border"></div>
+                            <div id="sigBar3" class="w-1.5 h-4 rounded-full bg-crypto-border"></div>
+                        </div>
+                    </div>
+                </div>
+                <!-- 指标说明 -->
+                <div>
+                    <p class="text-xs text-gray-400 mb-2">指标说明</p>
+                    <p id="signalDetailDesc" class="text-sm text-gray-300 leading-relaxed">--</p>
+                </div>
+                <!-- 触发条件 -->
+                <div>
+                    <p class="text-xs text-gray-400 mb-2">触发条件</p>
+                    <p id="signalDetailCondition" class="text-sm text-gray-300 leading-relaxed">--</p>
+                </div>
+                <!-- 操作建议 -->
+                <div>
+                    <p class="text-xs text-gray-400 mb-2">参考建议</p>
+                    <div id="signalDetailAdvice" class="text-sm text-gray-300 leading-relaxed">--</div>
+                </div>
+                <!-- 风险提示 -->
+                <div class="p-3 rounded-xl bg-amber-500/5 border border-amber-500/20">
+                    <p class="text-xs text-amber-400/80 flex items-start gap-2">
+                        <svg class="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                        </svg>
+                        技术指标仅供参考，不构成投资建议。市场有风险，投资需谨慎。
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="js/technical.js?v=5"></script>
     <script src="js/news.js?v=5"></script>
     <script src="js/signals.js?v=5"></script>

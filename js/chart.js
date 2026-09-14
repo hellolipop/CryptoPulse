@@ -13,9 +13,11 @@ const ChartManager = {
     supportLines: [],
     container: null,
     _isFirstLoad: true,
-    _isAtLatest: true, // 用户是否正在查看最新K线（视图在最右端）
-    _lastTime: 0, // 最新数据的时间戳
-    _firstTime: 0, // 最早数据的时间戳
+    _isAtLatest: true,
+    _lastTime: 0,
+    _firstTime: 0,
+    _markers: [], // 当前信号标记数据
+    _onMarkerClick: null, // marker点击回调
 
     /**
      * 初始化图表
@@ -133,16 +135,17 @@ const ChartManager = {
             window.addEventListener('resize', () => this.handleResize());
 
             // 跟踪用户视图位置（币安式行为）
-            // 用户滚动/缩放后，判断是否仍在查看最新K线
             this.chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
                 if (!range || !this._lastTime) return;
-                // 检查用户是否滚动到了最右端（查看最新数据）
-                // 如果可见范围的右端时间 >= 最新K线时间减去2根K线的时间间隔，视为在看最新
-                // 简化处理：距离最新时间小于5%的时间范围视为接近最新
                 const totalRange = this._lastTime - this._firstTime || 1;
                 const distanceFromEnd = this._lastTime - range.to;
                 const ratio = distanceFromEnd / totalRange;
-                this._isAtLatest = ratio < 0.02; // 距离末尾小于2%的时间范围视为在看最新
+                this._isAtLatest = ratio < 0.02;
+            });
+
+            // 绑定图表点击事件（检测marker点击）
+            this.chart.subscribeClick((param) => {
+                this._handleChartClick(param);
             });
 
             return this.chart;
@@ -340,7 +343,10 @@ const ChartManager = {
      */
     addMarkers(markers) {
         if (!this.candlestickSeries || !markers || markers.length === 0) return;
-        
+
+        // 保存marker数据用于点击检测
+        this._markers = markers;
+
         try {
             if (typeof this.candlestickSeries.setMarkers === 'function') {
                 this.candlestickSeries.setMarkers(markers);
@@ -354,6 +360,7 @@ const ChartManager = {
      * 清除标记点
      */
     clearMarkers() {
+        this._markers = [];
         try {
             if (this.candlestickSeries && typeof this.candlestickSeries.setMarkers === 'function') {
                 this.candlestickSeries.setMarkers([]);
@@ -381,6 +388,32 @@ const ChartManager = {
         if (this.chart) {
             this.chart.timeScale().fitContent();
             this._isAtLatest = true;
+        }
+    },
+
+    /**
+     * 设置标记点点击回调
+     * @param {Function} callback - 回调函数 (markerText, price, time) => void
+     */
+    setMarkerClickCallback(callback) {
+        this._onMarkerClick = callback;
+    },
+
+    /**
+     * 处理图表点击，检测是否点击了标记点
+     * @param {Object} param - 点击参数
+     */
+    _handleChartClick(param) {
+        if (!this._onMarkerClick || !this._markers || this._markers.length === 0) return;
+        if (!param || !param.time) return;
+
+        const clickTime = param.time;
+        const clickPrice = param.point?.y;
+
+        // 查找时间匹配的marker
+        const matched = this._markers.find(m => m.time === clickTime);
+        if (matched) {
+            this._onMarkerClick(matched.text, clickPrice, clickTime);
         }
     },
 
