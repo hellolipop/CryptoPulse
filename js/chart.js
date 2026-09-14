@@ -12,6 +12,7 @@ const ChartManager = {
     resistanceLines: [],
     supportLines: [],
     container: null,
+    _isFirstLoad: true,
 
     /**
      * 初始化图表
@@ -149,8 +150,11 @@ const ChartManager = {
             this.volumeSeries.setData(volumeData);
         }
         
-        // 自动缩放
-        this.chart.timeScale().fitContent();
+        // 仅在首次加载时自动缩放，避免用户手动缩放后被回弹
+        if (this._isFirstLoad) {
+            this.chart.timeScale().fitContent();
+            this._isFirstLoad = false;
+        }
     },
 
     /**
@@ -313,6 +317,16 @@ const ChartManager = {
     changeTimeframe(timeframe) {
         this.clearSupportResistanceLines();
         this.clearMarkers();
+        this._isFirstLoad = true; // 切换周期后首次加载自动缩放
+    },
+
+    /**
+     * 重置视图（缩放到全部数据）
+     */
+    resetView() {
+        if (this.chart) {
+            this.chart.timeScale().fitContent();
+        }
     },
 
     /**

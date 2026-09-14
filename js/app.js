@@ -101,6 +101,11 @@ const CryptoPulseApp = {
             }
         });
 
+        // 重置视图按钮
+        document.getElementById('resetViewBtn').addEventListener('click', () => {
+            ChartManager.resetView();
+        });
+
         // 技术指标标签切换
         document.querySelectorAll('.indicator-tab').forEach(tab => {
             tab.addEventListener('click', (e) => {
