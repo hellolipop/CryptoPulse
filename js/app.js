@@ -19,24 +19,33 @@ const CryptoPulseApp = {
         lastUpdate: null
     },
 
-    // 主流币种列表
+    // 币安 API 基础地址
+    binanceApiBase: 'https://data-api.binance.vision/api/v3',
+
+    // 主流币种列表（同时映射币安交易对）
     popularCoins: [
-        { id: 'bitcoin', symbol: 'BTC', name: '比特币', image: '₿' },
-        { id: 'ethereum', symbol: 'ETH', name: '以太坊', image: 'Ξ' },
-        { id: 'binancecoin', symbol: 'BNB', name: '币安币', image: 'B' },
-        { id: 'solana', symbol: 'SOL', name: 'Solana', image: 'S' },
-        { id: 'ripple', symbol: 'XRP', name: '瑞波币', image: 'X' },
-        { id: 'cardano', symbol: 'ADA', name: '艾达币', image: 'A' },
-        { id: 'dogecoin', symbol: 'DOGE', name: '狗狗币', image: 'D' },
-        { id: 'polkadot', symbol: 'DOT', name: '波卡币', image: 'P' },
-        { id: 'avalanche-2', symbol: 'AVAX', name: '雪崩币', image: 'A' },
-        { id: 'chainlink', symbol: 'LINK', name: 'Chainlink', image: 'L' },
-        { id: 'matic-network', symbol: 'MATIC', name: 'Polygon', image: 'M' },
-        { id: 'litecoin', symbol: 'LTC', name: '莱特币', image: 'L' },
-        { id: 'uniswap', symbol: 'UNI', name: 'Uniswap', image: 'U' },
-        { id: 'cosmos', symbol: 'ATOM', name: 'Cosmos', image: 'C' },
-        { id: 'stellar', symbol: 'XLM', name: '恒星币', image: 'X' },
+        { id: 'bitcoin', symbol: 'BTC', name: '比特币', image: '₿', binanceSymbol: 'BTCUSDT' },
+        { id: 'ethereum', symbol: 'ETH', name: '以太坊', image: 'Ξ', binanceSymbol: 'ETHUSDT' },
+        { id: 'binancecoin', symbol: 'BNB', name: '币安币', image: 'B', binanceSymbol: 'BNBUSDT' },
+        { id: 'solana', symbol: 'SOL', name: 'Solana', image: 'S', binanceSymbol: 'SOLUSDT' },
+        { id: 'ripple', symbol: 'XRP', name: '瑞波币', image: 'X', binanceSymbol: 'XRPUSDT' },
+        { id: 'cardano', symbol: 'ADA', name: '艾达币', image: 'A', binanceSymbol: 'ADAUSDT' },
+        { id: 'dogecoin', symbol: 'DOGE', name: '狗狗币', image: 'D', binanceSymbol: 'DOGEUSDT' },
+        { id: 'polkadot', symbol: 'DOT', name: '波卡币', image: 'P', binanceSymbol: 'DOTUSDT' },
+        { id: 'avalanche-2', symbol: 'AVAX', name: '雪崩币', image: 'A', binanceSymbol: 'AVAXUSDT' },
+        { id: 'chainlink', symbol: 'LINK', name: 'Chainlink', image: 'L', binanceSymbol: 'LINKUSDT' },
+        { id: 'matic-network', symbol: 'MATIC', name: 'Polygon', image: 'M', binanceSymbol: 'MATICUSDT' },
+        { id: 'litecoin', symbol: 'LTC', name: '莱特币', image: 'L', binanceSymbol: 'LTCUSDT' },
+        { id: 'uniswap', symbol: 'UNI', name: 'Uniswap', image: 'U', binanceSymbol: 'UNIUSDT' },
+        { id: 'cosmos', symbol: 'ATOM', name: 'Cosmos', image: 'C', binanceSymbol: 'ATOMUSDT' },
+        { id: 'stellar', symbol: 'XLM', name: '恒星币', image: 'X', binanceSymbol: 'XLMUSDT' },
     ],
+
+    // 获取币安交易对符号
+    getBinanceSymbol(coinId) {
+        const coin = this.popularCoins.find(c => c.id === coinId);
+        return coin ? coin.binanceSymbol : null;
+    },
 
     // 初始化
     async init() {
@@ -222,36 +231,43 @@ const CryptoPulseApp = {
         }
     },
 
-    // 加载价格数据
+    // 加载价格数据（币安 API）
     async loadPriceData(coinId) {
+        const binanceSymbol = this.getBinanceSymbol(coinId);
+        if (!binanceSymbol) {
+            this.useMockPriceData(coinId);
+            return;
+        }
+
         try {
             const response = await fetch(
-                `https://api.coingecko.com/api/v3/coins/${coinId}?localization=false&tickers=false&community_data=false&developer_data=false`
+                `${this.binanceApiBase}/ticker/24hr?symbol=${binanceSymbol}`
             );
-            
-            if (!response.ok) throw new Error('Price API error');
-            
+
+            if (!response.ok) throw new Error('Binance API error');
+
             const data = await response.json();
-            
+
+            const coinInfo = this.getCoinInfo(coinId);
             this.state.coinInfo = {
-                id: data.id,
-                symbol: data.symbol.toUpperCase(),
-                name: data.name,
-                image: data.image?.large || '',
-                current_price: data.market_data?.current_price?.usd || 0,
-                price_change_24h: data.market_data?.price_change_24h || 0,
-                price_change_percentage_24h: data.market_data?.price_change_percentage_24h || 0,
-                high_24h: data.market_data?.high_24h?.usd || 0,
-                low_24h: data.market_data?.low_24h?.usd || 0,
-                total_volume: data.market_data?.total_volume?.usd || 0,
-                market_cap: data.market_data?.market_cap?.usd || 0,
+                id: coinId,
+                symbol: coinInfo.symbol,
+                name: coinInfo.name,
+                image: coinInfo.image || '',
+                current_price: parseFloat(data.lastPrice),
+                price_change_24h: parseFloat(data.priceChange),
+                price_change_percentage_24h: parseFloat(data.priceChangePercent),
+                high_24h: parseFloat(data.highPrice),
+                low_24h: parseFloat(data.lowPrice),
+                total_volume: parseFloat(data.quoteVolume),
+                market_cap: 0, // 币安24小时接口不提供市值
             };
-            
+
             this.updatePriceUI();
-            
+
         } catch (error) {
             console.error('获取价格数据失败:', error);
-            // 使用模拟数据
+            // 回退到模拟数据
             this.useMockPriceData(coinId);
         }
     },
@@ -290,33 +306,47 @@ const CryptoPulseApp = {
         this.updatePriceUI();
     },
 
-    // 加载K线数据
+    // 获取币安K线间隔参数
+    getBinanceInterval(hours) {
+        if (hours <= 1) return { interval: '1m', limit: 100 };
+        if (hours <= 24) return { interval: '15m', limit: 96 }; // 24小时 = 96根15分钟K线
+        if (hours <= 168) return { interval: '1h', limit: 168 }; // 1周 = 168根1小时K线
+        return { interval: '4h', limit: 180 }; // 30天 = 180根4小时K线
+    },
+
+    // 加载K线数据（币安 API）
     async loadCandleData(coinId) {
+        const binanceSymbol = this.getBinanceSymbol(coinId);
+        if (!binanceSymbol) {
+            this.useMockCandleData(coinId);
+            return;
+        }
+
         try {
-            const days = Math.ceil(this.state.currentTimeframe / 24);
+            const { interval, limit } = this.getBinanceInterval(this.state.currentTimeframe);
             const response = await fetch(
-                `https://api.coingecko.com/api/v3/coins/${coinId}/ohlc?vs_currency=usd&days=${days}`
+                `${this.binanceApiBase}/klines?symbol=${binanceSymbol}&interval=${interval}&limit=${limit}`
             );
-            
-            if (!response.ok) throw new Error('OHLC API error');
-            
+
+            if (!response.ok) throw new Error('Binance Kline API error');
+
             const data = await response.json();
-            
-            // 转换数据格式
+
+            // 转换数据格式：币安返回 [开仓时间, 开, 高, 低, 收, 成交量, 平仓时间, 成交额, ...]
             const candleData = data.map(item => ({
                 time: Math.floor(item[0] / 1000), // 毫秒转秒
-                open: item[1],
-                high: item[2],
-                low: item[3],
-                close: item[4],
-                volume: 0 // CoinGecko OHLC 不包含成交量，后续用市场数据估算
+                open: parseFloat(item[1]),
+                high: parseFloat(item[2]),
+                low: parseFloat(item[3]),
+                close: parseFloat(item[4]),
+                volume: parseFloat(item[5]),
             }));
-            
+
             this.state.candleData = candleData;
             this.calculateIndicators();
             this.updateChart();
             this.updateSignal();
-            
+
         } catch (error) {
             console.error('获取K线数据失败:', error);
             this.useMockCandleData(coinId);
