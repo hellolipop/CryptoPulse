@@ -292,6 +292,19 @@ const SignalGenerator = {
     },
 
     /**
+     * 获取评分背景色类名
+     * @param {number} score - 评分数值
+     * @returns {string} Tailwind背景色类名
+     */
+    getScoreBg(score) {
+        if (score >= 70) return 'bg-crypto-green/10';
+        if (score >= 55) return 'bg-crypto-green/5';
+        if (score >= 45) return 'bg-crypto-gold/10';
+        if (score >= 30) return 'bg-crypto-red/5';
+        return 'bg-crypto-red/10';
+    },
+
+    /**
      * 获取RSI颜色
      * @param {number} rsi - RSI值
      * @returns {string} 颜色

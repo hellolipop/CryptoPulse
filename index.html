@@ -34,22 +34,22 @@
 <body class="bg-crypto-dark text-gray-100 min-h-screen font-sans">
     <!-- 顶部导航栏 -->
     <header class="bg-crypto-card/80 backdrop-blur-md border-b border-crypto-border sticky top-0 z-50">
-        <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-            <div class="flex items-center gap-3">
-                <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-crypto-purple to-crypto-blue flex items-center justify-center">
-                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <div class="max-w-6xl mx-auto px-3 sm:px-4 py-2.5 sm:py-3 flex items-center justify-between">
+            <div class="flex items-center gap-2.5 sm:gap-3">
+                <div class="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-br from-crypto-purple to-crypto-blue flex items-center justify-center">
+                    <svg class="w-5 h-5 sm:w-6 sm:h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
                     </svg>
                 </div>
                 <div>
-                    <h1 class="text-xl font-bold bg-gradient-to-r from-crypto-purple to-crypto-blue bg-clip-text text-transparent">CryptoPulse</h1>
+                    <h1 class="text-lg sm:text-xl font-bold bg-gradient-to-r from-crypto-purple to-crypto-blue bg-clip-text text-transparent">CryptoPulse</h1>
                     <p class="text-xs text-gray-400 hidden sm:block">智能加密货币分析系统</p>
                 </div>
             </div>
-            <div class="flex items-center gap-2">
-                <div id="marketStatus" class="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-crypto-green/10 text-crypto-green text-sm">
+            <div class="flex items-center gap-1.5 sm:gap-2">
+                <div id="marketStatus" class="hidden sm:flex items-center gap-1.5 px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-full bg-crypto-green/10 text-crypto-green text-xs sm:text-sm">
                     <span class="w-2 h-2 rounded-full bg-crypto-green animate-pulse"></span>
-                    <span>实时更新</span>
+                    <span>实时</span>
                 </div>
                 <button id="refreshBtn" class="p-2 rounded-lg hover:bg-crypto-border transition-colors" title="刷新数据">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -60,358 +60,403 @@
         </div>
     </header>
 
-    <main class="max-w-7xl mx-auto px-4 py-4 sm:py-6">
+    <main class="max-w-6xl mx-auto px-3 sm:px-4 py-3 sm:py-5">
         <!-- 币种选择器 -->
-        <section class="mb-6">
-            <div class="flex items-center justify-between mb-3">
-                <h2 class="text-lg font-semibold flex items-center gap-2">
-                    <svg class="w-5 h-5 text-crypto-gold" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                    </svg>
-                    自选币种
-                </h2>
-                <button id="addCoinBtn" class="text-sm text-crypto-blue hover:text-crypto-blue/80 flex items-center gap-1">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
-                    </svg>
-                    添加
-                </button>
-            </div>
-            <div id="coinTabs" class="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+        <section class="mb-4 sm:mb-5">
+            <div id="coinTabs" class="flex gap-2 overflow-x-auto pb-1.5 scrollbar-hide">
                 <!-- 币种标签将由JS动态生成 -->
             </div>
         </section>
 
-        <!-- 价格概览卡片 -->
-        <section class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-            <div class="bg-crypto-card rounded-xl p-4 border border-crypto-border">
-                <p class="text-gray-400 text-sm mb-1">当前价格</p>
-                <p id="currentPrice" class="text-2xl font-bold">--</p>
-                <p id="priceChange" class="text-sm mt-1">--</p>
-            </div>
-            <div class="bg-crypto-card rounded-xl p-4 border border-crypto-border">
-                <p class="text-gray-400 text-sm mb-1">24H 最高</p>
-                <p id="high24h" class="text-xl font-semibold text-crypto-green">--</p>
-                <p class="text-xs text-gray-500 mt-1">24小时高点</p>
-            </div>
-            <div class="bg-crypto-card rounded-xl p-4 border border-crypto-border">
-                <p class="text-gray-400 text-sm mb-1">24H 最低</p>
-                <p id="low24h" class="text-xl font-semibold text-crypto-red">--</p>
-                <p class="text-xs text-gray-500 mt-1">24小时低点</p>
-            </div>
-            <div class="bg-crypto-card rounded-xl p-4 border border-crypto-border">
-                <p class="text-gray-400 text-sm mb-1">24H 成交量</p>
-                <p id="volume24h" class="text-xl font-semibold">--</p>
-                <p class="text-xs text-gray-500 mt-1">交易活跃度</p>
-            </div>
-        </section>
-
-        <!-- 主内容区：图表 + 信号面板 -->
-        <section class="grid lg:grid-cols-3 gap-6 mb-6">
-            <!-- K线图表 -->
-            <div class="lg:col-span-2">
-                <div class="bg-crypto-card rounded-xl border border-crypto-border overflow-hidden">
-                    <div class="p-4 border-b border-crypto-border flex flex-wrap items-center justify-between gap-3">
-                        <div class="flex items-center gap-3">
-                            <h3 class="font-semibold">价格走势</h3>
-                            <div id="timeframeBtns" class="flex gap-1 bg-crypto-dark rounded-lg p-1">
-                                <button data-tf="1" class="timeframe-btn px-3 py-1 text-xs rounded-md transition-colors">1H</button>
-                                <button data-tf="24" class="timeframe-btn px-3 py-1 text-xs rounded-md transition-colors active">1D</button>
-                                <button data-tf="168" class="timeframe-btn px-3 py-1 text-xs rounded-md transition-colors">1W</button>
-                                <button data-tf="720" class="timeframe-btn px-3 py-1 text-xs rounded-md transition-colors">30D</button>
-                            </div>
+        <!-- 价格 + 信号 核心区（视觉重点） -->
+        <section class="grid grid-cols-1 lg:grid-cols-5 gap-3 sm:gap-4 mb-4 sm:mb-6">
+            <!-- 价格卡片 - 大而醒目 -->
+            <div class="lg:col-span-3 bg-gradient-to-br from-crypto-card to-crypto-card/80 rounded-2xl border border-crypto-border p-4 sm:p-6 relative overflow-hidden">
+                <div class="absolute top-0 right-0 w-32 h-32 bg-crypto-purple/10 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2"></div>
+                <div class="relative">
+                    <div class="flex items-center gap-3 mb-4">
+                        <div id="coinIconLarge" class="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-crypto-dark flex items-center justify-center text-2xl sm:text-3xl font-bold">₿</div>
+                        <div>
+                            <p id="coinNameLarge" class="text-lg sm:text-xl font-bold">比特币</p>
+                            <p id="coinSymbolLarge" class="text-sm text-gray-400">BTC/USDT</p>
                         </div>
-                        <div class="flex items-center gap-2 flex-wrap">
-                            <label class="flex items-center gap-1.5 text-xs text-gray-400">
-                                <input type="checkbox" id="showMA" checked class="accent-crypto-purple"> MA
-                            </label>
-                            <label class="flex items-center gap-1.5 text-xs text-gray-400">
-                                <input type="checkbox" id="showVolume" checked class="accent-crypto-purple"> 成交量
-                            </label>
-                            <label class="flex items-center gap-1.5 text-xs text-gray-400">
-                                <input type="checkbox" id="showSignals" checked class="accent-crypto-green"> 买卖信号
-                            </label>
-                            <button id="resetViewBtn" class="ml-auto text-xs text-gray-400 hover:text-crypto-gold transition-colors px-2 py-1 rounded hover:bg-crypto-dark/50" title="重置视图">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
-                                </svg>
-                            </button>
+                        <div id="priceChangeBadge" class="ml-auto px-3 py-1.5 rounded-full text-sm font-semibold bg-crypto-green/10 text-crypto-green">
+                            +0.00%
                         </div>
                     </div>
-                    <div id="chartContainer" class="h-80 sm:h-96"></div>
-                    <!-- 技术指标面板 -->
-                    <div class="border-t border-crypto-border">
-                        <!-- 指标分类标签 -->
-                        <div class="flex border-b border-crypto-border">
-                            <button class="indicator-tab flex-1 py-2.5 text-xs font-medium text-crypto-gold border-b-2 border-crypto-gold" data-tab="momentum">
-                                动量指标
-                            </button>
-                            <button class="indicator-tab flex-1 py-2.5 text-xs font-medium text-gray-400 hover:text-gray-300" data-tab="trend">
-                                趋势均线
-                            </button>
-                            <button class="indicator-tab flex-1 py-2.5 text-xs font-medium text-gray-400 hover:text-gray-300" data-tab="volume">
-                                成交量型
-                            </button>
+                    <div class="mb-4">
+                        <p id="currentPrice" class="text-4xl sm:text-5xl font-bold tracking-tight">--</p>
+                        <p id="priceChangeText" class="text-sm sm:text-base mt-1 text-crypto-green">24H +0.00 (+0.00%)</p>
+                    </div>
+                    <div class="grid grid-cols-3 gap-2 sm:gap-4 pt-3 border-t border-crypto-border/50">
+                        <div>
+                            <p class="text-xs text-gray-500 mb-0.5">24H最高</p>
+                            <p id="high24h" class="text-sm sm:text-base font-semibold text-crypto-green">--</p>
                         </div>
-
-                        <!-- 动量指标 -->
-                        <div id="tab-momentum" class="indicator-panel p-4">
-                            <div class="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                                <div>
-                                    <p class="text-xs text-gray-400 mb-1">RSI (14)</p>
-                                    <p id="rsiValue" class="text-lg font-semibold">--</p>
-                                    <div class="w-full h-1.5 bg-crypto-dark rounded-full mt-1 overflow-hidden">
-                                        <div id="rsiBar" class="h-full bg-crypto-gold rounded-full transition-all" style="width: 50%"></div>
-                                    </div>
-                                </div>
-                                <div>
-                                    <p class="text-xs text-gray-400 mb-1">MACD</p>
-                                    <p id="macdValue" class="text-lg font-semibold">--</p>
-                                    <p id="macdSignal" class="text-xs text-gray-500">--</p>
-                                </div>
-                                <div>
-                                    <p class="text-xs text-gray-400 mb-1">StochRSI</p>
-                                    <p id="stochRSIValue" class="text-lg font-semibold">--</p>
-                                    <p id="stochRSISignal" class="text-xs text-gray-500">--</p>
-                                </div>
-                                <div>
-                                    <p class="text-xs text-gray-400 mb-1">KDJ - K</p>
-                                    <p id="kdjKValue" class="text-lg font-semibold">--</p>
-                                    <p id="kdjDJValue" class="text-xs text-gray-500">D: -- J: --</p>
-                                </div>
-                                <div>
-                                    <p class="text-xs text-gray-400 mb-1">布林带</p>
-                                    <p id="bollUpper" class="text-xs text-crypto-red font-mono">上: --</p>
-                                    <p id="bollLower" class="text-xs text-crypto-green font-mono">下: --</p>
-                                </div>
-                                <div>
-                                    <p class="text-xs text-gray-400 mb-1">AHR999</p>
-                                    <p id="ahr999Value" class="text-lg font-semibold">--</p>
-                                    <p id="ahr999Zone" class="text-xs text-gray-500">--</p>
-                                </div>
-                            </div>
+                        <div>
+                            <p class="text-xs text-gray-500 mb-0.5">24H最低</p>
+                            <p id="low24h" class="text-sm sm:text-base font-semibold text-crypto-red">--</p>
                         </div>
-
-                        <!-- 趋势均线 -->
-                        <div id="tab-trend" class="indicator-panel p-4 hidden">
-                            <div class="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                                <div>
-                                    <p class="text-xs text-gray-400 mb-1">MA (7)</p>
-                                    <p id="ma7Value" class="text-lg font-semibold">--</p>
-                                    <p class="text-xs text-gray-500">短期均线</p>
-                                </div>
-                                <div>
-                                    <p class="text-xs text-gray-400 mb-1">MA (25)</p>
-                                    <p id="ma25Value" class="text-lg font-semibold">--</p>
-                                    <p class="text-xs text-gray-500">中期均线</p>
-                                </div>
-                                <div>
-                                    <p class="text-xs text-gray-400 mb-1">MA (200)</p>
-                                    <p id="ma200Value" class="text-lg font-semibold">--</p>
-                                    <p class="text-xs text-gray-500">牛熊分界</p>
-                                </div>
-                                <div class="col-span-2 sm:col-span-3">
-                                    <p class="text-xs text-gray-400 mb-2">均线排列</p>
-                                    <div id="maAlignment" class="flex items-center gap-2 text-sm">
-                                        <span class="px-2 py-1 bg-crypto-dark rounded text-gray-400">--</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- 成交量型 -->
-                        <div id="tab-volume" class="indicator-panel p-4 hidden">
-                            <div class="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                                <div>
-                                    <p class="text-xs text-gray-400 mb-1">24H 成交量</p>
-                                    <p id="volume24hInd" class="text-lg font-semibold">--</p>
-                                    <p class="text-xs text-gray-500">成交额</p>
-                                </div>
-                                <div>
-                                    <p class="text-xs text-gray-400 mb-1">VWAP</p>
-                                    <p id="vwapValue" class="text-lg font-semibold">--</p>
-                                    <p id="vwapPosition" class="text-xs text-gray-500">--</p>
-                                </div>
-                                <div>
-                                    <p class="text-xs text-gray-400 mb-1">OBV 趋势</p>
-                                    <p id="obvTrend" class="text-lg font-semibold">--</p>
-                                    <p class="text-xs text-gray-500">能量潮</p>
-                                </div>
-                            </div>
+                        <div>
+                            <p class="text-xs text-gray-500 mb-0.5">24H量</p>
+                            <p id="volume24h" class="text-sm sm:text-base font-semibold">--</p>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- 交易信号面板 -->
-            <div class="space-y-4">
-                <!-- 综合信号 -->
-                <div class="bg-crypto-card rounded-xl border border-crypto-border p-4">
-                    <h3 class="font-semibold mb-3 flex items-center gap-2">
-                        <svg class="w-5 h-5 text-crypto-gold" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path>
-                        </svg>
-                        综合分析信号
-                    </h3>
-                    <div id="signalCard" class="text-center py-4">
-                        <div id="signalIcon" class="w-16 h-16 mx-auto mb-3 rounded-full flex items-center justify-center bg-gray-700">
-                            <svg class="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <!-- 综合信号卡片 - 最大最醒目 -->
+            <div class="lg:col-span-2 bg-gradient-to-br from-crypto-card to-crypto-card/80 rounded-2xl border border-crypto-border p-4 sm:p-6 relative overflow-hidden">
+                <div id="signalGlow" class="absolute top-0 left-0 w-full h-1 bg-crypto-gold"></div>
+                <div class="relative flex flex-col h-full">
+                    <div class="flex items-center justify-between mb-3">
+                        <h3 class="text-sm font-medium text-gray-400">综合分析信号</h3>
+                        <span id="signalStrength" class="text-xs px-2 py-0.5 rounded-full bg-crypto-gold/10 text-crypto-gold">--</span>
+                    </div>
+                    <div id="signalCard" class="text-center flex-1 flex flex-col justify-center py-2">
+                        <div id="signalIcon" class="w-14 h-14 sm:w-16 sm:h-16 mx-auto mb-3 rounded-2xl flex items-center justify-center bg-crypto-gold/10">
+                            <svg class="w-7 h-7 sm:w-8 sm:h-8 text-crypto-gold" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                             </svg>
                         </div>
-                        <p id="signalText" class="text-xl font-bold text-gray-400">加载中...</p>
-                        <p id="signalDesc" class="text-sm text-gray-500 mt-1">正在分析数据</p>
+                        <p id="signalText" class="text-2xl sm:text-3xl font-bold text-crypto-gold">观望</p>
+                        <p id="signalDesc" class="text-sm text-gray-400 mt-1.5">等待明确信号</p>
                     </div>
-                    <div class="grid grid-cols-4 gap-2 mt-4">
-                        <div class="text-center p-2 bg-crypto-dark rounded-lg">
-                            <p class="text-xs text-gray-400">技术面</p>
-                            <p id="techScore" class="text-lg font-semibold text-gray-300">--</p>
-                        </div>
-                        <div class="text-center p-2 bg-crypto-dark rounded-lg">
-                            <p class="text-xs text-gray-400">消息面</p>
-                            <p id="newsScore" class="text-lg font-semibold text-gray-300">--</p>
-                        </div>
-                        <div class="text-center p-2 bg-crypto-dark rounded-lg">
-                            <p class="text-xs text-gray-400">情绪面</p>
-                            <p id="sentimentScore" class="text-lg font-semibold text-gray-300">--</p>
-                        </div>
-                        <div class="text-center p-2 bg-crypto-dark rounded-lg">
-                            <p class="text-xs text-gray-400">衍生品</p>
-                            <p id="derivScore" class="text-lg font-semibold text-gray-300">--</p>
-                        </div>
-                    </div>
-                    <div class="mt-3 pt-3 border-t border-crypto-border">
-                        <div class="flex items-center justify-between">
+                    <!-- 综合评分进度条 -->
+                    <div class="mt-3">
+                        <div class="flex items-center justify-between mb-1.5">
                             <span class="text-xs text-gray-400">综合评分</span>
-                            <span id="totalScore" class="text-2xl font-bold text-white">--</span>
+                            <span id="totalScore" class="text-lg sm:text-xl font-bold">--</span>
+                        </div>
+                        <div class="w-full h-2.5 bg-crypto-dark rounded-full overflow-hidden">
+                            <div id="totalScoreBar" class="h-full rounded-full transition-all duration-700 bg-gradient-to-r from-crypto-red via-crypto-gold to-crypto-green" style="width: 50%"></div>
+                        </div>
+                    </div>
+                    <!-- 四维评分 -->
+                    <div class="grid grid-cols-4 gap-1.5 mt-3 pt-3 border-t border-crypto-border/50">
+                        <div class="text-center">
+                            <p class="text-xs text-gray-500 mb-0.5">技术</p>
+                            <p id="techScore" class="text-sm font-bold">--</p>
+                        </div>
+                        <div class="text-center">
+                            <p class="text-xs text-gray-500 mb-0.5">情绪</p>
+                            <p id="sentimentScore" class="text-sm font-bold">--</p>
+                        </div>
+                        <div class="text-center">
+                            <p class="text-xs text-gray-500 mb-0.5">消息</p>
+                            <p id="newsScore" class="text-sm font-bold">--</p>
+                        </div>
+                        <div class="text-center">
+                            <p class="text-xs text-gray-500 mb-0.5">衍生品</p>
+                            <p id="derivScore" class="text-sm font-bold">--</p>
                         </div>
                     </div>
                 </div>
+            </div>
+        </section>
 
-                <!-- 压力支撑位 -->
-                <div class="bg-crypto-card rounded-xl border border-crypto-border p-4">
-                    <h3 class="font-semibold mb-3 flex items-center gap-2">
-                        <svg class="w-5 h-5 text-crypto-blue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
-                        </svg>
-                        关键价位
-                    </h3>
-                    <div class="space-y-2">
-                        <div class="flex items-center justify-between text-sm">
-                            <span class="text-crypto-red flex items-center gap-1">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"></path>
-                                </svg>
-                                强压力位
-                            </span>
-                            <span id="resistance2" class="font-mono font-semibold">--</span>
-                        </div>
-                        <div class="flex items-center justify-between text-sm">
-                            <span class="text-crypto-red/70 flex items-center gap-1">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"></path>
-                                </svg>
-                                压力位
-                            </span>
-                            <span id="resistance1" class="font-mono font-semibold">--</span>
-                        </div>
-                        <div class="flex items-center justify-between text-sm py-1 border-y border-crypto-border my-2">
-                            <span class="text-gray-400">当前价</span>
-                            <span id="currentPriceLevel" class="font-mono font-semibold text-white">--</span>
-                        </div>
-                        <div class="flex items-center justify-between text-sm">
-                            <span class="text-crypto-green/70 flex items-center gap-1">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                                </svg>
-                                支撑位
-                            </span>
-                            <span id="support1" class="font-mono font-semibold">--</span>
-                        </div>
-                        <div class="flex items-center justify-between text-sm">
-                            <span class="text-crypto-green flex items-center gap-1">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                                </svg>
-                                强支撑位
-                            </span>
-                            <span id="support2" class="font-mono font-semibold">--</span>
+        <!-- K线图表 -->
+        <section class="mb-4 sm:mb-6">
+            <div class="bg-crypto-card rounded-2xl border border-crypto-border overflow-hidden">
+                <div class="px-3 sm:px-4 py-3 border-b border-crypto-border flex flex-wrap items-center justify-between gap-2">
+                    <div class="flex items-center gap-2 sm:gap-3">
+                        <h3 class="font-semibold text-sm sm:text-base">价格走势</h3>
+                        <div id="timeframeBtns" class="flex gap-0.5 sm:gap-1 bg-crypto-dark rounded-lg p-0.5 sm:p-1">
+                            <button data-tf="1" class="timeframe-btn px-2.5 sm:px-3 py-1 text-xs rounded-md transition-colors">1H</button>
+                            <button data-tf="24" class="timeframe-btn px-2.5 sm:px-3 py-1 text-xs rounded-md transition-colors active">1D</button>
+                            <button data-tf="168" class="timeframe-btn px-2.5 sm:px-3 py-1 text-xs rounded-md transition-colors">1W</button>
+                            <button data-tf="720" class="timeframe-btn px-2.5 sm:px-3 py-1 text-xs rounded-md transition-colors">30D</button>
                         </div>
                     </div>
-                </div>
-
-                <!-- 市场情绪 -->
-                <div class="bg-crypto-card rounded-xl border border-crypto-border p-4">
-                    <h3 class="font-semibold mb-3 flex items-center gap-2">
-                        <svg class="w-5 h-5 text-crypto-purple" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                        </svg>
-                        市场情绪
-                    </h3>
-                    <div class="flex items-center gap-4">
-                        <div class="relative w-20 h-20 flex-shrink-0">
-                            <svg class="w-20 h-20 transform -rotate-90">
-                                <circle cx="40" cy="40" r="35" stroke="#1e293b" stroke-width="6" fill="none"/>
-                                <circle id="fngCircle" cx="40" cy="40" r="35" stroke="#fbbf24" stroke-width="6" fill="none"
-                                    stroke-dasharray="220" stroke-dashoffset="110" stroke-linecap="round"/>
+                    <div class="flex items-center gap-1.5 sm:gap-2">
+                        <label class="flex items-center gap-1 text-xs text-gray-400">
+                            <input type="checkbox" id="showMA" checked class="accent-crypto-purple w-3.5 h-3.5"> MA
+                        </label>
+                        <label class="flex items-center gap-1 text-xs text-gray-400">
+                            <input type="checkbox" id="showVolume" checked class="accent-crypto-purple w-3.5 h-3.5"> 量
+                        </label>
+                        <label class="flex items-center gap-1 text-xs text-gray-400">
+                            <input type="checkbox" id="showSignals" checked class="accent-crypto-green w-3.5 h-3.5"> 信号
+                        </label>
+                        <button id="resetViewBtn" class="text-xs text-gray-400 hover:text-crypto-gold transition-colors p-1 rounded hover:bg-crypto-dark/50" title="重置视图">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
                             </svg>
-                            <div class="absolute inset-0 flex items-center justify-center">
-                                <span id="fngValue" class="text-xl font-bold">--</span>
-                            </div>
+                        </button>
+                    </div>
+                </div>
+                <div id="chartContainer" class="h-64 sm:h-80 md:h-96"></div>
+            </div>
+        </section>
+
+        <!-- 核心指标一览（不用切换标签，直接看重点） -->
+        <section class="mb-4 sm:mb-6">
+            <div class="flex items-center justify-between mb-3">
+                <h2 class="text-base sm:text-lg font-semibold flex items-center gap-2">
+                    <svg class="w-5 h-5 text-crypto-blue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                    </svg>
+                    技术指标
+                </h2>
+                <span id="techScoreBadge" class="text-xs px-2.5 py-1 rounded-full bg-crypto-gold/10 text-crypto-gold font-medium">--</span>
+            </div>
+            <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 sm:gap-3">
+                <!-- RSI -->
+                <div class="bg-crypto-card rounded-xl border border-crypto-border p-3">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="text-xs text-gray-400">RSI</span>
+                        <span id="rsiStatus" class="text-xs px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-400">--</span>
+                    </div>
+                    <p id="rsiValue" class="text-xl font-bold mb-1.5">--</p>
+                    <div class="w-full h-1.5 bg-crypto-dark rounded-full overflow-hidden">
+                        <div id="rsiBar" class="h-full bg-crypto-gold rounded-full transition-all duration-500" style="width: 50%"></div>
+                    </div>
+                </div>
+                <!-- MACD -->
+                <div class="bg-crypto-card rounded-xl border border-crypto-border p-3">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="text-xs text-gray-400">MACD</span>
+                        <span id="macdStatus" class="text-xs px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-400">--</span>
+                    </div>
+                    <p id="macdValue" class="text-xl font-bold mb-1">--</p>
+                    <p id="macdSignal" class="text-xs text-gray-500">--</p>
+                </div>
+                <!-- KDJ -->
+                <div class="bg-crypto-card rounded-xl border border-crypto-border p-3">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="text-xs text-gray-400">KDJ</span>
+                        <span id="kdjStatus" class="text-xs px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-400">--</span>
+                    </div>
+                    <p id="kdjKValue" class="text-xl font-bold mb-1">--</p>
+                    <p id="kdjDJValue" class="text-xs text-gray-500">D: -- J: --</p>
+                </div>
+                <!-- 均线 -->
+                <div class="bg-crypto-card rounded-xl border border-crypto-border p-3">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="text-xs text-gray-400">均线排列</span>
+                        <span id="maStatus" class="text-xs px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-400">--</span>
+                    </div>
+                    <p id="maAlignmentText" class="text-base font-bold mb-1">--</p>
+                    <div class="flex gap-2 text-xs text-gray-500">
+                        <span id="ma7ValueShort">MA7: --</span>
+                    </div>
+                </div>
+                <!-- 布林带 -->
+                <div class="bg-crypto-card rounded-xl border border-crypto-border p-3">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="text-xs text-gray-400">布林带</span>
+                        <span id="bollStatus" class="text-xs px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-400">--</span>
+                    </div>
+                    <div class="space-y-0.5">
+                        <p id="bollUpperShort" class="text-xs font-mono text-crypto-red">上: --</p>
+                        <p id="bollLowerShort" class="text-xs font-mono text-crypto-green">下: --</p>
+                    </div>
+                </div>
+                <!-- AHR999 -->
+                <div class="bg-crypto-card rounded-xl border border-crypto-border p-3">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="text-xs text-gray-400">AHR999</span>
+                        <span id="ahrStatus" class="text-xs px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-400">--</span>
+                    </div>
+                    <p id="ahr999Value" class="text-xl font-bold mb-1">--</p>
+                    <p id="ahr999Zone" class="text-xs text-gray-500">--</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 下方面板：关键价位 + 市场情绪 + 衍生品 + 操作建议 -->
+        <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-4 sm:mb-6">
+            <!-- 关键价位 -->
+            <div class="bg-crypto-card rounded-2xl border border-crypto-border p-4">
+                <h3 class="font-semibold mb-3 flex items-center gap-2 text-sm">
+                    <svg class="w-4 h-4 text-crypto-blue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                    </svg>
+                    关键价位
+                </h3>
+                <div class="space-y-2.5">
+                    <div class="flex items-center justify-between">
+                        <span class="text-crypto-red text-xs flex items-center gap-1">
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"></path></svg>
+                            强压力
+                        </span>
+                        <span id="resistance2" class="font-mono font-semibold text-sm">--</span>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <span class="text-crypto-red/70 text-xs flex items-center gap-1">
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"></path></svg>
+                            压力
+                        </span>
+                        <span id="resistance1" class="font-mono font-semibold text-sm">--</span>
+                    </div>
+                    <div class="flex items-center justify-between py-1.5 border-y border-crypto-border/50 my-1">
+                        <span class="text-gray-400 text-xs">当前价</span>
+                        <span id="currentPriceLevel" class="font-mono font-bold text-white text-sm">--</span>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <span class="text-crypto-green/70 text-xs flex items-center gap-1">
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                            支撑
+                        </span>
+                        <span id="support1" class="font-mono font-semibold text-sm">--</span>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <span class="text-crypto-green text-xs flex items-center gap-1">
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                            强支撑
+                        </span>
+                        <span id="support2" class="font-mono font-semibold text-sm">--</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 市场情绪 -->
+            <div class="bg-crypto-card rounded-2xl border border-crypto-border p-4">
+                <h3 class="font-semibold mb-3 flex items-center gap-2 text-sm">
+                    <svg class="w-4 h-4 text-crypto-purple" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                    市场情绪
+                </h3>
+                <div class="flex items-center gap-3">
+                    <div class="relative w-16 h-16 flex-shrink-0">
+                        <svg class="w-16 h-16 transform -rotate-90">
+                            <circle cx="32" cy="32" r="28" stroke="#1e293b" stroke-width="5" fill="none"/>
+                            <circle id="fngCircle" cx="32" cy="32" r="28" stroke="#fbbf24" stroke-width="5" fill="none"
+                                stroke-dasharray="176" stroke-dashoffset="88" stroke-linecap="round"/>
+                        </svg>
+                        <div class="absolute inset-0 flex items-center justify-center">
+                            <span id="fngValue" class="text-base font-bold">--</span>
                         </div>
-                        <div class="flex-1">
-                            <p id="fngClassification" class="text-lg font-semibold text-crypto-gold">--</p>
-                            <p id="fngDesc" class="text-xs text-gray-400 mt-1">恐惧贪婪指数（Fear & Greed Index）</p>
-                            <div class="flex justify-between text-xs text-gray-500 mt-2">
-                                <span>极度恐惧</span>
-                                <span>极度贪婪</span>
-                            </div>
+                    </div>
+                    <div class="flex-1">
+                        <p id="fngClassification" class="text-base font-semibold text-crypto-gold">--</p>
+                        <p class="text-xs text-gray-500 mt-0.5">恐惧贪婪指数</p>
+                        <div class="flex justify-between text-xs text-gray-600 mt-1.5">
+                            <span>恐惧</span>
+                            <span>贪婪</span>
                         </div>
                     </div>
                 </div>
+            </div>
 
-                <!-- 衍生品数据 -->
-                <div class="bg-crypto-card rounded-xl border border-crypto-border p-4">
-                    <h3 class="font-semibold mb-3 flex items-center gap-2">
-                        <svg class="w-5 h-5 text-crypto-blue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
-                        </svg>
-                        衍生品数据
-                    </h3>
-                    <div class="grid grid-cols-2 gap-4">
-                        <div>
-                            <p class="text-xs text-gray-400 mb-1">资金费率</p>
-                            <p id="fundingRate" class="text-lg font-semibold">--</p>
-                            <p id="fundingRateDesc" class="text-xs text-gray-500">--</p>
+            <!-- 衍生品数据 -->
+            <div class="bg-crypto-card rounded-2xl border border-crypto-border p-4">
+                <h3 class="font-semibold mb-3 flex items-center gap-2 text-sm">
+                    <svg class="w-4 h-4 text-crypto-blue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
+                    </svg>
+                    衍生品
+                </h3>
+                <div class="space-y-3">
+                    <div>
+                        <div class="flex items-center justify-between mb-0.5">
+                            <span class="text-xs text-gray-400">资金费率</span>
+                            <span id="fundingRateStatus" class="text-xs px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-400">--</span>
                         </div>
-                        <div>
-                            <p class="text-xs text-gray-400 mb-1">未平仓合约(OI)</p>
-                            <p id="openInterest" class="text-lg font-semibold">--</p>
-                            <p id="oiTrend" class="text-xs text-gray-500">--</p>
-                        </div>
+                        <p id="fundingRate" class="text-lg font-bold">--</p>
                     </div>
-                    <p class="text-xs text-gray-500 mt-3">* 衍生品数据用于判断市场杠杆水平</p>
+                    <div class="pt-2 border-t border-crypto-border/50">
+                        <div class="flex items-center justify-between mb-0.5">
+                            <span class="text-xs text-gray-400">未平仓合约</span>
+                        </div>
+                        <p id="openInterest" class="text-base font-semibold">--</p>
+                        <p id="oiTrend" class="text-xs text-gray-500">--</p>
+                    </div>
                 </div>
+            </div>
 
-                <!-- 操作提示 -->
-                <div class="bg-crypto-card rounded-xl border border-crypto-border p-4">
-                    <h3 class="font-semibold mb-3 flex items-center gap-2">
-                        <svg class="w-5 h-5 text-crypto-purple" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
-                        </svg>
-                        操作建议
-                    </h3>
-                    <div id="actionTips" class="space-y-2">
-                        <p class="text-sm text-gray-400">加载中...</p>
+            <!-- 操作建议 -->
+            <div class="bg-crypto-card rounded-2xl border border-crypto-border p-4">
+                <h3 class="font-semibold mb-3 flex items-center gap-2 text-sm">
+                    <svg class="w-4 h-4 text-crypto-purple" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"></path>
+                    </svg>
+                    操作建议
+                </h3>
+                <div id="actionTips" class="space-y-2">
+                    <p class="text-sm text-gray-400">加载中...</p>
+                </div>
+                <div class="mt-3 pt-3 border-t border-crypto-border/50">
+                    <p class="text-xs text-gray-500 mb-1.5">仓位建议</p>
+                    <div id="positionAdvice" class="text-sm font-medium">--</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 更多指标（折叠面板） -->
+        <section class="mb-4 sm:mb-6">
+            <button id="toggleMoreIndicators" class="w-full bg-crypto-card rounded-xl border border-crypto-border p-3 flex items-center justify-between text-sm text-gray-400 hover:text-gray-300 transition-colors">
+                <span class="flex items-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"></path>
+                    </svg>
+                    更多指标（VWAP、OBV、StochRSI、MA200等）
+                </span>
+                <svg id="moreIndicatorsArrow" class="w-4 h-4 transform transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                </svg>
+            </button>
+            <div id="moreIndicatorsPanel" class="hidden mt-3 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 sm:gap-3">
+                <!-- StochRSI -->
+                <div class="bg-crypto-card rounded-xl border border-crypto-border p-3">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="text-xs text-gray-400">StochRSI</span>
+                        <span id="stochRSIStatus" class="text-xs px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-400">--</span>
                     </div>
+                    <p id="stochRSIValue" class="text-lg font-bold mb-0.5">--</p>
+                    <p id="stochRSISignal" class="text-xs text-gray-500">--</p>
+                </div>
+                <!-- VWAP -->
+                <div class="bg-crypto-card rounded-xl border border-crypto-border p-3">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="text-xs text-gray-400">VWAP</span>
+                        <span id="vwapStatus" class="text-xs px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-400">--</span>
+                    </div>
+                    <p id="vwapValue" class="text-lg font-bold mb-0.5">--</p>
+                    <p id="vwapPosition" class="text-xs text-gray-500">--</p>
+                </div>
+                <!-- OBV -->
+                <div class="bg-crypto-card rounded-xl border border-crypto-border p-3">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="text-xs text-gray-400">OBV</span>
+                        <span id="obvStatus" class="text-xs px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-400">--</span>
+                    </div>
+                    <p id="obvTrend" class="text-lg font-bold mb-0.5">--</p>
+                    <p class="text-xs text-gray-500">能量潮趋势</p>
+                </div>
+                <!-- MA200 -->
+                <div class="bg-crypto-card rounded-xl border border-crypto-border p-3">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="text-xs text-gray-400">MA200</span>
+                        <span id="ma200Status" class="text-xs px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-400">--</span>
+                    </div>
+                    <p id="ma200Value" class="text-lg font-bold mb-0.5">--</p>
+                    <p class="text-xs text-gray-500">牛熊分界线</p>
+                </div>
+                <!-- MA7 -->
+                <div class="bg-crypto-card rounded-xl border border-crypto-border p-3">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="text-xs text-gray-400">MA7</span>
+                        <span class="text-xs px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">短期</span>
+                    </div>
+                    <p id="ma7ValueFull" class="text-lg font-bold">--</p>
+                </div>
+                <!-- MA25 -->
+                <div class="bg-crypto-card rounded-xl border border-crypto-border p-3">
+                    <div class="flex items-center justify-between mb-1.5">
+                        <span class="text-xs text-gray-400">MA25</span>
+                        <span class="text-xs px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">中期</span>
+                    </div>
+                    <p id="ma25ValueFull" class="text-lg font-bold">--</p>
                 </div>
             </div>
         </section>
 
         <!-- 新闻板块 -->
-        <section class="mb-6">
+        <section class="mb-4 sm:mb-6">
             <div class="flex items-center justify-between mb-3">
-                <h2 class="text-lg font-semibold flex items-center gap-2">
+                <h2 class="text-base sm:text-lg font-semibold flex items-center gap-2">
                     <svg class="w-5 h-5 text-crypto-blue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z"></path>
                     </svg>
@@ -446,45 +491,24 @@
         </section>
 
         <!-- 底部信息 -->
-        <footer class="text-center text-gray-500 text-sm py-4 border-t border-crypto-border">
-            <p>CryptoPulse v1.0.0 | 数据仅供参考，不构成投资建议</p>
-            <p class="mt-1">数据来源: CoinGecko API | 最后更新: <span id="lastUpdate">--</span></p>
+        <footer class="text-center text-gray-500 text-xs sm:text-sm py-4 border-t border-crypto-border">
+            <p id="lastUpdateText">数据更新时间：--</p>
+            <p class="mt-1">数据来源：Binance API · 仅供参考，不构成投资建议</p>
         </footer>
     </main>
 
-    <!-- 添加币种模态框 -->
-    <div id="addCoinModal" class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 hidden items-center justify-center p-4">
-        <div class="bg-crypto-card rounded-2xl border border-crypto-border w-full max-w-md max-h-[80vh] overflow-hidden">
-            <div class="p-4 border-b border-crypto-border flex items-center justify-between">
-                <h3 class="font-semibold">添加自选币种</h3>
-                <button id="closeModalBtn" class="p-1 hover:bg-crypto-border rounded-lg transition-colors">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                    </svg>
-                </button>
-            </div>
-            <div class="p-4">
-                <input type="text" id="searchCoinInput" placeholder="搜索币种..." 
-                    class="w-full px-4 py-2 bg-crypto-dark border border-crypto-border rounded-lg text-sm focus:outline-none focus:border-crypto-purple mb-3">
-                <div id="coinSearchResults" class="space-y-2 max-h-60 overflow-y-auto">
-                    <!-- 搜索结果 -->
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- 加载状态遮罩 -->
-    <div id="loadingOverlay" class="fixed inset-0 bg-crypto-dark/80 backdrop-blur-sm z-50 hidden items-center justify-center">
+    <!-- 加载遮罩 -->
+    <div id="loadingOverlay" class="fixed inset-0 bg-crypto-dark/80 backdrop-blur-sm z-50 flex items-center justify-center hidden">
         <div class="text-center">
             <div class="w-12 h-12 border-4 border-crypto-purple border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
             <p class="text-gray-300">加载中...</p>
         </div>
     </div>
 
-    <script src="js/technical.js?v=3"></script>
-    <script src="js/news.js?v=3"></script>
-    <script src="js/signals.js?v=3"></script>
-    <script src="js/chart.js?v=3"></script>
-    <script src="js/app.js?v=3"></script>
+    <script src="js/technical.js?v=4"></script>
+    <script src="js/news.js?v=4"></script>
+    <script src="js/signals.js?v=4"></script>
+    <script src="js/chart.js?v=4"></script>
+    <script src="js/app.js?v=4"></script>
 </body>
 </html>
