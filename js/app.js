@@ -41,7 +41,24 @@ const CryptoPulseApp = {
         'MANA': 'Decentraland', 'AXS': 'Axie Infinity', 'EOS': '柚子币', 'AAVE': 'Aave',
         'MKR': 'Maker', 'GRT': 'The Graph', 'FTM': 'Fantom', 'INJ': 'Injective',
         'SEI': 'Sei', 'TIA': 'Celestia', 'WIF': 'dogwifhat', 'BONK': 'Bonk',
-        'ORDI': 'Ordinals', 'JUP': 'Jupiter', 'PYTH': 'Pyth', 'STRK': 'Starknet'
+        'ORDI': 'Ordinals', 'JUP': 'Jupiter', 'PYTH': 'Pyth', 'STRK': 'Starknet',
+        // 扩充常见币种，减少列表中出现 XXX/USDT 的占位显示
+        'SNX': 'Synthetix', 'CRV': 'Curve', 'COMP': 'Compound', 'ZEC': 'Zcash',
+        'XMR': '门罗币', 'DASH': '达世币', 'EGLD': 'MultiversX', 'RENDER': 'Render',
+        'IMX': 'Immutable', 'LDO': 'Lido', 'GALA': 'Gala', 'APE': 'ApeCoin',
+        'CHZ': 'Chiliz', 'ONE': 'Harmony', 'ZIL': 'Zilliqa', 'BAT': 'Basic Attention',
+        'ENJ': 'Enjin', 'KSM': 'Kusama', 'AR': 'Arweave', 'STX': 'Stacks',
+        'MINA': 'Mina', 'FLOW': 'Flow', 'ROSE': 'Oasis', 'CFX': 'Conflux',
+        'KAS': 'Kaspa', 'TAO': 'Bittensor', 'WLD': 'Worldcoin', 'JTO': 'Jito',
+        'ENA': 'Ethena', 'ETHFI': 'Ether.fi', 'ZK': 'ZKsync', 'W': 'Wormhole',
+        'PENDLE': 'Pendle', 'ONDO': 'Ondo', 'FET': 'Fetch.ai', 'THETA': 'Theta',
+        'CAKE': 'PancakeSwap', 'SUSHI': 'SushiSwap', '1INCH': '1inch', 'DYDX': 'dYdX',
+        'GMX': 'GMX', 'BLUR': 'Blur', 'MASK': 'Mask Network', 'ENS': 'ENS',
+        'CRO': 'Cronos', 'OKB': 'OKB', 'HT': 'Huobi', 'NEO': 'NEO',
+        'IOTA': 'IOTA', 'QNT': 'Quant', 'RPL': 'Rocket Pool', 'SSV': 'SSV Network',
+        'ANKR': 'Ankr', 'CELO': 'Celo', 'IOTX': 'IoTeX', 'ZRX': '0x Protocol',
+        'SNT': 'Status', 'LRC': 'Loopring', 'STORJ': 'Storj', 'OCEAN': 'Ocean',
+        'MAGIC': 'Magic', 'ID': 'SPACE ID', 'ARKM': 'Arkham', 'CYBER': 'CyberConnect'
     },
 
     // 信号详细解释字典
@@ -223,8 +240,8 @@ const CryptoPulseApp = {
             try {
                 const cached = JSON.parse(localStorage.getItem('cryptoPulse_catalog_v2') || 'null');
                 if (cached && cached.ts && Date.now() - cached.ts < 24 * 3600 * 1000 && cached.list?.length) {
-                    // 加载时重新排序，保证排序规则调整后立即生效
-                    this.state.coinCatalog = this.sortCatalog(cached.list);
+                    // 加载时重新应用名称与排序，保证规则调整后立即生效
+                    this.state.coinCatalog = this.sortCatalog(this.applyCoinNames(cached.list));
                     this.state.catalogLoaded = true;
                     return;
                 }
@@ -258,11 +275,11 @@ const CryptoPulseApp = {
             // 排序：内置热门优先，其余字母序（避免冷门单字母币排在前面）
             // 注意：内置用 id（bitcoin），联网目录用 coinId（btc），必须以交易对为共同键
             const seen = new Set();
-            const unique = this.sortCatalog(list.filter(c => {
+            const unique = this.sortCatalog(this.applyCoinNames(list.filter(c => {
                 if (seen.has(c.coinId)) return false;
                 seen.add(c.coinId);
                 return true;
-            }));
+            })));
 
             this.state.coinCatalog = unique;
             this.state.catalogLoaded = true;
@@ -277,6 +294,12 @@ const CryptoPulseApp = {
             if (input && !document.getElementById('addCoinModal')?.classList.contains('hidden')) {
                 this.searchCoins(input.value);
             }
+
+            // 若当前处于「主流 / 全部」列表模式，目录到位后重绘列表
+            if (this.state.marketTab !== 'watchlist') {
+                this.renderCoinList();
+            }
+
             return unique;
         } catch (e) {
             this.state.catalogLoading = false;
@@ -289,6 +312,19 @@ const CryptoPulseApp = {
             this.state.catalogLoaded = true;
             return this.state.coinCatalog;
         }
+    },
+
+    /**
+     * 补齐币种名称：缓存中的旧数据可能缺少名称映射
+     * @param {Array} list - 币种列表
+     * @returns {Array} 处理后的列表
+     */
+    applyCoinNames(list) {
+        list.forEach(c => {
+            const mapped = this.coinNameMap[c.symbol];
+            if (mapped) c.name = mapped;
+        });
+        return list;
     },
 
     /**
@@ -356,14 +392,17 @@ const CryptoPulseApp = {
     async init() {
         this.loadCoinMeta();
         this.loadWatchlist();
+        this.loadUIState();
         this.bindEvents();
         this.initChart();
-        this.renderMarketTabs();
         this.renderCoinTabs();
+        // 恢复界面选择（市场分类、时间周期、图表开关）
+        this.applyUIState();
         // 后台联网拉取币种目录与自选行情（不阻塞主数据加载）
         this.loadCoinCatalog();
         this.loadWatchlistQuotes();
         await this.loadCoinData(this.state.currentCoin);
+        this.saveUIState();
         this.startAutoRefresh();
     },
 
@@ -386,6 +425,7 @@ const CryptoPulseApp = {
                 e.target.classList.add('active');
                 const tf = parseInt(e.target.dataset.tf);
                 this.state.currentTimeframe = tf;
+                this.saveUIState();
                 this.loadCandleData(this.state.currentCoin);
             });
         });
@@ -393,11 +433,13 @@ const CryptoPulseApp = {
         // MA显示切换
         document.getElementById('showMA').addEventListener('change', (e) => {
             ChartManager.toggleMA(e.target.checked);
+            this.saveUIState();
         });
 
         // 成交量显示切换
         document.getElementById('showVolume').addEventListener('change', (e) => {
             ChartManager.toggleVolume(e.target.checked);
+            this.saveUIState();
         });
 
         // 买卖信号显示切换
@@ -408,6 +450,7 @@ const CryptoPulseApp = {
             } else {
                 ChartManager.clearMarkers();
             }
+            this.saveUIState();
         });
 
         // 重置视图按钮
@@ -426,6 +469,7 @@ const CryptoPulseApp = {
                     if (arrow) {
                         arrow.classList.toggle('rotate-180');
                     }
+                    this.saveUIState();
                 }
             });
         }
@@ -568,10 +612,16 @@ const CryptoPulseApp = {
         }
 
         // 迁移清理：按交易对去重（历史上可能同时存在 dogecoin / doge）
+        // 注意：必须保留「当前选中」的币种，否则去重会把用户的选择删掉
         if (Array.isArray(this.state.watchlist) && this.state.watchlist.length > 1) {
+            const currentSaved = localStorage.getItem('cryptoPulse_currentCoin');
             const seenSymbols = new Set();
             const deduped = this.state.watchlist.filter(id => {
                 const sym = this.getBinanceSymbol(id) || id;
+                if (id === currentSaved) {
+                    seenSymbols.add(sym);
+                    return true;
+                }
                 if (seenSymbols.has(sym)) return false;
                 seenSymbols.add(sym);
                 return true;
@@ -586,6 +636,11 @@ const CryptoPulseApp = {
         const currentCoin = localStorage.getItem('cryptoPulse_currentCoin');
         if (currentCoin && this.state.watchlist.includes(currentCoin)) {
             this.state.currentCoin = currentCoin;
+        } else if (currentCoin) {
+            // 选中的币种不在自选中（例如被移除过）：补回自选，保证选择不丢失
+            this.state.watchlist.push(currentCoin);
+            this.state.currentCoin = currentCoin;
+            localStorage.setItem('cryptoPulse_watchlist', JSON.stringify(this.state.watchlist));
         }
     },
 
@@ -593,6 +648,91 @@ const CryptoPulseApp = {
     saveWatchlist() {
         localStorage.setItem('cryptoPulse_watchlist', JSON.stringify(this.state.watchlist));
         localStorage.setItem('cryptoPulse_currentCoin', this.state.currentCoin);
+    },
+
+    // ===== 界面选择状态持久化 =====
+    // 保存：当前币种、市场分类、时间周期、图表显示开关、更多指标面板
+
+    uiStateKey: 'cryptoPulse_uiState',
+
+    saveUIState() {
+        const state = {
+            currentCoin: this.state.currentCoin,
+            marketTab: this.state.marketTab,
+            timeframe: this.state.currentTimeframe,
+            showMA: document.getElementById('showMA')?.checked ?? true,
+            showVolume: document.getElementById('showVolume')?.checked ?? true,
+            showSignals: this.state.showSignalMarkers,
+            moreIndicatorsOpen: !(document.getElementById('moreIndicatorsPanel')?.classList.contains('hidden') ?? true)
+        };
+        try {
+            localStorage.setItem(this.uiStateKey, JSON.stringify(state));
+        } catch (e) {
+            console.warn('保存界面状态失败:', e.message);
+        }
+    },
+
+    loadUIState() {
+        try {
+            this._savedUIState = JSON.parse(localStorage.getItem(this.uiStateKey) || 'null');
+        } catch (e) {
+            this._savedUIState = null;
+        }
+        // 一次性清理：旧版本遗留的目录缓存键
+        try {
+            if (localStorage.getItem('cryptoPulse_catalog')) {
+                localStorage.removeItem('cryptoPulse_catalog');
+            }
+        } catch (e) { /* 忽略 */ }
+    },
+
+    // 将保存的界面状态应用到 DOM（需在 DOM 与图表就绪后调用）
+    applyUIState() {
+        const saved = this._savedUIState;
+
+        if (saved) {
+            // 时间周期按钮
+            if (saved.timeframe) {
+                this.state.currentTimeframe = saved.timeframe;
+                document.querySelectorAll('.timeframe-btn').forEach(b => {
+                    b.classList.toggle('active', parseInt(b.dataset.tf) === saved.timeframe);
+                });
+            }
+
+            // 图表显示开关
+            const setChecked = (id, val) => {
+                const el = document.getElementById(id);
+                if (el && val !== undefined) el.checked = val;
+            };
+            setChecked('showMA', saved.showMA);
+            setChecked('showVolume', saved.showVolume);
+            setChecked('showSignals', saved.showSignals);
+
+            if (saved.showSignals !== undefined) {
+                this.state.showSignalMarkers = saved.showSignals;
+            }
+
+            // 应用图表系列可见性（图表已在 initChart 中初始化）
+            try {
+                if (saved.showMA !== undefined) ChartManager.toggleMA(saved.showMA);
+                if (saved.showVolume !== undefined) ChartManager.toggleVolume(saved.showVolume);
+            } catch (e) {
+                console.warn('恢复图表开关失败:', e.message);
+            }
+
+            // 更多指标面板
+            if (saved.moreIndicatorsOpen) {
+                document.getElementById('moreIndicatorsPanel')?.classList.remove('hidden');
+                document.getElementById('moreIndicatorsArrow')?.classList.add('rotate-180');
+            }
+        }
+
+        // 市场分类（会同步更新标签样式与面板显示）
+        this.renderMarketTabs();
+        const tab = saved?.marketTab;
+        if (tab && tab !== 'watchlist') {
+            this.switchMarketTab(tab);
+        }
     },
 
     // 自选行情价格格式化
@@ -715,6 +855,7 @@ const CryptoPulseApp = {
         this.state.marketTab = tab;
         this.state.coinListLimit = 50;
         this.renderMarketTabs();
+        this.saveUIState();
 
         const watchRow = document.getElementById('watchlistRow');
         const listPanel = document.getElementById('coinListPanel');
@@ -1035,7 +1176,9 @@ const CryptoPulseApp = {
     async switchCoin(coinId) {
         if (coinId === this.state.currentCoin) return;
         this.state.currentCoin = coinId;
+        // 立即持久化，保证刷新后仍停留在该币种
         this.saveWatchlist();
+        this.saveUIState();
         this.renderCoinTabs();
         await this.loadCoinData(coinId);
     },
