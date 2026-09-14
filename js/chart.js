@@ -13,6 +13,9 @@ const ChartManager = {
     supportLines: [],
     container: null,
     _isFirstLoad: true,
+    _isAtLatest: true, // 用户是否正在查看最新K线（视图在最右端）
+    _lastTime: 0, // 最新数据的时间戳
+    _firstTime: 0, // 最早数据的时间戳
 
     /**
      * 初始化图表
@@ -105,6 +108,19 @@ const ChartManager = {
             this.handleResize();
             window.addEventListener('resize', () => this.handleResize());
 
+            // 跟踪用户视图位置（币安式行为）
+            // 用户滚动/缩放后，判断是否仍在查看最新K线
+            this.chart.timeScale().subscribeVisibleTimeRangeChange((range) => {
+                if (!range || !this._lastTime) return;
+                // 检查用户是否滚动到了最右端（查看最新数据）
+                // 如果可见范围的右端时间 >= 最新K线时间减去2根K线的时间间隔，视为在看最新
+                // 简化处理：距离最新时间小于5%的时间范围视为接近最新
+                const totalRange = this._lastTime - this._firstTime || 1;
+                const distanceFromEnd = this._lastTime - range.to;
+                const ratio = distanceFromEnd / totalRange;
+                this._isAtLatest = ratio < 0.02; // 距离末尾小于2%的时间范围视为在看最新
+            });
+
             return this.chart;
         } catch (e) {
             console.error('图表初始化失败:', e);
@@ -129,7 +145,7 @@ const ChartManager = {
      */
     updateCandlestickData(data) {
         if (!this.candlestickSeries || !data || data.length === 0) return;
-        
+
         const candleData = data.map(d => ({
             time: d.time,
             open: d.open,
@@ -137,9 +153,9 @@ const ChartManager = {
             low: d.low,
             close: d.close,
         }));
-        
+
         this.candlestickSeries.setData(candleData);
-        
+
         // 更新成交量
         if (this.volumeSeries) {
             const volumeData = data.map(d => ({
@@ -149,12 +165,25 @@ const ChartManager = {
             }));
             this.volumeSeries.setData(volumeData);
         }
-        
-        // 仅在首次加载时自动缩放，避免用户手动缩放后被回弹
+
+        // 记录最新/最早数据时间，用于视图位置判断
+        this._firstTime = data[0].time;
+        this._lastTime = data[data.length - 1].time;
+
+        // 币安式行为：
+        // 1. 首次加载：自动缩放到全部数据
+        // 2. 后续更新：
+        //    - 如果用户正在查看最新K线（视图在最右端）：跟随最新K线
+        //    - 如果用户在查看历史数据（向左滚动过）：保持不动，绝不打扰
         if (this._isFirstLoad) {
             this.chart.timeScale().fitContent();
             this._isFirstLoad = false;
+            this._isAtLatest = true;
+        } else if (this._isAtLatest) {
+            // 用户在看最新数据，滚动到最新一根K线（保持跟随）
+            this.chart.timeScale().scrollToRealTime();
         }
+        // else: 用户在看历史数据，完全保持当前视图不动
     },
 
     /**
@@ -318,6 +347,7 @@ const ChartManager = {
         this.clearSupportResistanceLines();
         this.clearMarkers();
         this._isFirstLoad = true; // 切换周期后首次加载自动缩放
+        this._isAtLatest = true;
     },
 
     /**
@@ -326,6 +356,7 @@ const ChartManager = {
     resetView() {
         if (this.chart) {
             this.chart.timeScale().fitContent();
+            this._isAtLatest = true;
         }
     },
 
