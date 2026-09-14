@@ -24,7 +24,7 @@ const NewsAnalyzer = {
     ],
 
     /**
-     * 获取加密货币新闻（多源聚合）
+     * 获取加密货币新闻（多源聚合 + 中文翻译）
      * @param {string} coinId - 币种ID
      * @returns {Promise<Array>} 新闻列表
      */
@@ -63,7 +63,8 @@ const NewsAnalyzer = {
                                 image: item.image || item.thumbnail || '',
                                 publishedAt: item.publishedAt || item.date || new Date().toISOString(),
                                 categories: item.categories || [cat],
-                                _source: 'cryptocurrency.cv'
+                                _source: 'cryptocurrency.cv',
+                                _lang: 'en'
                             }));
                         }
                         return [];
@@ -100,12 +101,29 @@ const NewsAnalyzer = {
                         image: '',
                         publishedAt: item.publishDate || new Date(item.publishTime).toISOString() || new Date().toISOString(),
                         categories: ['exchange', 'binance'],
-                        _source: 'binance'
+                        _source: 'binance',
+                        _lang: 'zh'
                     })));
                 }
             }
         } catch (e) {
             errors.push(`binance: ${e.message}`);
+        }
+
+        // ========== 源3: 528btc 快讯（通过 CORS 代理尝试）==========
+        try {
+            const kxResp = await fetch(
+                'https://api.allorigins.win/raw?url=' + encodeURIComponent('https://www.528btc.com/kx/')
+            );
+            if (kxResp.ok) {
+                const html = await kxResp.text();
+                const kxItems = this.parse528btcHTML(html);
+                if (kxItems.length > 0) {
+                    allNews.push(...kxItems);
+                }
+            }
+        } catch (e) {
+            errors.push(`528btc: ${e.message}`);
         }
 
         // ========== 去重 + 处理 ==========
@@ -124,16 +142,23 @@ const NewsAnalyzer = {
                 return new Date(b.publishedAt) - new Date(a.publishedAt);
             });
 
-            // 情感分析
-            const processedNews = uniqueNews.slice(0, 15).map(item => {
+            // 取前15条
+            const topNews = uniqueNews.slice(0, 15);
+
+            // 情感分析 + 关键词提取
+            const processedNews = topNews.map(item => {
                 const sentiment = this.analyzeSentiment(item.title + ' ' + item.description);
                 return {
                     ...item,
                     sentiment: sentiment.score,
                     sentimentLabel: sentiment.label,
-                    keywords: this.extractKeywords(item.title + ' ' + item.description)
+                    keywords: this.extractKeywords(item.title + ' ' + item.description),
+                    translated: false
                 };
             });
+
+            // 翻译英文新闻（异步进行，不阻塞返回）
+            this.translateNews(processedNews);
 
             return processedNews;
         }
@@ -144,18 +169,146 @@ const NewsAnalyzer = {
     },
 
     /**
+     * 解析 528btc 快讯页面 HTML
+     * @param {string} html - HTML 文本
+     * @returns {Array} 新闻列表
+     */
+    parse528btcHTML(html) {
+        const items = [];
+        try {
+            // 简单的正则解析快讯列表
+            // 528btc 快讯页面通常有特定的 class 结构
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+
+            // 尝试多种可能的选择器
+            const selectors = [
+                '.kx-list li',
+                '.news-list li',
+                '.list-item',
+                'article',
+                '.item'
+            ];
+
+            for (const selector of selectors) {
+                const elements = doc.querySelectorAll(selector);
+                if (elements.length > 0) {
+                    elements.forEach((el, idx) => {
+                        if (idx >= 10) return; // 最多取10条
+                        const titleEl = el.querySelector('a, h3, h4, .title');
+                        const timeEl = el.querySelector('.time, .date, time');
+                        const linkEl = el.querySelector('a');
+
+                        const title = titleEl?.textContent?.trim() || '';
+                        if (!title) return;
+
+                        items.push({
+                            id: '528btc-' + idx + '-' + Date.now(),
+                            title: title,
+                            description: title, // 快讯通常标题就是内容
+                            url: linkEl?.href || 'https://www.528btc.com/kx/',
+                            source: '528btc 快讯',
+                            image: '',
+                            publishedAt: timeEl?.textContent?.trim() ? new Date(timeEl.textContent).toISOString() : new Date().toISOString(),
+                            categories: ['flash', 'chinese'],
+                            _source: '528btc',
+                            _lang: 'zh'
+                        });
+                    });
+                    break;
+                }
+            }
+        } catch (e) {
+            console.warn('解析528btc HTML失败:', e.message);
+        }
+        return items;
+    },
+
+    /**
+     * 翻译英文新闻为中文
+     * @param {Array} newsList - 新闻列表
+     */
+    async translateNews(newsList) {
+        const englishNews = newsList.filter(n => n._lang === 'en' && !n.translated);
+        if (englishNews.length === 0) return;
+
+        // 分批翻译，每次最多翻译5条（避免API限制）
+        const batch = englishNews.slice(0, 5);
+
+        for (const news of batch) {
+            try {
+                // 翻译标题
+                const titleResp = await fetch(
+                    `https://api.mymemory.translated.net/get?q=${encodeURIComponent(news.title.substring(0, 200))}&langpair=en|zh-CN`
+                );
+                const titleData = await titleResp.json();
+                const translatedTitle = titleData.responseData?.translatedText;
+
+                // 翻译摘要（如果有）
+                let translatedDesc = '';
+                if (news.description && news.description.length > 0) {
+                    const descResp = await fetch(
+                        `https://api.mymemory.translated.net/get?q=${encodeURIComponent(news.description.substring(0, 300))}&langpair=en|zh-CN`
+                    );
+                    const descData = await descResp.json();
+                    translatedDesc = descData.responseData?.translatedText || '';
+                }
+
+                if (translatedTitle) {
+                    // 保存英文原文，用中文替换显示
+                    news.originalTitle = news.title;
+                    news.originalDescription = news.description;
+                    news.title = translatedTitle;
+                    news.description = translatedDesc || news.description;
+                    news.translated = true;
+
+                    // 重新提取关键词（基于中文）
+                    news.keywords = this.extractKeywords(translatedTitle + ' ' + (translatedDesc || ''));
+
+                    // 重新进行情感分析（基于中文）
+                    const sentiment = this.analyzeSentiment(translatedTitle + ' ' + (translatedDesc || ''));
+                    news.sentiment = sentiment.score;
+                    news.sentimentLabel = sentiment.label;
+                }
+            } catch (e) {
+                console.warn('翻译失败:', news.title?.substring(0, 30), e.message);
+            }
+        }
+
+        // 翻译完成后通知 UI 更新
+        if (typeof CryptoPulseApp !== 'undefined' && CryptoPulseApp.renderNews) {
+            CryptoPulseApp.renderNews();
+        }
+    },
+
+    /**
      * 提取关键词
      * @param {string} text - 文本
      * @returns {Array<string>} 关键词数组
      */
     extractKeywords(text) {
         const keywords = [
-            'Bitcoin', 'Ethereum', 'BTC', 'ETH', 'ETF', 'SEC', '监管', 'BTC现货ETF',
-            '上涨', '下跌', '突破', '新高', '新低', '牛市', '熊市', '反弹', '回调',
+            // 币种
+            '比特币', '以太坊', 'BTC', 'ETH', '索拉纳', 'SOL', '瑞波币', 'XRP',
+            '币安币', 'BNB', '狗狗币', 'DOGE', '卡尔达诺', 'ADA',
+            'Bitcoin', 'Ethereum', 'Solana', 'Ripple', 'Dogecoin', 'Cardano',
+            // 概念
+            'ETF', '现货ETF', 'SEC', '监管', '政策', '批准', '通过', '拒绝',
+            'Layer2', 'DeFi', 'NFT', 'Web3', '链上', '质押', '挖矿',
+            // 行情
+            '上涨', '下跌', '暴涨', '暴跌', '突破', '新高', '新低',
+            '牛市', '熊市', '反弹', '回调', '震荡', '横盘', '跳水', '拉升',
+            'surge', 'plunge', 'rally', 'crash', 'all-time high', 'ATH',
+            // 资金
             '机构', '鲸鱼', '大额', '增持', '减持', '买入', '卖出',
-            '升级', '硬分叉', '软分叉', 'Layer2', 'DeFi', 'NFT', 'Web3',
-            '黑客', '攻击', '安全', '漏洞', '被盗',
-            '合作', '伙伴', '上线', '上市', '融资', '投资'
+            '资金流入', '资金流出', '成交量', '放量', '缩量',
+            'institutional', 'whale', 'accumulation', 'distribution',
+            // 技术
+            '升级', '硬分叉', '软分叉', '主网', '测试网', '空投',
+            'hack', '黑客', '攻击', '安全', '漏洞', '被盗',
+            // 事件
+            '合作', '伙伴', '上线', '上市', '融资', '投资', '收购',
+            'partnership', 'listing', 'funding', 'acquisition'
         ];
         const found = [];
         const lowerText = text.toLowerCase();

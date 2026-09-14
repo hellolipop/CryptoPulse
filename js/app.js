@@ -1581,10 +1581,11 @@ const CryptoPulseApp = {
         
         container.innerHTML = newsList.slice(0, 6).map((news, index) => {
             const sentimentStyle = NewsAnalyzer.getSentimentStyle(news.sentimentLabel);
+            const translatedBadge = news.translated ? '<span class="text-xs text-crypto-blue/70 ml-1">译</span>' : '';
             return `
                 <div class="news-card bg-crypto-card rounded-xl border border-crypto-border p-4 cursor-pointer hover:border-crypto-purple/50 transition-all" data-news-index="${index}">
                     <div class="flex items-start justify-between gap-2 mb-2">
-                        <span class="text-xs text-gray-400">${news.source}</span>
+                        <span class="text-xs text-gray-400">${news.source}${translatedBadge}</span>
                         <span class="tip-tag ${sentimentStyle.className}">${sentimentStyle.text}</span>
                     </div>
                     <h4 class="text-sm font-medium mb-2 line-clamp-2 text-gray-100">${news.title}</h4>
