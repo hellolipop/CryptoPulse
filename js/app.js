@@ -16,7 +16,8 @@ const CryptoPulseApp = {
         newsList: [],
         signal: null,
         isLoading: false,
-        lastUpdate: null
+        lastUpdate: null,
+        showSignalMarkers: true
     },
 
     // 币安 API 基础地址
@@ -88,6 +89,16 @@ const CryptoPulseApp = {
         // 成交量显示切换
         document.getElementById('showVolume').addEventListener('change', (e) => {
             ChartManager.toggleVolume(e.target.checked);
+        });
+
+        // 买卖信号显示切换
+        document.getElementById('showSignals').addEventListener('change', (e) => {
+            this.state.showSignalMarkers = e.target.checked;
+            if (e.target.checked) {
+                this.addSwingMarkers();
+            } else {
+                ChartManager.clearMarkers();
+            }
         });
 
         // 技术指标标签切换
@@ -614,10 +625,12 @@ const CryptoPulseApp = {
     // 添加高低点标记
     addSwingMarkers() {
         if (!this.state.candleData || this.state.candleData.length < 10) return;
-        
+        if (!this.state.showSignalMarkers) return;
+
         const markers = [];
         const data = this.state.candleData;
-        
+        const ind = this.state.indicators;
+
         // 寻找局部高点和低点
         for (let i = 5; i < data.length - 5; i++) {
             // 局部高点
@@ -632,7 +645,7 @@ const CryptoPulseApp = {
                     text: '高点'
                 });
             }
-            
+
             // 局部低点
             if (data[i].low <= data[i-1].low && data[i].low <= data[i-2].low &&
                 data[i].low <= data[i-3].low && data[i].low <= data[i+1].low &&
@@ -646,10 +659,263 @@ const CryptoPulseApp = {
                 });
             }
         }
-        
-        // 只保留最近的几个标记
-        const recentMarkers = markers.slice(-6);
-        ChartManager.addMarkers(recentMarkers);
+
+        // 添加技术指标买卖信号标记
+        const signalMarkers = this.generateSignalMarkers(data, ind);
+        markers.push(...signalMarkers);
+
+        // 按时间排序
+        markers.sort((a, b) => a.time - b.time);
+
+        ChartManager.addMarkers(markers);
+    },
+
+    // 生成技术指标买卖信号标记
+    generateSignalMarkers(data, ind) {
+        const markers = [];
+        if (!data || data.length < 30) return markers;
+
+        const closes = data.map(d => d.close);
+        const len = closes.length;
+
+        // === MACD 金叉死叉信号 ===
+        if (ind.macd && ind.macd.macd && ind.macd.signal) {
+            const macdLine = ind.macd.macd;
+            const signalLine = ind.macd.signal;
+
+            for (let i = 1; i < Math.min(macdLine.length, len); i++) {
+                if (macdLine[i] === null || signalLine[i] === null) continue;
+                if (macdLine[i-1] === null || signalLine[i-1] === null) continue;
+
+                // MACD 金叉（买入）
+                if (macdLine[i-1] <= signalLine[i-1] && macdLine[i] > signalLine[i]) {
+                    markers.push({
+                        time: data[i].time,
+                        position: 'belowBar',
+                        color: '#22c55e',
+                        shape: 'arrowUp',
+                        text: 'MACD金叉'
+                    });
+                }
+
+                // MACD 死叉（卖出）
+                if (macdLine[i-1] >= signalLine[i-1] && macdLine[i] < signalLine[i]) {
+                    markers.push({
+                        time: data[i].time,
+                        position: 'aboveBar',
+                        color: '#f97316',
+                        shape: 'arrowDown',
+                        text: 'MACD死叉'
+                    });
+                }
+            }
+        }
+
+        // === KDJ 金叉死叉信号 ===
+        if (ind.kdj && ind.kdj.k && ind.kdj.d) {
+            const kLine = ind.kdj.k;
+            const dLine = ind.kdj.d;
+
+            for (let i = 1; i < Math.min(kLine.length, len); i++) {
+                if (kLine[i] === null || dLine[i] === null) continue;
+                if (kLine[i-1] === null || dLine[i-1] === null) continue;
+
+                // KDJ 超卖区金叉（强买入）
+                if (kLine[i] < 30 && dLine[i] < 30 &&
+                    kLine[i-1] <= dLine[i-1] && kLine[i] > dLine[i]) {
+                    markers.push({
+                        time: data[i].time,
+                        position: 'belowBar',
+                        color: '#15803d',
+                        shape: 'arrowUp',
+                        text: 'KDJ超卖金叉'
+                    });
+                }
+                // KDJ 金叉
+                else if (kLine[i-1] <= dLine[i-1] && kLine[i] > dLine[i]) {
+                    markers.push({
+                        time: data[i].time,
+                        position: 'belowBar',
+                        color: '#4ade80',
+                        shape: 'arrowUp',
+                        text: 'KDJ金叉'
+                    });
+                }
+
+                // KDJ 超买区死叉（强卖出）
+                if (kLine[i] > 70 && dLine[i] > 70 &&
+                    kLine[i-1] >= dLine[i-1] && kLine[i] < dLine[i]) {
+                    markers.push({
+                        time: data[i].time,
+                        position: 'aboveBar',
+                        color: '#b91c1c',
+                        shape: 'arrowDown',
+                        text: 'KDJ超买死叉'
+                    });
+                }
+                // KDJ 死叉
+                else if (kLine[i-1] >= dLine[i-1] && kLine[i] < dLine[i]) {
+                    markers.push({
+                        time: data[i].time,
+                        position: 'aboveBar',
+                        color: '#fb923c',
+                        shape: 'arrowDown',
+                        text: 'KDJ死叉'
+                    });
+                }
+            }
+        }
+
+        // === RSI 超买超卖信号 ===
+        const rsiLine = TechnicalAnalysis.calculateRSI(closes, 14);
+        for (let i = 1; i < Math.min(rsiLine.length, len); i++) {
+            if (rsiLine[i] === null) continue;
+
+            // RSI 从超卖区回升（买入）
+            if (rsiLine[i-1] !== null && rsiLine[i-1] < 30 && rsiLine[i] >= 30) {
+                markers.push({
+                    time: data[i].time,
+                    position: 'belowBar',
+                    color: '#059669',
+                    shape: 'arrowUp',
+                    text: 'RSI超卖回升'
+                });
+            }
+
+            // RSI 从超买区回落（卖出）
+            if (rsiLine[i-1] !== null && rsiLine[i-1] > 70 && rsiLine[i] <= 70) {
+                markers.push({
+                    time: data[i].time,
+                    position: 'aboveBar',
+                    color: '#dc2626',
+                    shape: 'arrowDown',
+                    text: 'RSI超买回落'
+                });
+            }
+        }
+
+        // === MA 均线交叉信号 ===
+        if (ind.ma7 && ind.ma25) {
+            const ma7 = ind.ma7;
+            const ma25 = ind.ma25;
+
+            for (let i = 1; i < Math.min(ma7.length, len); i++) {
+                if (ma7[i] === null || ma25[i] === null) continue;
+                if (ma7[i-1] === null || ma25[i-1] === null) continue;
+
+                // MA7 上穿 MA25（金叉，买入）
+                if (ma7[i-1] <= ma25[i-1] && ma7[i] > ma25[i]) {
+                    markers.push({
+                        time: data[i].time,
+                        position: 'belowBar',
+                        color: '#16a34a',
+                        shape: 'arrowUp',
+                        text: '均线金叉'
+                    });
+                }
+
+                // MA7 下穿 MA25（死叉，卖出）
+                if (ma7[i-1] >= ma25[i-1] && ma7[i] < ma25[i]) {
+                    markers.push({
+                        time: data[i].time,
+                        position: 'aboveBar',
+                        color: '#ea580c',
+                        shape: 'arrowDown',
+                        text: '均线死叉'
+                    });
+                }
+            }
+        }
+
+        // === 布林带突破信号 ===
+        if (ind.bollingerBands && ind.bollingerBands.upper && ind.bollingerBands.lower) {
+            const upper = ind.bollingerBands.upper;
+            const lower = ind.bollingerBands.lower;
+
+            for (let i = 1; i < Math.min(upper.length, len); i++) {
+                if (upper[i] === null || lower[i] === null) continue;
+
+                // 价格触及下轨后回升（买入）
+                if (data[i-1].low <= lower[i-1] && data[i].close > lower[i]) {
+                    markers.push({
+                        time: data[i].time,
+                        position: 'belowBar',
+                        color: '#0d9488',
+                        shape: 'arrowUp',
+                        text: '布林下轨反弹'
+                    });
+                }
+
+                // 价格触及上轨后回落（卖出）
+                if (data[i-1].high >= upper[i-1] && data[i].close < upper[i]) {
+                    markers.push({
+                        time: data[i].time,
+                        position: 'aboveBar',
+                        color: '#c2410c',
+                        shape: 'arrowDown',
+                        text: '布林上轨回落'
+                    });
+                }
+            }
+        }
+
+        // === StochRSI 信号 ===
+        if (ind.stochRSI && ind.stochRSI.k && ind.stochRSI.d) {
+            const stochK = ind.stochRSI.k;
+            const stochD = ind.stochRSI.d;
+
+            for (let i = 1; i < Math.min(stochK.length, len); i++) {
+                if (stochK[i] === null || stochD[i] === null) continue;
+                if (stochK[i-1] === null || stochD[i-1] === null) continue;
+
+                // StochRSI 超卖区金叉
+                if (stochK[i] < 20 && stochD[i] < 20 &&
+                    stochK[i-1] <= stochD[i-1] && stochK[i] > stochD[i]) {
+                    markers.push({
+                        time: data[i].time,
+                        position: 'belowBar',
+                        color: '#047857',
+                        shape: 'arrowUp',
+                        text: 'StochRSI超卖金叉'
+                    });
+                }
+
+                // StochRSI 超买区死叉
+                if (stochK[i] > 80 && stochD[i] > 80 &&
+                    stochK[i-1] >= stochD[i-1] && stochK[i] < stochD[i]) {
+                    markers.push({
+                        time: data[i].time,
+                        position: 'aboveBar',
+                        color: '#991b1b',
+                        shape: 'arrowDown',
+                        text: 'StochRSI超买死叉'
+                    });
+                }
+            }
+        }
+
+        // 去重：同一根K线只保留一个最强信号
+        const uniqueMarkers = new Map();
+        for (const marker of markers) {
+            const key = `${marker.time}_${marker.position}`;
+            if (!uniqueMarkers.has(key)) {
+                uniqueMarkers.set(key, marker);
+            } else {
+                // 保留更强的信号（文字越长通常描述越详细）
+                const existing = uniqueMarkers.get(key);
+                if (marker.text.length > existing.text.length) {
+                    uniqueMarkers.set(key, marker);
+                }
+            }
+        }
+        const dedupedMarkers = Array.from(uniqueMarkers.values());
+
+        // 只保留最近的信号标记（避免图表太乱）
+        // 买入信号最近4个，卖出信号最近4个
+        const buySignals = dedupedMarkers.filter(m => m.position === 'belowBar').slice(-5);
+        const sellSignals = dedupedMarkers.filter(m => m.position === 'aboveBar').slice(-5);
+
+        return [...buySignals, ...sellSignals];
     },
 
     // 更新价格UI
