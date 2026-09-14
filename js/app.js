@@ -283,8 +283,8 @@ const CryptoPulseApp = {
             price_change_percentage_24h: change * 100,
             high_24h: currentPrice * 1.05,
             low_24h: currentPrice * 0.95,
-            total_volume: basePrice * 1000000000,
-            market_cap: basePrice * 50000000000,
+            total_volume: basePrice * 500000,
+            market_cap: basePrice * 20000000,
         };
         
         this.updatePriceUI();
@@ -337,12 +337,15 @@ const CryptoPulseApp = {
         };
         
         const basePrice = basePrices[coinId] || 100;
-        const candleCount = Math.min(this.state.currentTimeframe, 100);
+        // 确保至少有100根K线，以便计算所有技术指标
+        const candleCount = Math.max(100, this.state.currentTimeframe);
         const candleData = [];
         let price = basePrice;
         
         const now = Math.floor(Date.now() / 1000);
-        const interval = (this.state.currentTimeframe * 3600) / candleCount;
+        // 每根K线的时间间隔（秒）
+        const totalSeconds = this.state.currentTimeframe * 3600;
+        const interval = totalSeconds / candleCount;
         
         for (let i = candleCount - 1; i >= 0; i--) {
             const time = now - i * interval;
@@ -354,7 +357,7 @@ const CryptoPulseApp = {
             const close = open + change;
             const high = Math.max(open, close) * (1 + Math.random() * volatility * 0.5);
             const low = Math.min(open, close) * (1 - Math.random() * volatility * 0.5);
-            const volume = basePrice * 100000 * (0.5 + Math.random());
+            const volume = basePrice * 1000 * (0.5 + Math.random());
             
             candleData.push({
                 time: Math.floor(time),
@@ -516,13 +519,17 @@ const CryptoPulseApp = {
         const macdEl = document.getElementById('macdValue');
         const macdSignalEl = document.getElementById('macdSignal');
         
-        if (macdValue !== null && macdValue !== undefined) {
+        if (typeof macdValue === 'number' && !isNaN(macdValue)) {
             macdEl.textContent = macdValue.toFixed(4);
             macdEl.className = `text-lg font-semibold ${macdValue > 0 ? 'text-crypto-green' : 'text-crypto-red'}`;
+        } else {
+            macdEl.textContent = '--';
         }
         
-        if (macdSignal !== null && macdSignal !== undefined) {
+        if (typeof macdSignal === 'number' && !isNaN(macdSignal)) {
             macdSignalEl.textContent = `信号: ${macdSignal.toFixed(4)}`;
+        } else {
+            macdSignalEl.textContent = '--';
         }
         
         // MA7

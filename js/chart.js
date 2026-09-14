@@ -1,6 +1,6 @@
 /**
  * 图表渲染模块
- * 使用 Lightweight Charts 渲染K线图、均线、成交量等
+ * 使用 Lightweight Charts v3 渲染K线图、均线、成交量等
  */
 
 const ChartManager = {
@@ -9,7 +9,6 @@ const ChartManager = {
     volumeSeries: null,
     ma7Series: null,
     ma25Series: null,
-    ma99Series: null,
     resistanceLines: [],
     supportLines: [],
     container: null,
@@ -22,89 +21,94 @@ const ChartManager = {
         this.container = document.getElementById(containerId);
         if (!this.container) return;
 
-        // 创建图表
-        this.chart = LightweightCharts.createChart(this.container, {
-            layout: {
-                background: { color: '#1e293b' },
-                textColor: '#94a3b8',
-            },
-            grid: {
-                vertLines: { color: 'rgba(51, 65, 85, 0.5)' },
-                horzLines: { color: 'rgba(51, 65, 85, 0.5)' },
-            },
-            crosshair: {
-                mode: LightweightCharts.CrosshairMode.Normal,
-                vertLine: {
-                    color: '#64748b',
-                    width: 1,
-                    style: 2,
+        try {
+            // 创建图表
+            this.chart = LightweightCharts.createChart(this.container, {
+                layout: {
+                    background: { color: '#1e293b' },
+                    textColor: '#94a3b8',
                 },
-                horzLine: {
-                    color: '#64748b',
-                    width: 1,
-                    style: 2,
+                grid: {
+                    vertLines: { color: 'rgba(51, 65, 85, 0.5)' },
+                    horzLines: { color: 'rgba(51, 65, 85, 0.5)' },
                 },
-            },
-            rightPriceScale: {
-                borderColor: '#334155',
+                crosshair: {
+                    mode: LightweightCharts.CrosshairMode.Normal,
+                    vertLine: {
+                        color: '#64748b',
+                        width: 1,
+                        style: 2,
+                    },
+                    horzLine: {
+                        color: '#64748b',
+                        width: 1,
+                        style: 2,
+                    },
+                },
+                rightPriceScale: {
+                    borderColor: '#334155',
+                    scaleMargins: {
+                        top: 0.1,
+                        bottom: 0.2,
+                    },
+                },
+                timeScale: {
+                    borderColor: '#334155',
+                    timeVisible: true,
+                    secondsVisible: false,
+                },
+                handleScroll: true,
+                handleScale: true,
+            });
+
+            // 创建K线系列
+            this.candlestickSeries = this.chart.addCandlestickSeries({
+                upColor: '#10b981',
+                downColor: '#ef4444',
+                borderDownColor: '#ef4444',
+                borderUpColor: '#10b981',
+                wickDownColor: '#ef4444',
+                wickUpColor: '#10b981',
+            });
+
+            // 创建成交量系列
+            this.volumeSeries = this.chart.addHistogramSeries({
+                color: '#8b5cf6',
+                priceFormat: {
+                    type: 'volume',
+                },
+                priceScaleId: '',
                 scaleMargins: {
-                    top: 0.1,
-                    bottom: 0.2,
+                    top: 0.8,
+                    bottom: 0,
                 },
-            },
-            timeScale: {
-                borderColor: '#334155',
-                timeVisible: true,
-                secondsVisible: false,
-            },
-            handleScroll: true,
-            handleScale: true,
-        });
+            });
 
-        // 创建K线系列
-        this.candlestickSeries = this.chart.addCandlestickSeries({
-            upColor: '#10b981',
-            downColor: '#ef4444',
-            borderDownColor: '#ef4444',
-            borderUpColor: '#10b981',
-            wickDownColor: '#ef4444',
-            wickUpColor: '#10b981',
-        });
+            // 创建MA7均线
+            this.ma7Series = this.chart.addLineSeries({
+                color: '#f59e0b',
+                lineWidth: 1,
+                priceLineVisible: false,
+                lastValueVisible: false,
+            });
 
-        // 创建成交量系列
-        this.volumeSeries = this.chart.addHistogramSeries({
-            color: '#8b5cf6',
-            priceFormat: {
-                type: 'volume',
-            },
-            priceScaleId: '',
-            scaleMargins: {
-                top: 0.8,
-                bottom: 0,
-            },
-        });
+            // 创建MA25均线
+            this.ma25Series = this.chart.addLineSeries({
+                color: '#3b82f6',
+                lineWidth: 1,
+                priceLineVisible: false,
+                lastValueVisible: false,
+            });
 
-        // 创建MA7均线
-        this.ma7Series = this.chart.addLineSeries({
-            color: '#f59e0b',
-            lineWidth: 1,
-            priceLineVisible: false,
-            lastValueVisible: false,
-        });
+            // 响应式调整
+            this.handleResize();
+            window.addEventListener('resize', () => this.handleResize());
 
-        // 创建MA25均线
-        this.ma25Series = this.chart.addLineSeries({
-            color: '#3b82f6',
-            lineWidth: 1,
-            priceLineVisible: false,
-            lastValueVisible: false,
-        });
-
-        // 响应式调整
-        this.handleResize();
-        window.addEventListener('resize', () => this.handleResize());
-
-        return this.chart;
+            return this.chart;
+        } catch (e) {
+            console.error('图表初始化失败:', e);
+            return null;
+        }
     },
 
     /**
@@ -201,12 +205,11 @@ const ChartManager = {
      * @param {Object} levels - 支撑压力位 { resistance1, resistance2, support1, support2 }
      */
     drawSupportResistance(levels) {
-        // 清除旧的线
         this.clearSupportResistanceLines();
         
         if (!this.candlestickSeries || !levels) return;
         
-        // 压力位（红色）
+        // 压力位（红色虚线）
         if (levels.resistance1) {
             const line = this.candlestickSeries.createPriceLine({
                 price: levels.resistance1,
@@ -231,7 +234,7 @@ const ChartManager = {
             this.resistanceLines.push(line);
         }
         
-        // 支撑位（绿色）
+        // 支撑位（绿色虚线）
         if (levels.support1) {
             const line = this.candlestickSeries.createPriceLine({
                 price: levels.support1,
@@ -281,15 +284,26 @@ const ChartManager = {
     addMarkers(markers) {
         if (!this.candlestickSeries || !markers || markers.length === 0) return;
         
-        this.candlestickSeries.setMarkers(markers);
+        try {
+            if (typeof this.candlestickSeries.setMarkers === 'function') {
+                this.candlestickSeries.setMarkers(markers);
+            }
+        } catch (e) {
+            console.warn('设置标记失败:', e);
+        }
     },
 
     /**
      * 清除标记点
      */
     clearMarkers() {
-        if (!this.candlestickSeries) return;
-        this.candlestickSeries.setMarkers([]);
+        try {
+            if (this.candlestickSeries && typeof this.candlestickSeries.setMarkers === 'function') {
+                this.candlestickSeries.setMarkers([]);
+            }
+        } catch (e) {
+            // 忽略错误
+        }
     },
 
     /**
@@ -297,8 +311,6 @@ const ChartManager = {
      * @param {string} timeframe - 时间周期
      */
     changeTimeframe(timeframe) {
-        // 时间周期切换由 app.js 处理数据获取
-        // 这里只需要清除现有数据
         this.clearSupportResistanceLines();
         this.clearMarkers();
     },

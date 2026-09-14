@@ -131,24 +131,30 @@ const TechnicalAnalysis = {
             }
         }
         
-        // 计算信号线 (MACD的EMA)
-        // 需要先过滤掉 null 值
-        const validMacd = macd.filter(v => v !== null);
-        const signalEMA = this.calculateEMA(validMacd, signalPeriod);
-        
-        // 重新对齐 signal 数组
-        const signal = [];
-        const nullCount = macd.length - validMacd.length;
-        for (let i = 0; i < nullCount + signalPeriod - 1; i++) {
-            signal.push(null);
-        }
-        for (let i = signalPeriod - 1; i < signalEMA.length; i++) {
-            if (signalEMA[i] !== null) {
-                signal.push(signalEMA[i]);
+        // 找到第一个有效 MACD 值的索引
+        let firstValidIndex = 0;
+        for (let i = 0; i < macd.length; i++) {
+            if (macd[i] !== null) {
+                firstValidIndex = i;
+                break;
             }
         }
         
-        // 确保 signal 数组长度与 macd 一致
+        // 提取有效 MACD 值计算信号线
+        const validMacd = macd.slice(firstValidIndex);
+        const signalEMA = this.calculateEMA(validMacd, signalPeriod);
+        
+        // 构建 signal 数组，与 macd 长度一致
+        const signal = [];
+        // 前面的位置填充 null
+        for (let i = 0; i < firstValidIndex; i++) {
+            signal.push(null);
+        }
+        // 添加 signal EMA 值
+        for (let i = 0; i < signalEMA.length; i++) {
+            signal.push(signalEMA[i]);
+        }
+        // 确保长度一致
         while (signal.length < macd.length) {
             signal.push(null);
         }
