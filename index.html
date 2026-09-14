@@ -61,10 +61,48 @@
     </header>
 
     <main class="max-w-6xl mx-auto px-3 sm:px-4 py-3 sm:py-5">
-        <!-- 币种选择器 -->
+        <!-- 市场分类 + 币种选择器 -->
         <section class="mb-4 sm:mb-5">
-            <div id="coinTabs" class="flex gap-2 overflow-x-auto pb-1.5 scrollbar-hide">
-                <!-- 币种标签将由JS动态生成 -->
+            <!-- 顶部市场分类面包屑（参考币安App） -->
+            <div class="flex items-center justify-between gap-3 mb-2.5">
+                <div id="marketTabs" class="flex items-center gap-1">
+                    <button data-market="watchlist" class="market-tab px-3 py-1.5 rounded-lg text-sm font-medium transition-colors">自选</button>
+                    <button data-market="hot" class="market-tab px-3 py-1.5 rounded-lg text-sm font-medium transition-colors">主流</button>
+                    <button data-market="all" class="market-tab px-3 py-1.5 rounded-lg text-sm font-medium transition-colors">全部</button>
+                </div>
+                <span id="marketHint" class="text-xs text-gray-500 hidden sm:inline"></span>
+            </div>
+
+            <!-- 自选模式：横向币种卡片 -->
+            <div id="watchlistRow" class="flex items-stretch gap-2">
+                <div id="coinTabs" class="flex gap-2 overflow-x-auto pb-1.5 scrollbar-hide flex-1">
+                    <!-- 币种标签将由JS动态生成 -->
+                </div>
+                <button id="moreWatchlistBtn" class="flex-shrink-0 flex flex-col items-center justify-center gap-0.5 px-2.5 rounded-xl border border-crypto-border bg-crypto-card text-gray-400 hover:text-crypto-purple hover:border-crypto-purple/50 transition-all" title="查看全部自选">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
+                    </svg>
+                    <span class="text-[10px] leading-tight">更多</span>
+                </button>
+            </div>
+
+            <!-- 列表模式：主流 / 全部 -->
+            <div id="coinListPanel" class="hidden rounded-xl border border-crypto-border bg-crypto-card overflow-hidden">
+                <div class="px-3 py-2.5 border-b border-crypto-border">
+                    <div class="relative">
+                        <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                        </svg>
+                        <input id="coinListSearch" type="text" placeholder="搜索币种…"
+                            class="w-full pl-8 pr-3 py-2 rounded-lg bg-crypto-dark border border-crypto-border text-sm placeholder-gray-500 focus:outline-none focus:border-crypto-purple/60 transition-colors">
+                    </div>
+                </div>
+                <div id="coinListItems" class="max-h-96 overflow-y-auto divide-y divide-crypto-border/50">
+                    <!-- 列表由JS动态生成 -->
+                </div>
+                <button id="coinListMoreBtn" class="hidden w-full py-2.5 text-xs text-crypto-purple hover:bg-crypto-purple/5 transition-colors border-t border-crypto-border">
+                    显示更多
+                </button>
             </div>
         </section>
 
@@ -659,10 +697,38 @@
         </div>
     </div>
 
-    <script src="js/technical.js?v=8"></script>
-    <script src="js/news.js?v=8"></script>
-    <script src="js/signals.js?v=8"></script>
-    <script src="js/chart.js?v=8"></script>
-    <script src="js/app.js?v=8"></script>
+    <!-- 全部自选弹窗 -->
+    <div id="watchlistModal" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 hidden">
+        <div class="bg-crypto-card rounded-t-2xl sm:rounded-2xl border border-crypto-border w-full sm:max-w-md overflow-hidden flex flex-col max-h-[80vh]">
+            <div class="px-5 py-4 border-b border-crypto-border flex items-center justify-between gap-3">
+                <div>
+                    <h3 class="text-base font-bold">我的自选</h3>
+                    <p id="watchlistCount" class="text-xs text-gray-500 mt-0.5">--</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button id="watchlistAddBtn" class="text-xs px-2.5 py-1.5 rounded-lg bg-crypto-purple/10 text-crypto-purple hover:bg-crypto-purple/20 transition-colors flex items-center gap-1">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+                        </svg>
+                        添加
+                    </button>
+                    <button id="closeWatchlistBtn" class="p-1.5 rounded-lg hover:bg-crypto-dark transition-colors text-gray-400 hover:text-white">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div id="watchlistItems" class="flex-1 overflow-y-auto divide-y divide-crypto-border/50">
+                <!-- 列表由JS动态生成 -->
+            </div>
+        </div>
+    </div>
+
+    <script src="js/technical.js?v=9"></script>
+    <script src="js/news.js?v=9"></script>
+    <script src="js/signals.js?v=9"></script>
+    <script src="js/chart.js?v=9"></script>
+    <script src="js/app.js?v=9"></script>
 </body>
 </html>
