@@ -110,17 +110,16 @@ const NewsAnalyzer = {
             errors.push(`binance: ${e.message}`);
         }
 
-        // ========== 源3: 528btc 快讯（通过 CORS 代理尝试）==========
+        // ========== 源3: 528btc 快讯（多代理降级 + 人机验证检测）==========
         try {
-            const kxResp = await fetch(
-                'https://api.allorigins.win/raw?url=' + encodeURIComponent('https://www.528btc.com/kx/')
-            );
-            if (kxResp.ok) {
-                const html = await kxResp.text();
-                const kxItems = this.parse528btcHTML(html);
-                if (kxItems.length > 0) {
-                    allNews.push(...kxItems);
-                }
+            const result = await this.fetch528btcFlash();
+            if (result.items.length > 0) {
+                allNews.push(...result.items);
+            }
+            if (result.blocked) {
+                console.warn('[528btc] 被反爬人机验证拦截，本次未获取到快讯:', result.reason);
+            } else if (result.items.length === 0) {
+                console.warn('[528btc] 未解析到快讯内容:', result.reason);
             }
         } catch (e) {
             errors.push(`528btc: ${e.message}`);
@@ -166,6 +165,90 @@ const NewsAnalyzer = {
         // ========== 兜底：模拟数据 ==========
         console.warn('所有新闻源获取失败，使用模拟数据:', errors.join(', '));
         return this.getMockNews(coinId);
+    },
+
+    /**
+     * 获取 528btc 快讯（多代理降级 + 人机验证检测）
+     *
+     * 已知限制：528btc 部署了反爬虫人机验证（滑块验证码）。
+     * 浏览器直连会被 CORS 拦截；经代理访问时，站点会返回
+     * 混淆 JS 的验证页而非真实快讯内容。因此本方法在检测到
+     * 验证页时会主动放弃，避免把验证页当成新闻解析。
+     *
+     * @returns {Promise<{items: Array, blocked: boolean, reason: string}>}
+     */
+    async fetch528btcFlash() {
+        const target = 'https://www.528btc.com/kx/';
+
+        // 代理降级链：注意 allorigins 必须用 /get（/raw 端点会返回 ERR_FAILED）
+        const proxies = [
+            { name: 'allorigins', build: (u) => 'https://api.allorigins.win/get?url=' + encodeURIComponent(u), extract: (txt) => { try { return JSON.parse(txt).contents || ''; } catch (e) { return ''; } } },
+            { name: 'codetabs', build: (u) => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(u), extract: (txt) => txt },
+            { name: 'direct', build: (u) => u, extract: (txt) => txt }
+        ];
+
+        let lastReason = '未知原因';
+
+        for (const proxy of proxies) {
+            let raw = '';
+            try {
+                const resp = await fetch(proxy.build(target));
+                if (!resp.ok) {
+                    lastReason = `${proxy.name} 返回 HTTP ${resp.status}`;
+                    continue;
+                }
+                raw = await resp.text();
+            } catch (e) {
+                lastReason = `${proxy.name} 请求失败 (${e.message})`;
+                continue;
+            }
+
+            if (!raw || raw.length < 200) {
+                lastReason = `${proxy.name} 返回内容过短 (${raw.length} 字节)`;
+                continue;
+            }
+
+            // 人机验证页检测
+            if (this.isVerificationPage(raw)) {
+                return {
+                    items: [],
+                    blocked: true,
+                    reason: '528btc 返回了人机验证页（滑块验证码），需在真实浏览器中通过验证后才能访问'
+                };
+            }
+
+            // 正常 HTML，尝试解析
+            const items = this.parse528btcHTML(raw);
+            if (items.length > 0) {
+                return { items, blocked: false, reason: `经 ${proxy.name} 获取成功，共 ${items.length} 条` };
+            }
+
+            lastReason = `${proxy.name} 返回的页面中未找到快讯列表结构`;
+        }
+
+        return { items: [], blocked: false, reason: lastReason };
+    },
+
+    /**
+     * 判断内容是否为反爬人机验证页
+     * @param {string} text - 页面内容
+     * @returns {boolean} 是否为验证页
+     */
+    isVerificationPage(text) {
+        const head = text.substring(0, 5000);
+        const markers = [
+            'slide to verify',      // 滑块验证英文提示
+            '请滑动验证',            // 滑块验证中文提示
+            'complete the operation to verify',
+            'verify that you are a real person',
+            '滑块验证', '滑动验证', '人机验证',
+            'function a(a){function n()', // 典型混淆 JS 验证脚本
+            'challenge-platform',
+            'cf-browser-verification',
+            'just a moment'
+        ];
+        const lower = head.toLowerCase();
+        return markers.some(m => lower.includes(m.toLowerCase()));
     },
 
     /**
