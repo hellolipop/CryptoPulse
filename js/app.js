@@ -17,7 +17,28 @@ const CryptoPulseApp = {
         signal: null,
         isLoading: false,
         lastUpdate: null,
-        showSignalMarkers: true
+        showSignalMarkers: true,
+        coinCatalog: [],        // 联网获取的币安全量交易对
+        catalogLoaded: false,
+        catalogLoading: false,
+        coinMeta: {},           // 联网添加的币种元数据 { coinId: {id, symbol, name, binanceSymbol} }
+        watchlistQuotes: {}     // 自选币种行情 { coinId: {price, changePercent} }
+    },
+
+    // 常见币种的中文名（联网币种若无中文名则显示符号）
+    coinNameMap: {
+        'BTC': '比特币', 'ETH': '以太坊', 'BNB': '币安币', 'SOL': 'Solana',
+        'XRP': '瑞波币', 'ADA': '艾达币', 'DOGE': '狗狗币', 'DOT': '波卡币',
+        'AVAX': '雪崩币', 'LINK': 'Chainlink', 'MATIC': 'Polygon', 'LTC': '莱特币',
+        'UNI': 'Uniswap', 'ATOM': 'Cosmos', 'XLM': '恒星币', 'TRX': '波场',
+        'TON': 'Toncoin', 'SHIB': '柴犬币', 'PEPE': '佩佩蛙', 'SUI': 'Sui',
+        'APT': 'Aptos', 'ARB': 'Arbitrum', 'OP': 'Optimism', 'NEAR': 'NEAR',
+        'FIL': 'Filecoin', 'ETC': '以太经典', 'BCH': '比特现金', 'HBAR': 'Hedera',
+        'ICP': '互联网计算机', 'VET': '唯链', 'ALGO': 'Algorand', 'SAND': 'The Sandbox',
+        'MANA': 'Decentraland', 'AXS': 'Axie Infinity', 'EOS': '柚子币', 'AAVE': 'Aave',
+        'MKR': 'Maker', 'GRT': 'The Graph', 'FTM': 'Fantom', 'INJ': 'Injective',
+        'SEI': 'Sei', 'TIA': 'Celestia', 'WIF': 'dogwifhat', 'BONK': 'Bonk',
+        'ORDI': 'Ordinals', 'JUP': 'Jupiter', 'PYTH': 'Pyth', 'STRK': 'Starknet'
     },
 
     // 信号详细解释字典
@@ -177,15 +198,140 @@ const CryptoPulseApp = {
     // 获取币安交易对符号
     getBinanceSymbol(coinId) {
         const coin = this.popularCoins.find(c => c.id === coinId);
-        return coin ? coin.binanceSymbol : null;
+        if (coin) return coin.binanceSymbol;
+        const meta = this.state.coinMeta[coinId];
+        return meta ? meta.binanceSymbol : null;
+    },
+
+    /**
+     * 联网加载币安全量交易对目录
+     * 使用 Binance 公开接口 exchangeInfo（无需 Key、支持 CORS）
+     * 结果缓存在内存 + localStorage，24 小时内不重复请求
+     */
+    async loadCoinCatalog(force = false) {
+        if (this.state.catalogLoading) return;
+        if (this.state.catalogLoaded && !force) return;
+
+        // 先尝试读缓存（24 小时有效）
+        if (!force) {
+            try {
+                const cached = JSON.parse(localStorage.getItem('cryptoPulse_catalog') || 'null');
+                if (cached && cached.ts && Date.now() - cached.ts < 24 * 3600 * 1000 && cached.list?.length) {
+                    this.state.coinCatalog = cached.list;
+                    this.state.catalogLoaded = true;
+                    return;
+                }
+            } catch (e) { /* 忽略缓存损坏 */ }
+        }
+
+        this.state.catalogLoading = true;
+        this.updateCatalogStatus('正在联网获取币种列表…');
+
+        try {
+            const resp = await fetch(`${this.binanceApiBase}/exchangeInfo`);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+
+            const list = (data.symbols || [])
+                .filter(s => s.status === 'TRADING' && s.quoteAsset === 'USDT')
+                .map(s => {
+                    const base = s.baseAsset;
+                    return {
+                        coinId: base.toLowerCase(),
+                        symbol: base,
+                        name: this.coinNameMap[base] || base,
+                        binanceSymbol: s.symbol,
+                        // 记录交易量用于排序（若有）
+                        _vol: 0
+                    };
+                })
+                // 去重：同一 base 只保留一个（优先最短交易对名）
+                .sort((a, b) => a.binanceSymbol.length - b.binanceSymbol.length);
+
+            const seen = new Set();
+            const unique = list.filter(c => {
+                if (seen.has(c.coinId)) return false;
+                seen.add(c.coinId);
+                return true;
+            });
+
+            this.state.coinCatalog = unique;
+            this.state.catalogLoaded = true;
+            this.state.catalogLoading = false;
+
+            localStorage.setItem('cryptoPulse_catalog', JSON.stringify({ ts: Date.now(), list: unique }));
+            this.updateCatalogStatus(`已联网获取 ${unique.length} 个币种`);
+            console.log(`[币种目录] 联网获取成功，共 ${unique.length} 个 USDT 交易对`);
+
+            // 目录更新后重绘搜索结果
+            const input = document.getElementById('searchCoinInput');
+            if (input && !document.getElementById('addCoinModal')?.classList.contains('hidden')) {
+                this.searchCoins(input.value);
+            }
+            return unique;
+        } catch (e) {
+            this.state.catalogLoading = false;
+            console.warn('[币种目录] 联网获取失败，降级为内置列表:', e.message);
+            this.updateCatalogStatus('联网获取失败，已降级为内置币种列表');
+            // 降级：使用内置列表
+            this.state.coinCatalog = this.popularCoins.map(c => ({
+                coinId: c.id, symbol: c.symbol, name: c.name, binanceSymbol: c.binanceSymbol
+            }));
+            this.state.catalogLoaded = true;
+            return this.state.coinCatalog;
+        }
+    },
+
+    // 更新联网状态提示
+    updateCatalogStatus(text) {
+        const el = document.getElementById('catalogStatus');
+        if (el) el.textContent = text;
+    },
+
+    /**
+     * 批量拉取自选币种行情（用于自选区展示价格与涨跌幅）
+     */
+    async loadWatchlistQuotes() {
+        const symbols = this.state.watchlist
+            .map(id => this.getBinanceSymbol(id))
+            .filter(Boolean);
+        if (symbols.length === 0) return;
+
+        try {
+            const query = encodeURIComponent(JSON.stringify(symbols));
+            const resp = await fetch(`${this.binanceApiBase}/ticker/24hr?symbols=${query}`);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+
+            const quotes = {};
+            const arr = Array.isArray(data) ? data : [data];
+            arr.forEach(t => {
+                // 反查 coinId
+                const coinId = this.state.watchlist.find(id => this.getBinanceSymbol(id) === t.symbol);
+                if (coinId) {
+                    quotes[coinId] = {
+                        price: parseFloat(t.lastPrice),
+                        changePercent: parseFloat(t.priceChangePercent)
+                    };
+                }
+            });
+            this.state.watchlistQuotes = quotes;
+            this.renderCoinTabs();
+        } catch (e) {
+            console.warn('自选行情加载失败:', e.message);
+        }
     },
 
     // 初始化
     async init() {
+        this.loadCoinMeta();
         this.loadWatchlist();
         this.bindEvents();
         this.initChart();
         this.renderCoinTabs();
+        // 后台联网拉取币种目录与自选行情（不阻塞主数据加载）
+        this.loadCoinCatalog();
+        this.loadWatchlistQuotes();
         await this.loadCoinData(this.state.currentCoin);
         this.startAutoRefresh();
     },
@@ -354,60 +500,115 @@ const CryptoPulseApp = {
         localStorage.setItem('cryptoPulse_currentCoin', this.state.currentCoin);
     },
 
-    // 渲染币种标签
+    // 自选行情价格格式化
+    formatWatchPrice(price) {
+        if (price === null || price === undefined || !isFinite(price)) return '--';
+        if (price >= 1000) return '$' + price.toLocaleString('en-US', { maximumFractionDigits: 2 });
+        if (price >= 1) return '$' + price.toFixed(2);
+        if (price >= 0.01) return '$' + price.toFixed(4);
+        return '$' + price.toFixed(6);
+    },
+
+    // 渲染币种标签（自选区）
     renderCoinTabs() {
         const container = document.getElementById('coinTabs');
+        if (!container) return;
         container.innerHTML = '';
 
         this.state.watchlist.forEach(coinId => {
             const coinInfo = this.getCoinInfo(coinId);
             const isActive = coinId === this.state.currentCoin;
-            
+            const quote = this.state.watchlistQuotes[coinId];
+
+            const hasQuote = !!quote;
+            const up = hasQuote ? quote.changePercent >= 0 : true;
+            const changeText = hasQuote
+                ? `${up ? '+' : ''}${quote.changePercent.toFixed(2)}%`
+                : '--';
+            const changeClass = !hasQuote
+                ? 'text-gray-500'
+                : (up ? 'text-crypto-green' : 'text-crypto-red');
+            const priceText = hasQuote ? this.formatWatchPrice(quote.price) : '--';
+
             const tab = document.createElement('div');
-            tab.className = `coin-tab flex items-center gap-2 px-4 py-2 rounded-xl border border-crypto-border bg-crypto-card cursor-pointer flex-shrink-0 ${isActive ? 'active' : ''}`;
+            tab.className = `coin-tab group relative flex items-center gap-2.5 pl-3 pr-1.5 py-2 rounded-xl border cursor-pointer flex-shrink-0 transition-all duration-200 ${
+                isActive
+                    ? 'active border-crypto-purple/60 bg-crypto-purple/10'
+                    : 'border-crypto-border bg-crypto-card hover:border-crypto-purple/40'
+            }`;
+
             tab.innerHTML = `
-                <div class="w-6 h-6 rounded-full bg-gradient-to-br from-crypto-purple to-crypto-blue flex items-center justify-center text-xs font-bold text-white">
+                <div class="w-8 h-8 rounded-full flex items-center justify-center text-[13px] font-bold text-white flex-shrink-0 ${
+                    isActive
+                        ? 'bg-gradient-to-br from-crypto-purple to-crypto-blue'
+                        : 'bg-crypto-dark ring-1 ring-crypto-border text-gray-300'
+                }">
                     ${coinInfo.symbol.charAt(0)}
                 </div>
-                <div>
-                    <p class="text-sm font-semibold">${coinInfo.symbol}</p>
-                    <p class="text-xs text-gray-400">${coinInfo.name}</p>
+                <div class="min-w-0 pr-1">
+                    <div class="flex items-center gap-1.5">
+                        <span class="text-[13px] font-semibold leading-tight">${coinInfo.symbol}</span>
+                        <span class="text-[11px] font-semibold leading-tight tabular-nums ${changeClass}">${changeText}</span>
+                    </div>
+                    <p class="text-[11px] text-gray-500 leading-tight tabular-nums mt-0.5">${priceText}</p>
                 </div>
                 ${this.state.watchlist.length > 1 ? `
-                <button class="remove-coin ml-1 text-gray-500 hover:text-crypto-red transition-colors" data-coin="${coinId}">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <button class="remove-coin w-5 h-5 rounded-md flex items-center justify-center text-gray-600 opacity-0 group-hover:opacity-100 hover:text-crypto-red hover:bg-crypto-red/10 transition-all" data-coin="${coinId}" title="移除自选">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                     </svg>
-                </button>
-                ` : ''}
+                </button>` : ''}
             `;
-            
+
             tab.addEventListener('click', (e) => {
                 if (!e.target.closest('.remove-coin')) {
                     this.switchCoin(coinId);
                 }
             });
-            
+
             container.appendChild(tab);
         });
 
-        // 绑定删除按钮事件
-        document.querySelectorAll('.remove-coin').forEach(btn => {
+        // 末尾的"添加币种"按钮
+        const addBtn = document.createElement('button');
+        addBtn.id = 'addCoinBtn';
+        addBtn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-crypto-border text-gray-400 hover:text-crypto-purple hover:border-crypto-purple/50 hover:bg-crypto-purple/5 transition-all flex-shrink-0';
+        addBtn.title = '添加币种（联网搜索）';
+        addBtn.innerHTML = `
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+            </svg>
+            <span class="text-[13px] font-medium">添加</span>
+        `;
+        addBtn.addEventListener('click', () => this.showAddCoinModal());
+        container.appendChild(addBtn);
+
+        // 绑定移除按钮（限定在容器内）
+        container.querySelectorAll('.remove-coin').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                const coinId = btn.dataset.coin;
-                this.removeFromWatchlist(coinId);
+                this.removeFromWatchlist(btn.dataset.coin);
             });
         });
     },
 
     // 获取币种信息
     getCoinInfo(coinId) {
-        return this.popularCoins.find(c => c.id === coinId) || {
+        const popular = this.popularCoins.find(c => c.id === coinId);
+        if (popular) return popular;
+
+        const meta = this.state.coinMeta[coinId];
+        if (meta) return meta;
+
+        // 从联网目录中查找
+        const fromCatalog = this.state.coinCatalog.find(c => c.coinId === coinId);
+        if (fromCatalog) return fromCatalog;
+
+        return {
             id: coinId,
-            symbol: coinId.toUpperCase().slice(0, 4),
+            symbol: coinId.toUpperCase().slice(0, 6),
             name: coinId,
-            image: '?'
+            binanceSymbol: coinId.toUpperCase() + 'USDT'
         };
     },
 
@@ -1991,93 +2192,208 @@ const CryptoPulseApp = {
     },
 
     // 显示添加币种模态框
-    showAddCoinModal() {
+    async showAddCoinModal() {
         const modal = document.getElementById('addCoinModal');
+        if (!modal) return;
         modal.classList.remove('hidden');
-        modal.classList.add('flex', 'modal-enter');
-        
-        // 初始显示热门币种
+        modal.classList.add('flex');
+
+        const input = document.getElementById('searchCoinInput');
+        if (input) {
+            input.value = '';
+            setTimeout(() => input.focus(), 60);
+        }
+
+        // 先用已有目录（可能是缓存）立即渲染
         this.searchCoins('');
+
+        // 联网拉取全量币种目录
+        await this.loadCoinCatalog();
+        this.searchCoins(document.getElementById('searchCoinInput')?.value || '');
     },
 
     // 隐藏添加币种模态框
     hideAddCoinModal() {
         const modal = document.getElementById('addCoinModal');
+        if (!modal) return;
         modal.classList.add('hidden');
         modal.classList.remove('flex');
-        
-        document.getElementById('searchCoinInput').value = '';
+
+        const input = document.getElementById('searchCoinInput');
+        if (input) input.value = '';
     },
 
-    // 搜索币种
+    /**
+     * 搜索币种（基于联网目录，非固定列表）
+     * @param {string} query - 搜索关键词
+     */
     searchCoins(query) {
         const container = document.getElementById('coinSearchResults');
-        query = query.toLowerCase();
-        
-        const filtered = this.popularCoins.filter(coin => 
-            coin.name.toLowerCase().includes(query) ||
-            coin.symbol.toLowerCase().includes(query) ||
-            coin.id.toLowerCase().includes(query)
-        ).slice(0, 10);
-        
+        if (!container) return;
+
+        const q = (query || '').trim().toLowerCase();
+
+        // 数据源：联网目录优先，未加载时用内置列表兜底
+        const pool = this.state.coinCatalog.length
+            ? this.state.coinCatalog
+            : this.popularCoins.map(c => ({
+                coinId: c.id, symbol: c.symbol, name: c.name, binanceSymbol: c.binanceSymbol
+            }));
+
+        let filtered = [];
+
+        if (!q) {
+            // 无关键词：热门币种优先，其余按目录顺序补齐
+            const hotIds = this.popularCoins.map(c => c.id);
+            const hot = pool.filter(c => hotIds.includes(c.coinId));
+            const rest = pool.filter(c => !hotIds.includes(c.coinId));
+            filtered = hot.concat(rest).slice(0, 24);
+        } else {
+            // 关键词搜索：按匹配质量排序
+            filtered = pool
+                .map(c => {
+                    const sym = (c.symbol || '').toLowerCase();
+                    const nm = (c.name || '').toLowerCase();
+                    const cid = (c.coinId || '').toLowerCase();
+                    let score = -1;
+                    if (sym === q) score = 0;
+                    else if (sym.startsWith(q)) score = 1;
+                    else if (nm.startsWith(q)) score = 2;
+                    else if (cid.startsWith(q)) score = 3;
+                    else if (sym.includes(q)) score = 4;
+                    else if (nm.includes(q)) score = 5;
+                    else if (cid.includes(q)) score = 6;
+                    return { c, score };
+                })
+                .filter(x => x.score >= 0)
+                .sort((a, b) => a.score - b.score)
+                .map(x => x.c)
+                .slice(0, 30);
+        }
+
         if (filtered.length === 0) {
-            container.innerHTML = '<p class="text-gray-400 text-sm text-center py-4">未找到相关币种</p>';
+            container.innerHTML = `
+                <div class="text-center py-8">
+                    <p class="text-gray-400 text-sm">未找到「${query}」相关币种</p>
+                    <p class="text-xs text-gray-600 mt-1">试试输入币种符号，如 BTC、PEPE、ARB</p>
+                </div>`;
             return;
         }
-        
+
         container.innerHTML = filtered.map(coin => {
-            const isInWatchlist = this.state.watchlist.includes(coin.id);
+            const isInWatchlist = this.state.watchlist.includes(coin.coinId);
+            const quote = this.state.watchlistQuotes[coin.coinId];
+            const hasQuote = !!quote;
+            const up = hasQuote ? quote.changePercent >= 0 : true;
+
             return `
-                <div class="flex items-center justify-between p-2 rounded-lg hover:bg-crypto-dark cursor-pointer transition-colors" 
-                     onclick="CryptoPulseApp.addToWatchlist('${coin.id}')">
-                    <div class="flex items-center gap-3">
-                        <div class="w-8 h-8 rounded-full bg-gradient-to-br from-crypto-purple to-crypto-blue flex items-center justify-center text-sm font-bold text-white">
+                <div class="coin-search-item flex items-center justify-between p-2.5 rounded-xl transition-colors ${
+                    isInWatchlist ? 'opacity-50 cursor-default' : 'hover:bg-crypto-dark cursor-pointer'
+                }" data-coin-id="${coin.coinId}">
+                    <div class="flex items-center gap-3 min-w-0">
+                        <div class="w-9 h-9 rounded-full bg-gradient-to-br from-crypto-purple to-crypto-blue flex items-center justify-center text-sm font-bold text-white flex-shrink-0">
                             ${coin.symbol.charAt(0)}
                         </div>
-                        <div>
-                            <p class="text-sm font-medium">${coin.name}</p>
-                            <p class="text-xs text-gray-400">${coin.symbol}</p>
+                        <div class="min-w-0">
+                            <div class="flex items-center gap-2">
+                                <p class="text-sm font-semibold truncate">${coin.symbol}</p>
+                                <span class="text-[10px] text-gray-500 px-1.5 py-0.5 rounded bg-crypto-dark">USDT</span>
+                            </div>
+                            <p class="text-xs text-gray-400 truncate">${coin.name}</p>
                         </div>
                     </div>
-                    ${isInWatchlist ? 
-                        '<span class="text-xs text-crypto-green">已添加</span>' : 
-                        '<span class="text-xs text-crypto-blue">+ 添加</span>'
-                    }
+                    <div class="flex items-center gap-3 flex-shrink-0">
+                        ${hasQuote ? `
+                        <div class="text-right">
+                            <p class="text-xs font-medium tabular-nums">${this.formatWatchPrice(quote.price)}</p>
+                            <p class="text-[11px] tabular-nums ${up ? 'text-crypto-green' : 'text-crypto-red'}">${up ? '+' : ''}${quote.changePercent.toFixed(2)}%</p>
+                        </div>` : ''}
+                        ${isInWatchlist
+                            ? '<span class="text-xs text-crypto-green flex-shrink-0">已添加</span>'
+                            : '<span class="text-xs text-crypto-blue flex-shrink-0">+ 添加</span>'}
+                    </div>
                 </div>
             `;
         }).join('');
+
+        // 绑定点击事件（避免内联 onclick 的转义问题）
+        container.querySelectorAll('.coin-search-item').forEach(el => {
+            el.addEventListener('click', () => {
+                this.addToWatchlist(el.dataset.coinId);
+            });
+        });
+    },
+
+    // 保存联网添加的币种元数据
+    saveCoinMeta() {
+        try {
+            localStorage.setItem('cryptoPulse_coinMeta', JSON.stringify(this.state.coinMeta));
+        } catch (e) { /* 忽略存储失败 */ }
+    },
+
+    // 读取联网添加的币种元数据
+    loadCoinMeta() {
+        try {
+            const saved = JSON.parse(localStorage.getItem('cryptoPulse_coinMeta') || '{}');
+            this.state.coinMeta = saved || {};
+        } catch (e) {
+            this.state.coinMeta = {};
+        }
     },
 
     // 添加到自选
     addToWatchlist(coinId) {
         if (this.state.watchlist.includes(coinId)) return;
-        if (this.state.watchlist.length >= 10) {
-            alert('自选最多添加10个币种');
+        if (this.state.watchlist.length >= 15) {
+            alert('自选最多添加 15 个币种');
             return;
         }
-        
+
+        // 若是联网币种，记录元数据以便刷新后仍能识别
+        const fromPopular = this.popularCoins.find(c => c.id === coinId);
+        const fromCatalog = this.state.coinCatalog.find(c => c.coinId === coinId);
+        if (!fromPopular && fromCatalog) {
+            this.state.coinMeta[coinId] = {
+                id: coinId,
+                coinId: coinId,
+                symbol: fromCatalog.symbol,
+                name: fromCatalog.name,
+                binanceSymbol: fromCatalog.binanceSymbol
+            };
+            this.saveCoinMeta();
+        }
+
         this.state.watchlist.push(coinId);
         this.saveWatchlist();
         this.renderCoinTabs();
-        this.searchCoins(document.getElementById('searchCoinInput').value);
+        this.loadWatchlistQuotes();
+        this.searchCoins(document.getElementById('searchCoinInput')?.value || '');
     },
 
     // 从自选移除
     removeFromWatchlist(coinId) {
         if (this.state.watchlist.length <= 1) return;
-        
+
         const index = this.state.watchlist.indexOf(coinId);
         if (index > -1) {
             this.state.watchlist.splice(index, 1);
-            
+
+            // 同步清理行情缓存与币种元数据
+            delete this.state.watchlistQuotes[coinId];
+            if (!this.popularCoins.find(c => c.id === coinId)) {
+                delete this.state.coinMeta[coinId];
+                this.saveCoinMeta();
+            }
+
             // 如果删除的是当前选中的，切换到第一个
             if (coinId === this.state.currentCoin) {
                 this.state.currentCoin = this.state.watchlist[0];
                 this.loadCoinData(this.state.currentCoin);
             }
-            
+
             this.saveWatchlist();
             this.renderCoinTabs();
+            this.searchCoins(document.getElementById('searchCoinInput')?.value || '');
         }
     },
 
@@ -2103,12 +2419,13 @@ const CryptoPulseApp = {
 
     // 自动刷新
     startAutoRefresh() {
-        // 每30秒刷新一次价格和信号
+        // 每30秒刷新一次价格、K线和自选行情
         setInterval(() => {
             this.loadPriceData(this.state.currentCoin);
             this.loadCandleData(this.state.currentCoin);
+            this.loadWatchlistQuotes();
         }, 30000);
-        
+
         // 每5分钟刷新一次新闻
         setInterval(() => {
             this.loadNews(this.state.currentCoin);

@@ -623,10 +623,46 @@
         </div>
     </div>
 
-    <script src="js/technical.js?v=7"></script>
-    <script src="js/news.js?v=7"></script>
-    <script src="js/signals.js?v=7"></script>
-    <script src="js/chart.js?v=7"></script>
-    <script src="js/app.js?v=7"></script>
+    <!-- 添加币种弹窗（联网搜索） -->
+    <div id="addCoinModal" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-crypto-card rounded-2xl border border-crypto-border max-w-md w-full overflow-hidden flex flex-col max-h-[85vh]">
+            <div class="px-5 py-4 border-b border-crypto-border flex items-center justify-between gap-3">
+                <div>
+                    <h3 class="text-base font-bold">添加币种</h3>
+                    <p id="catalogStatus" class="text-xs text-gray-500 mt-0.5">正在联网获取币种列表…</p>
+                </div>
+                <button id="closeModalBtn" class="flex-shrink-0 p-1.5 rounded-lg hover:bg-crypto-dark transition-colors text-gray-400 hover:text-white">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+
+            <div class="px-5 pt-4 pb-3">
+                <div class="relative">
+                    <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                    </svg>
+                    <input id="searchCoinInput" type="text" placeholder="搜索币种符号或名称，如 BTC、PEPE"
+                        class="w-full pl-9 pr-3 py-2.5 rounded-xl bg-crypto-dark border border-crypto-border text-sm placeholder-gray-500 focus:outline-none focus:border-crypto-purple/60 transition-colors">
+                </div>
+            </div>
+
+            <div id="coinSearchResults" class="flex-1 overflow-y-auto px-3 pb-4 space-y-0.5">
+                <!-- 搜索结果由JS动态生成 -->
+            </div>
+
+            <div class="px-5 py-3 border-t border-crypto-border flex items-center justify-between">
+                <span class="text-xs text-gray-500">最多添加 15 个自选币种</span>
+                <span class="text-xs text-gray-600">数据来源：币安公开接口</span>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/technical.js?v=8"></script>
+    <script src="js/news.js?v=8"></script>
+    <script src="js/signals.js?v=8"></script>
+    <script src="js/chart.js?v=8"></script>
+    <script src="js/app.js?v=8"></script>
 </body>
 </html>
