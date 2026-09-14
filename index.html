@@ -505,6 +505,62 @@
         </div>
     </div>
 
+    <!-- 资讯详情弹窗 -->
+    <div id="newsDetailModal" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-crypto-card rounded-2xl border border-crypto-border max-w-2xl w-full max-h-[85vh] overflow-hidden flex flex-col">
+            <div class="px-4 sm:px-6 py-4 border-b border-crypto-border flex items-start justify-between gap-4">
+                <div class="flex-1">
+                    <div id="newsDetailCategory" class="text-xs text-crypto-purple mb-1.5">--</div>
+                    <h3 id="newsDetailTitle" class="text-lg sm:text-xl font-bold leading-snug">--</h3>
+                    <div class="flex items-center gap-3 mt-2 text-xs text-gray-500">
+                        <span id="newsDetailSource">--</span>
+                        <span>·</span>
+                        <span id="newsDetailTime">--</span>
+                    </div>
+                </div>
+                <button id="closeNewsDetailBtn" class="flex-shrink-0 p-1.5 rounded-lg hover:bg-crypto-dark transition-colors text-gray-400 hover:text-white">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+            <div class="flex-1 overflow-y-auto px-4 sm:px-6 py-4">
+                <!-- 情感分析 -->
+                <div id="newsDetailSentiment" class="mb-4 p-3 rounded-xl bg-crypto-dark/50 border border-crypto-border/50">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-xs text-gray-400">情感分析</span>
+                        <span id="newsDetailSentimentLabel" class="text-xs px-2 py-0.5 rounded-full bg-crypto-gold/10 text-crypto-gold font-medium">中性</span>
+                    </div>
+                    <div class="w-full h-2 bg-crypto-dark rounded-full overflow-hidden">
+                        <div id="newsDetailSentimentBar" class="h-full bg-crypto-gold rounded-full transition-all" style="width: 50%"></div>
+                    </div>
+                    <p id="newsDetailSentimentText" class="text-xs text-gray-500 mt-2">--</p>
+                </div>
+                <!-- 摘要 -->
+                <div class="mb-4">
+                    <p class="text-xs text-gray-400 mb-2">摘要</p>
+                    <p id="newsDetailSummary" class="text-sm text-gray-300 leading-relaxed">--</p>
+                </div>
+                <!-- 关键词 -->
+                <div id="newsDetailKeywords" class="mb-4">
+                    <p class="text-xs text-gray-400 mb-2">关键词</p>
+                    <div class="flex flex-wrap gap-1.5">
+                        <!-- 关键词标签动态生成 -->
+                    </div>
+                </div>
+            </div>
+            <div class="px-4 sm:px-6 py-3 border-t border-crypto-border flex items-center justify-between">
+                <span class="text-xs text-gray-500">数据仅供参考</span>
+                <a id="newsDetailLink" href="#" target="_blank" class="text-sm text-crypto-blue hover:text-crypto-blue/80 flex items-center gap-1">
+                    查看原文
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
+                    </svg>
+                </a>
+            </div>
+        </div>
+    </div>
+
     <script src="js/technical.js?v=4"></script>
     <script src="js/news.js?v=4"></script>
     <script src="js/signals.js?v=4"></script>

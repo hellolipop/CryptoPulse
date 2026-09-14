@@ -154,6 +154,23 @@ const CryptoPulseApp = {
                 this.searchCoins(e.target.value);
             });
         }
+
+        // 资讯详情弹窗
+        const closeNewsDetailBtn = document.getElementById('closeNewsDetailBtn');
+        if (closeNewsDetailBtn) {
+            closeNewsDetailBtn.addEventListener('click', () => {
+                this.hideNewsDetail();
+            });
+        }
+
+        const newsDetailModal = document.getElementById('newsDetailModal');
+        if (newsDetailModal) {
+            newsDetailModal.addEventListener('click', (e) => {
+                if (e.target.id === 'newsDetailModal') {
+                    this.hideNewsDetail();
+                }
+            });
+        }
     },
 
     // 初始化图表
@@ -1409,10 +1426,10 @@ const CryptoPulseApp = {
             badge.className = 'text-xs px-2 py-0.5 rounded-full bg-gray-600/50 text-gray-300';
         }
         
-        container.innerHTML = newsList.slice(0, 6).map(news => {
+        container.innerHTML = newsList.slice(0, 6).map((news, index) => {
             const sentimentStyle = NewsAnalyzer.getSentimentStyle(news.sentimentLabel);
             return `
-                <a href="${news.url}" target="_blank" class="news-card bg-crypto-card rounded-xl border border-crypto-border p-4 block hover:border-crypto-purple/50 transition-all">
+                <div class="news-card bg-crypto-card rounded-xl border border-crypto-border p-4 cursor-pointer hover:border-crypto-purple/50 transition-all" data-news-index="${index}">
                     <div class="flex items-start justify-between gap-2 mb-2">
                         <span class="text-xs text-gray-400">${news.source}</span>
                         <span class="tip-tag ${sentimentStyle.className}">${sentimentStyle.text}</span>
@@ -1420,9 +1437,96 @@ const CryptoPulseApp = {
                     <h4 class="text-sm font-medium mb-2 line-clamp-2 text-gray-100">${news.title}</h4>
                     <p class="text-xs text-gray-400 line-clamp-2 mb-2">${news.description || ''}</p>
                     <p class="text-xs text-gray-500">${NewsAnalyzer.formatTime(news.publishedAt)}</p>
-                </a>
+                </div>
             `;
         }).join('');
+
+        // 绑定点击事件
+        container.querySelectorAll('.news-card').forEach(card => {
+            card.addEventListener('click', () => {
+                const index = parseInt(card.dataset.newsIndex);
+                this.showNewsDetail(newsList[index]);
+            });
+        });
+    },
+
+    // 显示资讯详情
+    showNewsDetail(news) {
+        if (!news) return;
+
+        const modal = document.getElementById('newsDetailModal');
+        if (!modal) return;
+
+        // 标题
+        document.getElementById('newsDetailTitle').textContent = news.title;
+        document.getElementById('newsDetailCategory').textContent = news.source || '资讯';
+        document.getElementById('newsDetailSource').textContent = news.source || '未知来源';
+        document.getElementById('newsDetailTime').textContent = NewsAnalyzer.formatTime(news.publishedAt);
+
+        // 摘要
+        document.getElementById('newsDetailSummary').textContent = news.description || news.title || '暂无摘要';
+
+        // 原文链接
+        const linkEl = document.getElementById('newsDetailLink');
+        if (news.url) {
+            linkEl.href = news.url;
+            linkEl.style.display = 'flex';
+        } else {
+            linkEl.style.display = 'none';
+        }
+
+        // 情感分析
+        const sentimentLabel = news.sentimentLabel || 'neutral';
+        const sentimentScore = news.sentimentScore !== undefined ? news.sentimentScore : 50;
+        const sentimentStyle = NewsAnalyzer.getSentimentStyle(sentimentLabel);
+
+        const sentLabelEl = document.getElementById('newsDetailSentimentLabel');
+        sentLabelEl.textContent = sentimentStyle.text;
+        sentLabelEl.className = `text-xs px-2 py-0.5 rounded-full font-medium ${sentimentStyle.className}`;
+
+        const sentBarEl = document.getElementById('newsDetailSentimentBar');
+        sentBarEl.style.width = sentimentScore + '%';
+        if (sentimentLabel === 'positive') {
+            sentBarEl.className = 'h-full bg-crypto-green rounded-full transition-all';
+        } else if (sentimentLabel === 'negative') {
+            sentBarEl.className = 'h-full bg-crypto-red rounded-full transition-all';
+        } else {
+            sentBarEl.className = 'h-full bg-crypto-gold rounded-full transition-all';
+        }
+
+        const sentTextEl = document.getElementById('newsDetailSentimentText');
+        if (sentimentLabel === 'positive') {
+            sentTextEl.textContent = '该资讯偏向正面，可能对价格有积极影响';
+        } else if (sentimentLabel === 'negative') {
+            sentTextEl.textContent = '该资讯偏向负面，可能对价格产生压力';
+        } else {
+            sentTextEl.textContent = '该资讯情绪中性，对价格影响有限';
+        }
+
+        // 关键词
+        const keywordsContainer = document.querySelector('#newsDetailKeywords .flex');
+        if (keywordsContainer && news.keywords && news.keywords.length > 0) {
+            keywordsContainer.innerHTML = news.keywords.map(kw =>
+                `<span class="text-xs px-2 py-0.5 rounded-full bg-crypto-purple/10 text-crypto-purple">${kw}</span>`
+            ).join('');
+        } else if (keywordsContainer) {
+            keywordsContainer.innerHTML = '<span class="text-xs text-gray-500">无</span>';
+        }
+
+        // 显示弹窗
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+        document.body.style.overflow = 'hidden';
+    },
+
+    // 隐藏资讯详情
+    hideNewsDetail() {
+        const modal = document.getElementById('newsDetailModal');
+        if (modal) {
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+            document.body.style.overflow = '';
+        }
     },
 
     // 更新信号
@@ -1625,11 +1729,38 @@ const CryptoPulseApp = {
         // 仓位建议
         const posAdviceEl = document.getElementById('positionAdvice');
         if (posAdviceEl && signal.positionAdvice) {
-            posAdviceEl.textContent = signal.positionAdvice;
-            let posColor = 'text-gray-300';
-            if (signal.type.includes('buy')) posColor = 'text-crypto-green';
-            if (signal.type.includes('sell')) posColor = 'text-crypto-red';
-            posAdviceEl.className = `text-sm font-medium ${posColor}`;
+            const advice = signal.positionAdvice;
+            let html = '';
+
+            // 买入区域
+            if (advice.buyZones && advice.buyZones.length > 0) {
+                html += '<div class="mb-2">';
+                html += '<p class="text-xs text-crypto-green/70 mb-1">买入区域</p>';
+                advice.buyZones.forEach(zone => {
+                    const strongClass = zone.strength === 'strong' ? 'font-semibold' : '';
+                    html += `<div class="flex items-center justify-between py-0.5 ${strongClass}">
+                        <span class="text-xs text-crypto-green">${zone.label}</span>
+                        <span class="text-xs font-mono text-crypto-green">$${TechnicalAnalysis.formatPrice(zone.level)}</span>
+                    </div>`;
+                });
+                html += '</div>';
+            }
+
+            // 卖出区域
+            if (advice.sellZones && advice.sellZones.length > 0) {
+                html += '<div>';
+                html += '<p class="text-xs text-crypto-red/70 mb-1">卖出区域</p>';
+                advice.sellZones.forEach(zone => {
+                    const strongClass = zone.strength === 'strong' ? 'font-semibold' : '';
+                    html += `<div class="flex items-center justify-between py-0.5 ${strongClass}">
+                        <span class="text-xs text-crypto-red">${zone.label}</span>
+                        <span class="text-xs font-mono text-crypto-red">$${TechnicalAnalysis.formatPrice(zone.level)}</span>
+                    </div>`;
+                });
+                html += '</div>';
+            }
+
+            posAdviceEl.innerHTML = html || '<span class="text-gray-500 text-xs">暂无建议</span>';
         }
     },
 
