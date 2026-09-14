@@ -90,6 +90,22 @@ const CryptoPulseApp = {
             ChartManager.toggleVolume(e.target.checked);
         });
 
+        // 技术指标标签切换
+        document.querySelectorAll('.indicator-tab').forEach(tab => {
+            tab.addEventListener('click', (e) => {
+                document.querySelectorAll('.indicator-tab').forEach(t => {
+                    t.classList.remove('text-crypto-gold', 'border-b-2', 'border-crypto-gold');
+                    t.classList.add('text-gray-400');
+                });
+                e.target.classList.add('text-crypto-gold', 'border-b-2', 'border-crypto-gold');
+                e.target.classList.remove('text-gray-400');
+
+                const tabName = e.target.dataset.tab;
+                document.querySelectorAll('.indicator-panel').forEach(p => p.classList.add('hidden'));
+                document.getElementById('tab-' + tabName).classList.remove('hidden');
+            });
+        });
+
         // 添加币种按钮
         document.getElementById('addCoinBtn').addEventListener('click', () => {
             this.showAddCoinModal();
@@ -210,19 +226,24 @@ const CryptoPulseApp = {
     // 加载币种数据
     async loadCoinData(coinId, forceRefresh = false) {
         if (this.state.isLoading && !forceRefresh) return;
-        
+
         this.state.isLoading = true;
         this.showLoading(true);
-        
+
         try {
             await Promise.all([
                 this.loadPriceData(coinId),
                 this.loadCandleData(coinId),
-                this.loadNews(coinId)
+                this.loadNews(coinId),
+                this.loadFearGreedIndex(),
+                this.loadDerivativesData(coinId)
             ]);
-            
+
             this.state.lastUpdate = new Date();
             this.updateLastUpdateTime();
+
+            // 所有数据加载完成后，重新计算综合信号
+            this.updateSignal();
         } catch (error) {
             console.error('加载数据失败:', error);
         } finally {
@@ -308,10 +329,10 @@ const CryptoPulseApp = {
 
     // 获取币安K线间隔参数
     getBinanceInterval(hours) {
-        if (hours <= 1) return { interval: '1m', limit: 100 };
-        if (hours <= 24) return { interval: '15m', limit: 96 }; // 24小时 = 96根15分钟K线
-        if (hours <= 168) return { interval: '1h', limit: 168 }; // 1周 = 168根1小时K线
-        return { interval: '4h', limit: 180 }; // 30天 = 180根4小时K线
+        if (hours <= 1) return { interval: '1m', limit: 200 };
+        if (hours <= 24) return { interval: '15m', limit: 200 }; // 200根15分钟K线 = 50小时
+        if (hours <= 168) return { interval: '1h', limit: 200 }; // 200根1小时K线 = 8.3天
+        return { interval: '4h', limit: 200 }; // 200根4小时K线 = 33.3天
     },
 
     // 加载K线数据（币安 API）
@@ -351,6 +372,120 @@ const CryptoPulseApp = {
             console.error('获取K线数据失败:', error);
             this.useMockCandleData(coinId);
         }
+    },
+
+    // 加载恐惧贪婪指数
+    async loadFearGreedIndex() {
+        try {
+            const response = await fetch('https://api.alternative.me/fng/?limit=1');
+            if (!response.ok) throw new Error('FNG API error');
+
+            const data = await response.json();
+            const fngData = data.data[0];
+
+            this.state.fearGreedIndex = {
+                value: parseInt(fngData.value),
+                classification: fngData.value_classification,
+                timestamp: fngData.timestamp
+            };
+
+            this.updateFearGreedUI();
+
+        } catch (error) {
+            console.warn('获取恐惧贪婪指数失败:', error);
+            // 使用模拟数据
+            this.useMockFearGreedIndex();
+        }
+    },
+
+    // 使用模拟恐惧贪婪指数
+    useMockFearGreedIndex() {
+        const value = 50 + Math.floor(Math.random() * 20 - 10);
+        let classification = '中性';
+        if (value < 25) classification = '极度恐惧';
+        else if (value < 46) classification = '恐惧';
+        else if (value < 55) classification = '中性';
+        else if (value < 75) classification = '贪婪';
+        else classification = '极度贪婪';
+
+        this.state.fearGreedIndex = {
+            value,
+            classification,
+            timestamp: Math.floor(Date.now() / 1000)
+        };
+
+        this.updateFearGreedUI();
+    },
+
+    // 加载衍生品数据（资金费率、OI）
+    async loadDerivativesData(coinId) {
+        const binanceSymbol = this.getBinanceSymbol(coinId);
+        if (!binanceSymbol) {
+            this.useMockDerivativesData(coinId);
+            return;
+        }
+
+        try {
+            // 尝试从币安期货API获取资金费率
+            const response = await fetch(
+                `https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${binanceSymbol}`,
+                { signal: AbortSignal.timeout(5000) }
+            );
+
+            if (!response.ok) throw new Error('Futures API error');
+
+            const data = await response.json();
+
+            this.state.derivatives = {
+                fundingRate: parseFloat(data.lastFundingRate) * 100, // 转为百分比
+                nextFundingTime: data.nextFundingTime,
+                openInterest: null // OI需要单独接口
+            };
+
+            // 尝试获取OI
+            try {
+                const oiResponse = await fetch(
+                    `https://fapi.binance.com/fapi/v1/openInterest?symbol=${binanceSymbol}`,
+                    { signal: AbortSignal.timeout(5000) }
+                );
+                if (oiResponse.ok) {
+                    const oiData = await oiResponse.json();
+                    this.state.derivatives.openInterest = parseFloat(oiData.openInterest);
+                }
+            } catch (e) {
+                console.warn('获取OI失败:', e);
+            }
+
+            this.updateDerivativesUI();
+
+        } catch (error) {
+            console.warn('获取衍生品数据失败:', error);
+            this.useMockDerivativesData(coinId);
+        }
+    },
+
+    // 使用模拟衍生品数据
+    useMockDerivativesData(coinId) {
+        const basePrices = {
+            'bitcoin': 78000, 'ethereum': 3500, 'binancecoin': 580,
+            'solana': 145, 'ripple': 0.52, 'cardano': 0.45,
+            'dogecoin': 0.12, 'polkadot': 7.2,
+        };
+        const basePrice = basePrices[coinId] || 100;
+
+        // 模拟资金费率（通常在 -0.05% 到 +0.1% 之间）
+        const fundingRate = (Math.random() - 0.3) * 0.1;
+
+        // 模拟OI（基于价格估算）
+        const openInterest = basePrice * 1000 * (0.8 + Math.random() * 0.4);
+
+        this.state.derivatives = {
+            fundingRate,
+            openInterest,
+            isMock: true
+        };
+
+        this.updateDerivativesUI();
     },
 
     // 使用模拟K线数据
@@ -414,18 +549,28 @@ const CryptoPulseApp = {
         const lows = this.state.candleData.map(d => d.low);
         const volumes = this.state.candleData.map(d => d.volume);
         const currentPrice = closes[closes.length - 1];
-        
+
         // 计算各指标
         const ma7 = TechnicalAnalysis.calculateSMA(closes, 7);
         const ma25 = TechnicalAnalysis.calculateSMA(closes, 25);
+        const ma200 = TechnicalAnalysis.calculateSMA(closes, 200);
         const rsi = TechnicalAnalysis.calculateRSI(closes, 14);
         const macd = TechnicalAnalysis.calculateMACD(closes);
         const bollinger = TechnicalAnalysis.calculateBollingerBands(closes, 20);
+        const vwap = TechnicalAnalysis.calculateVWAP(highs, lows, closes, volumes);
+        const obv = TechnicalAnalysis.calculateOBV(closes, volumes);
+        const stochRSI = TechnicalAnalysis.calculateStochasticRSI(closes);
+        const kdj = TechnicalAnalysis.calculateKDJ(highs, lows, closes);
         const supportResistance = TechnicalAnalysis.calculateSupportResistance(highs, lows, closes, currentPrice);
-        
+
+        // 计算 AHR999
+        const lastMA200 = ma200[ma200.length - 1];
+        const ahr999 = TechnicalAnalysis.calculateAHR999(currentPrice, lastMA200);
+
         this.state.indicators = {
             ma7,
             ma25,
+            ma200,
             rsi: rsi[rsi.length - 1],
             macd: {
                 value: macd.macd[macd.macd.length - 1],
@@ -434,10 +579,15 @@ const CryptoPulseApp = {
                 ...macd
             },
             bollingerBands: bollinger,
+            vwap,
+            obv,
+            stochRSI,
+            kdj,
+            ahr999,
             supportResistance,
             currentPrice
         };
-        
+
         this.updateIndicatorsUI();
     },
 
@@ -528,13 +678,14 @@ const CryptoPulseApp = {
     // 更新技术指标UI
     updateIndicatorsUI() {
         const ind = this.state.indicators;
-        
+        const currentPrice = ind.currentPrice;
+
         // RSI
         const rsiValue = ind.rsi;
         const rsiEl = document.getElementById('rsiValue');
         const rsiBar = document.getElementById('rsiBar');
-        
-        if (rsiValue !== null && rsiValue !== undefined) {
+
+        if (rsiValue !== null && rsiValue !== undefined && !isNaN(rsiValue)) {
             rsiEl.textContent = rsiValue.toFixed(1);
             rsiEl.style.color = SignalGenerator.getRSIColor(rsiValue);
             rsiBar.style.width = rsiValue + '%';
@@ -542,40 +693,145 @@ const CryptoPulseApp = {
         } else {
             rsiEl.textContent = '--';
         }
-        
+
         // MACD
         const macdValue = ind.macd?.value;
         const macdSignal = ind.macd?.signal;
         const macdEl = document.getElementById('macdValue');
         const macdSignalEl = document.getElementById('macdSignal');
-        
+
         if (typeof macdValue === 'number' && !isNaN(macdValue)) {
             macdEl.textContent = macdValue.toFixed(4);
             macdEl.className = `text-lg font-semibold ${macdValue > 0 ? 'text-crypto-green' : 'text-crypto-red'}`;
         } else {
             macdEl.textContent = '--';
         }
-        
+
         if (typeof macdSignal === 'number' && !isNaN(macdSignal)) {
             macdSignalEl.textContent = `信号: ${macdSignal.toFixed(4)}`;
         } else {
             macdSignalEl.textContent = '--';
         }
-        
+
+        // Stochastic RSI
+        const stochK = ind.stochRSI?.k;
+        const stochD = ind.stochRSI?.d;
+        const stochEl = document.getElementById('stochRSIValue');
+        const stochSignalEl = document.getElementById('stochRSISignal');
+        if (stochK && stochK[stochK.length - 1] !== null) {
+            const lastK = stochK[stochK.length - 1];
+            stochEl.textContent = lastK.toFixed(1);
+            stochEl.className = `text-lg font-semibold ${lastK > 80 ? 'text-crypto-red' : lastK < 20 ? 'text-crypto-green' : 'text-white'}`;
+        } else {
+            stochEl.textContent = '--';
+        }
+        if (stochD && stochD[stochD.length - 1] !== null) {
+            stochSignalEl.textContent = `D: ${stochD[stochD.length - 1].toFixed(1)}`;
+        } else {
+            stochSignalEl.textContent = '--';
+        }
+
+        // KDJ
+        const kdj = ind.kdj;
+        const kdjKEl = document.getElementById('kdjKValue');
+        const kdjDJEl = document.getElementById('kdjDJValue');
+        if (kdj && kdj.k && kdj.k[kdj.k.length - 1] !== null) {
+            const lastK = kdj.k[kdj.k.length - 1];
+            kdjKEl.textContent = lastK.toFixed(1);
+            kdjKEl.className = `text-lg font-semibold ${lastK > 80 ? 'text-crypto-red' : lastK < 20 ? 'text-crypto-green' : 'text-white'}`;
+
+            const lastD = kdj.d[kdj.d.length - 1];
+            const lastJ = kdj.j[kdj.j.length - 1];
+            kdjDJEl.textContent = `D: ${lastD?.toFixed(1) || '--'}  J: ${lastJ?.toFixed(1) || '--'}`;
+        } else {
+            kdjKEl.textContent = '--';
+            kdjDJEl.textContent = 'D: -- J: --';
+        }
+
+        // 布林带
+        const boll = ind.bollingerBands;
+        if (boll && boll.upper && boll.lower) {
+            const lastUpper = boll.upper[boll.upper.length - 1];
+            const lastLower = boll.lower[boll.lower.length - 1];
+            if (lastUpper) document.getElementById('bollUpper').textContent = '上: $' + TechnicalAnalysis.formatPrice(lastUpper);
+            if (lastLower) document.getElementById('bollLower').textContent = '下: $' + TechnicalAnalysis.formatPrice(lastLower);
+        }
+
+        // AHR999
+        const ahr = ind.ahr999;
+        const ahrEl = document.getElementById('ahr999Value');
+        const ahrZoneEl = document.getElementById('ahr999Zone');
+        if (ahr && ahr.value !== null && !isNaN(ahr.value)) {
+            ahrEl.textContent = ahr.value.toFixed(3);
+            ahrZoneEl.textContent = this.getAHR999ZoneText(ahr.zone);
+            ahrEl.className = `text-lg font-semibold ${ahr.zone === 'deep_value' ? 'text-crypto-green' : ahr.zone === 'accumulation' ? 'text-crypto-blue' : 'text-crypto-red'}`;
+        } else {
+            ahrEl.textContent = '--';
+            ahrZoneEl.textContent = '--';
+        }
+
         // MA7
         const ma7El = document.getElementById('ma7Value');
         const ma7 = ind.ma7;
         if (ma7 && ma7[ma7.length - 1]) {
             ma7El.textContent = '$' + TechnicalAnalysis.formatPrice(ma7[ma7.length - 1]);
         }
-        
+
         // MA25
         const ma25El = document.getElementById('ma25Value');
         const ma25 = ind.ma25;
         if (ma25 && ma25[ma25.length - 1]) {
             ma25El.textContent = '$' + TechnicalAnalysis.formatPrice(ma25[ma25.length - 1]);
         }
-        
+
+        // MA200
+        const ma200El = document.getElementById('ma200Value');
+        const ma200 = ind.ma200;
+        if (ma200 && ma200[ma200.length - 1]) {
+            const lastMA200 = ma200[ma200.length - 1];
+            ma200El.textContent = '$' + TechnicalAnalysis.formatPrice(lastMA200);
+            const ma200Status = currentPrice > lastMA200 ? 'text-crypto-green' : 'text-crypto-red';
+            ma200El.className = `text-lg font-semibold ${ma200Status}`;
+        } else {
+            ma200El.textContent = '--';
+        }
+
+        // 均线排列
+        this.updateMAAlignment(ind);
+
+        // VWAP
+        const vwapEl = document.getElementById('vwapValue');
+        const vwapPosEl = document.getElementById('vwapPosition');
+        const vwap = ind.vwap;
+        if (vwap && vwap[vwap.length - 1]) {
+            const lastVWAP = vwap[vwap.length - 1];
+            vwapEl.textContent = '$' + TechnicalAnalysis.formatPrice(lastVWAP);
+            const above = currentPrice > lastVWAP;
+            vwapPosEl.textContent = above ? '价格在VWAP上方' : '价格在VWAP下方';
+            vwapPosEl.className = `text-xs ${above ? 'text-crypto-green' : 'text-crypto-red'}`;
+        } else {
+            vwapEl.textContent = '--';
+            vwapPosEl.textContent = '--';
+        }
+
+        // OBV趋势
+        const obvTrendEl = document.getElementById('obvTrend');
+        const obv = ind.obv;
+        if (obv && obv.length >= 10) {
+            const recent = obv.slice(-10);
+            const rising = recent[recent.length - 1] > recent[0];
+            obvTrendEl.textContent = rising ? '上升 ↑' : '下降 ↓';
+            obvTrendEl.className = `text-lg font-semibold ${rising ? 'text-crypto-green' : 'text-crypto-red'}`;
+        } else {
+            obvTrendEl.textContent = '--';
+        }
+
+        // 成交量
+        const volEl = document.getElementById('volume24hInd');
+        if (this.state.coinInfo?.total_volume) {
+            volEl.textContent = '$' + TechnicalAnalysis.formatLargeNumber(this.state.coinInfo.total_volume);
+        }
+
         // 支撑压力位
         const sr = ind.supportResistance;
         if (sr) {
@@ -584,6 +840,130 @@ const CryptoPulseApp = {
             document.getElementById('currentPriceLevel').textContent = '$' + TechnicalAnalysis.formatPrice(ind.currentPrice);
             document.getElementById('support1').textContent = '$' + TechnicalAnalysis.formatPrice(sr.support1);
             document.getElementById('support2').textContent = '$' + TechnicalAnalysis.formatPrice(sr.support2);
+        }
+    },
+
+    // 获取 AHR999 区域文本
+    getAHR999ZoneText(zone) {
+        const zoneMap = {
+            'deep_value': '深度价值区',
+            'accumulation': '积累区间',
+            'overheated': '过热区',
+            'neutral': '中性'
+        };
+        return zoneMap[zone] || '--';
+    },
+
+    // 更新均线排列状态
+    updateMAAlignment(ind) {
+        const container = document.getElementById('maAlignment');
+        if (!container || !ind.ma7 || !ind.ma25) return;
+
+        const ma7 = ind.ma7[ind.ma7.length - 1];
+        const ma25 = ind.ma25[ind.ma25.length - 1];
+        const ma200 = ind.ma200?.[ind.ma200.length - 1];
+        const price = ind.currentPrice;
+
+        if (!ma7 || !ma25) return;
+
+        let alignment = '';
+        let colorClass = 'text-gray-400';
+
+        if (price > ma7 && ma7 > ma25) {
+            if (ma200 && ma25 > ma200) {
+                alignment = '多头排列（强势）';
+                colorClass = 'text-crypto-green';
+            } else {
+                alignment = '短期多头';
+                colorClass = 'text-crypto-green/70';
+            }
+        } else if (price < ma7 && ma7 < ma25) {
+            if (ma200 && ma25 < ma200) {
+                alignment = '空头排列（弱势）';
+                colorClass = 'text-crypto-red';
+            } else {
+                alignment = '短期空头';
+                colorClass = 'text-crypto-red/70';
+            }
+        } else {
+            alignment = '均线交织（震荡）';
+            colorClass = 'text-crypto-gold';
+        }
+
+        container.innerHTML = `<span class="px-2 py-1 bg-crypto-dark rounded ${colorClass}">${alignment}</span>`;
+    },
+
+    // 更新恐惧贪婪指数UI
+    updateFearGreedUI() {
+        const fng = this.state.fearGreedIndex;
+        if (!fng) return;
+
+        const valueEl = document.getElementById('fngValue');
+        const classEl = document.getElementById('fngClassification');
+        const circleEl = document.getElementById('fngCircle');
+
+        valueEl.textContent = fng.value;
+        classEl.textContent = this.translateFNGClassification(fng.classification);
+
+        // 更新圆环进度
+        const circumference = 2 * Math.PI * 35; // ~220
+        const offset = circumference - (fng.value / 100) * circumference;
+        circleEl.style.strokeDashoffset = offset;
+
+        // 颜色
+        let color = '#fbbf24'; // 黄色
+        if (fng.value < 25) color = '#ef4444'; // 红 - 极度恐惧
+        else if (fng.value < 46) color = '#f97316'; // 橙 - 恐惧
+        else if (fng.value < 55) color = '#fbbf24'; // 黄 - 中性
+        else if (fng.value < 75) color = '#84cc16'; // 浅绿 - 贪婪
+        else color = '#10b981'; // 绿 - 极度贪婪
+
+        circleEl.style.stroke = color;
+        classEl.style.color = color;
+    },
+
+    // 翻译 FNG 分类
+    translateFNGClassification(classification) {
+        const map = {
+            'Extreme Fear': '极度恐惧',
+            'Fear': '恐惧',
+            'Neutral': '中性',
+            'Greed': '贪婪',
+            'Extreme Greed': '极度贪婪'
+        };
+        return map[classification] || classification;
+    },
+
+    // 更新衍生品数据UI
+    updateDerivativesUI() {
+        const deriv = this.state.derivatives;
+        if (!deriv) return;
+
+        // 资金费率
+        const frEl = document.getElementById('fundingRate');
+        const frDescEl = document.getElementById('fundingRateDesc');
+        if (deriv.fundingRate !== null && deriv.fundingRate !== undefined) {
+            frEl.textContent = deriv.fundingRate.toFixed(4) + '%';
+            frEl.className = `text-lg font-semibold ${deriv.fundingRate > 0 ? 'text-crypto-green' : 'text-crypto-red'}`;
+
+            if (deriv.fundingRate > 0.1) {
+                frDescEl.textContent = '多头拥挤，警惕轧空';
+                frDescEl.className = 'text-xs text-crypto-red';
+            } else if (deriv.fundingRate < -0.05) {
+                frDescEl.textContent = '空头拥挤，关注轧空';
+                frDescEl.className = 'text-xs text-crypto-green';
+            } else {
+                frDescEl.textContent = '费率正常';
+                frDescEl.className = 'text-xs text-gray-500';
+            }
+        }
+
+        // OI
+        const oiEl = document.getElementById('openInterest');
+        const oiTrendEl = document.getElementById('oiTrend');
+        if (deriv.openInterest) {
+            oiEl.textContent = TechnicalAnalysis.formatLargeNumber(deriv.openInterest);
+            oiTrendEl.textContent = '未平仓合约';
         }
     },
 
@@ -641,28 +1021,106 @@ const CryptoPulseApp = {
 
     // 更新信号
     updateSignal() {
+        const ind = this.state.indicators;
+
+        // 技术面评分（包含所有技术指标）
         const techScoreResult = TechnicalAnalysis.calculateTechnicalScore({
-            rsi: this.state.indicators.rsi,
-            macd: this.state.indicators.macd,
-            ma7: this.state.indicators.ma7,
-            ma25: this.state.indicators.ma25,
-            currentPrice: this.state.indicators.currentPrice,
-            bollingerBands: this.state.indicators.bollingerBands
+            rsi: ind.rsi,
+            macd: ind.macd,
+            ma7: ind.ma7,
+            ma25: ind.ma25,
+            ma200: ind.ma200,
+            currentPrice: ind.currentPrice,
+            bollingerBands: ind.bollingerBands,
+            vwap: ind.vwap,
+            obv: ind.obv,
+            stochRSI: ind.stochRSI,
+            kdj: ind.kdj,
+            ahr999: ind.ahr999
         });
-        
+
+        // 消息面评分
         const newsScoreResult = NewsAnalyzer.calculateNewsScore(this.state.newsList);
-        
+
+        // 情绪面评分（恐惧贪婪指数）
+        const sentimentScore = this.calculateSentimentScore();
+
+        // 衍生品面评分
+        const derivativesScore = this.calculateDerivativesScore();
+
+        // 综合评分：技术面50% + 消息面15% + 情绪面20% + 衍生品面15%
+        const totalScore = Math.round(
+            techScoreResult.score * 0.5 +
+            newsScoreResult.score * 0.15 +
+            sentimentScore * 0.2 +
+            derivativesScore * 0.15
+        );
+
         const signal = SignalGenerator.generateSignal(
-            techScoreResult,
-            newsScoreResult,
+            { ...techScoreResult, score: techScoreResult.score },
+            { ...newsScoreResult, score: newsScoreResult.score },
             {
-                supportResistance: this.state.indicators.supportResistance,
-                currentPrice: this.state.indicators.currentPrice
+                supportResistance: ind.supportResistance,
+                currentPrice: ind.currentPrice,
+                sentimentScore,
+                derivativesScore,
+                totalScore,
+                breakdown: {
+                    technical: techScoreResult.score,
+                    news: newsScoreResult.score,
+                    sentiment: sentimentScore,
+                    derivatives: derivativesScore
+                }
             }
         );
-        
+
         this.state.signal = signal;
+        this.state.signal.totalScore = totalScore;
         this.renderSignal();
+    },
+
+    // 计算情绪面评分
+    calculateSentimentScore() {
+        const fng = this.state.fearGreedIndex;
+        if (!fng || fng.value === null || fng.value === undefined) return 50;
+
+        // 恐惧贪婪指数直接映射到 0-100 分
+        // 极度恐惧(0-25) = 高分(买入机会)，极度贪婪(75-100) = 低分(卖出信号)
+        const score = 100 - fng.value;
+
+        // 但要考虑极端情况：过度恐惧可能还会跌，过度贪婪可能还会涨
+        // 所以用更温和的映射
+        let adjustedScore = 50;
+        if (fng.value < 20) adjustedScore = 75; // 极度恐惧 - 偏多
+        else if (fng.value < 40) adjustedScore = 65; // 恐惧 - 偏多
+        else if (fng.value < 50) adjustedScore = 55; // 轻度恐惧 - 微多
+        else if (fng.value < 60) adjustedScore = 45; // 轻度贪婪 - 微空
+        else if (fng.value < 80) adjustedScore = 35; // 贪婪 - 偏空
+        else adjustedScore = 25; // 极度贪婪 - 偏空
+
+        return adjustedScore;
+    },
+
+    // 计算衍生品面评分
+    calculateDerivativesScore() {
+        const deriv = this.state.derivatives;
+        if (!deriv || deriv.fundingRate === null || deriv.fundingRate === undefined) return 50;
+
+        let score = 50;
+
+        // 资金费率分析
+        const fr = deriv.fundingRate;
+        if (fr > 0.1) {
+            score -= 20; // 费率过高，多头拥挤，风险大
+        } else if (fr > 0.05) {
+            score -= 10; // 费率偏高
+        } else if (fr < -0.05) {
+            score += 15; // 负费率，空头拥挤，可能反弹
+        } else if (fr < 0) {
+            score += 5; // 轻微负费率
+        }
+
+        return Math.max(0, Math.min(100, score));
     },
 
     // 渲染信号
@@ -698,13 +1156,22 @@ const CryptoPulseApp = {
         
         // 评分
         document.getElementById('techScore').textContent = signal.techScore;
-        document.getElementById('techScore').className = `text-lg font-semibold ${SignalGenerator.getScoreColor(signal.techScore)}`;
-        
+        document.getElementById('techScore').className = `text-base font-semibold ${SignalGenerator.getScoreColor(signal.techScore)}`;
+
         document.getElementById('newsScore').textContent = signal.newsScore;
-        document.getElementById('newsScore').className = `text-lg font-semibold ${SignalGenerator.getScoreColor(signal.newsScore)}`;
-        
-        document.getElementById('totalScore').textContent = signal.totalScore;
-        document.getElementById('totalScore').className = `text-lg font-semibold ${SignalGenerator.getScoreColor(signal.totalScore)}`;
+        document.getElementById('newsScore').className = `text-base font-semibold ${SignalGenerator.getScoreColor(signal.newsScore)}`;
+
+        const sentimentScore = signal.breakdown?.sentiment ?? 50;
+        document.getElementById('sentimentScore').textContent = sentimentScore;
+        document.getElementById('sentimentScore').className = `text-base font-semibold ${SignalGenerator.getScoreColor(sentimentScore)}`;
+
+        const derivScore = signal.breakdown?.derivatives ?? 50;
+        document.getElementById('derivScore').textContent = derivScore;
+        document.getElementById('derivScore').className = `text-base font-semibold ${SignalGenerator.getScoreColor(derivScore)}`;
+
+        const totalScore = signal.totalScore ?? 50;
+        document.getElementById('totalScore').textContent = totalScore;
+        document.getElementById('totalScore').className = `text-2xl font-bold ${SignalGenerator.getScoreColor(totalScore)}`;
         
         // 操作建议
         const actionTipsEl = document.getElementById('actionTips');

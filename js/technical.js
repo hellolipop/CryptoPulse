@@ -293,104 +293,418 @@ const TechnicalAnalysis = {
     },
 
     /**
-     * 计算技术面综合评分 (0-100)
+     * 计算能量潮 (OBV)
+     * @param {Array} closeData - 收盘价数组
+     * @param {Array} volumeData - 成交量数组
+     * @returns {Array} OBV 数组
+     */
+    calculateOBV(closeData, volumeData) {
+        const result = [];
+        let obv = 0;
+        
+        for (let i = 0; i < closeData.length; i++) {
+            if (i === 0) {
+                obv = volumeData[i];
+            } else {
+                if (closeData[i] > closeData[i - 1]) {
+                    obv += volumeData[i];
+                } else if (closeData[i] < closeData[i - 1]) {
+                    obv -= volumeData[i];
+                }
+                // 价格不变则OBV不变
+            }
+            result.push(obv);
+        }
+        
+        return result;
+    },
+
+    /**
+     * 计算随机RSI (Stochastic RSI)
+     * @param {Array} data - 价格数据数组
+     * @param {number} rsiPeriod - RSI周期，默认14
+     * @param {number} stochPeriod - 随机周期，默认14
+     * @param {number} kPeriod - %K平滑周期，默认3
+     * @param {number} dPeriod - %D平滑周期，默认3
+     * @returns {Object} { k, d }
+     */
+    calculateStochasticRSI(data, rsiPeriod = 14, stochPeriod = 14, kPeriod = 3, dPeriod = 3) {
+        const rsi = this.calculateRSI(data, rsiPeriod);
+        
+        // 计算 Stochastic RSI
+        const stochRSI = [];
+        for (let i = 0; i < rsi.length; i++) {
+            if (i < rsiPeriod + stochPeriod - 2) {
+                stochRSI.push(null);
+            } else {
+                const periodRSI = rsi.slice(i - stochPeriod + 1, i + 1).filter(v => v !== null);
+                if (periodRSI.length < 2) {
+                    stochRSI.push(null);
+                } else {
+                    const minRSI = Math.min(...periodRSI);
+                    const maxRSI = Math.max(...periodRSI);
+                    const currentRSI = rsi[i];
+                    if (maxRSI === minRSI) {
+                        stochRSI.push(50);
+                    } else {
+                        stochRSI.push(((currentRSI - minRSI) / (maxRSI - minRSI)) * 100);
+                    }
+                }
+            }
+        }
+        
+        // 计算 %K (StochRSI的SMA)
+        const k = this.calculateSMA(stochRSI.map(v => v === null ? NaN : v), kPeriod)
+            .map(v => isNaN(v) ? null : v);
+        
+        // 计算 %D (%K的SMA)
+        const d = this.calculateSMA(k.map(v => v === null ? NaN : v), dPeriod)
+            .map(v => isNaN(v) ? null : v);
+        
+        return { k, d, stochRSI };
+    },
+
+    /**
+     * 计算 KDJ 指标
+     * @param {Array} highData - 最高价数组
+     * @param {Array} lowData - 最低价数组
+     * @param {Array} closeData - 收盘价数组
+     * @param {number} n - RSV周期，默认9
+     * @param {number} m1 - K平滑周期，默认3
+     * @param {number} m2 - D平滑周期，默认3
+     * @returns {Object} { k, d, j }
+     */
+    calculateKDJ(highData, lowData, closeData, n = 9, m1 = 3, m2 = 3) {
+        // 计算 RSV (未成熟随机值)
+        const rsv = [];
+        for (let i = 0; i < closeData.length; i++) {
+            if (i < n - 1) {
+                rsv.push(null);
+            } else {
+                const periodHigh = Math.max(...highData.slice(i - n + 1, i + 1));
+                const periodLow = Math.min(...lowData.slice(i - n + 1, i + 1));
+                if (periodHigh === periodLow) {
+                    rsv.push(50);
+                } else {
+                    rsv.push(((closeData[i] - periodLow) / (periodHigh - periodLow)) * 100);
+                }
+            }
+        }
+        
+        // 计算 K 值 (RSV的EMA/SMA)
+        const k = [];
+        let prevK = 50;
+        for (let i = 0; i < rsv.length; i++) {
+            if (rsv[i] === null) {
+                k.push(null);
+            } else {
+                const currentK = (prevK * (m1 - 1) + rsv[i]) / m1;
+                k.push(currentK);
+                prevK = currentK;
+            }
+        }
+        
+        // 计算 D 值 (K的EMA/SMA)
+        const d = [];
+        let prevD = 50;
+        for (let i = 0; i < k.length; i++) {
+            if (k[i] === null) {
+                d.push(null);
+            } else {
+                const currentD = (prevD * (m2 - 1) + k[i]) / m2;
+                d.push(currentD);
+                prevD = currentD;
+            }
+        }
+        
+        // 计算 J 值
+        const j = [];
+        for (let i = 0; i < k.length; i++) {
+            if (k[i] === null || d[i] === null) {
+                j.push(null);
+            } else {
+                j.push(3 * k[i] - 2 * d[i]);
+            }
+        }
+        
+        return { k, d, j };
+    },
+
+    /**
+     * 计算 AHR999 囤币指标
+     * AHR999 = 当前价格 / 200日移动平均线
+     * @param {number} currentPrice - 当前价格
+     * @param {number} ma200 - 200日均线
+     * @returns {Object} { value, zone }
+     */
+    calculateAHR999(currentPrice, ma200) {
+        if (!ma200 || ma200 === 0) return { value: null, zone: 'unknown' };
+        
+        const value = currentPrice / ma200;
+        let zone = 'neutral';
+        let description = '';
+        
+        if (value < 0.45) {
+            zone = 'deep_value';
+            description = '深度价值区，历史罕见的买入机会';
+        } else if (value < 1.2) {
+            zone = 'accumulation';
+            description = '核心积累区间，适合定投';
+        } else {
+            zone = 'overheated';
+            description = '过热区，风险和回撤增加';
+        }
+        
+        return { value, zone, description };
+    },
+
+    /**
+     * 计算技术面综合评分 (0-100) - 多因子版本
      * @param {Object} indicators - 技术指标数据
-     * @returns {Object} { score, signals }
+     * @returns {Object} { score, signals, breakdown }
      */
     calculateTechnicalScore(indicators) {
         let score = 50; // 中性分
         const signals = [];
+        const breakdown = {};
         
-        const { rsi, macd, ma7, ma25, currentPrice, bollingerBands } = indicators;
+        const { rsi, macd, ma7, ma25, ma200, currentPrice, bollingerBands, vwap, obv, stochRSI, kdj, ahr999 } = indicators;
         
-        // RSI 分析
-        if (rsi !== null && rsi !== undefined) {
-            if (rsi < 30) {
-                score += 15;
-                signals.push({ type: 'buy', text: 'RSI超卖，可能反弹', indicator: 'RSI' });
+        // RSI 分析 (权重: 15分)
+        let rsiScore = 0;
+        if (rsi !== null && rsi !== undefined && !isNaN(rsi)) {
+            if (rsi < 20) {
+                rsiScore = 15;
+                signals.push({ type: 'buy', text: 'RSI极度超卖，强烈反弹预期', indicator: 'RSI', strength: 'strong' });
+            } else if (rsi < 30) {
+                rsiScore = 12;
+                signals.push({ type: 'buy', text: 'RSI超卖，可能反弹', indicator: 'RSI', strength: 'medium' });
             } else if (rsi < 40) {
-                score += 8;
-                signals.push({ type: 'buy', text: 'RSI偏低，关注企稳', indicator: 'RSI' });
+                rsiScore = 6;
+                signals.push({ type: 'buy', text: 'RSI偏低，关注企稳', indicator: 'RSI', strength: 'weak' });
+            } else if (rsi > 80) {
+                rsiScore = -15;
+                signals.push({ type: 'sell', text: 'RSI极度超买，强烈回调预期', indicator: 'RSI', strength: 'strong' });
             } else if (rsi > 70) {
-                score -= 15;
-                signals.push({ type: 'sell', text: 'RSI超买，注意回调', indicator: 'RSI' });
+                rsiScore = -12;
+                signals.push({ type: 'sell', text: 'RSI超买，注意回调', indicator: 'RSI', strength: 'medium' });
             } else if (rsi > 60) {
-                score -= 5;
-                signals.push({ type: 'sell', text: 'RSI偏高，谨慎追高', indicator: 'RSI' });
+                rsiScore = -4;
+                signals.push({ type: 'sell', text: 'RSI偏高，谨慎追高', indicator: 'RSI', strength: 'weak' });
             } else {
-                signals.push({ type: 'neutral', text: 'RSI处于中性区间', indicator: 'RSI' });
+                signals.push({ type: 'neutral', text: 'RSI处于中性区间', indicator: 'RSI', strength: 'none' });
             }
+            score += rsiScore;
         }
+        breakdown.rsi = rsiScore;
         
-        // MACD 分析
-        if (macd && macd.macd !== null && macd.signal !== null) {
+        // MACD 分析 (权重: 15分)
+        let macdScore = 0;
+        if (macd && macd.macd && macd.signal) {
             const lastMacd = macd.macd[macd.macd.length - 1];
             const lastSignal = macd.signal[macd.signal.length - 1];
             const prevMacd = macd.macd[macd.macd.length - 2];
             const prevSignal = macd.signal[macd.signal.length - 2];
             
-            if (lastMacd > lastSignal) {
-                score += 10;
-                signals.push({ type: 'buy', text: 'MACD金叉，多头趋势', indicator: 'MACD' });
-            } else {
-                score -= 10;
-                signals.push({ type: 'sell', text: 'MACD死叉，空头趋势', indicator: 'MACD' });
+            if (lastMacd !== null && lastSignal !== null) {
+                if (lastMacd > lastSignal) {
+                    macdScore += 10;
+                    signals.push({ type: 'buy', text: 'MACD金叉，多头趋势', indicator: 'MACD', strength: 'medium' });
+                } else {
+                    macdScore -= 10;
+                    signals.push({ type: 'sell', text: 'MACD死叉，空头趋势', indicator: 'MACD', strength: 'medium' });
+                }
+                
+                // 柱状图趋势
+                if (prevMacd !== null && prevSignal !== null) {
+                    const histNow = lastMacd - lastSignal;
+                    const histPrev = prevMacd - prevSignal;
+                    if (histNow > 0 && histPrev < 0) {
+                        macdScore += 5;
+                        signals.push({ type: 'buy', text: 'MACD柱转正，动能增强', indicator: 'MACD', strength: 'weak' });
+                    } else if (histNow < 0 && histPrev > 0) {
+                        macdScore -= 5;
+                        signals.push({ type: 'sell', text: 'MACD柱转负，动能减弱', indicator: 'MACD', strength: 'weak' });
+                    }
+                }
             }
-            
-            // 柱状图趋势
-            if (lastMacd - lastSignal > 0 && prevMacd - prevSignal < 0) {
-                score += 5;
-                signals.push({ type: 'buy', text: 'MACD柱转正，动能增强', indicator: 'MACD' });
-            } else if (lastMacd - lastSignal < 0 && prevMacd - prevSignal > 0) {
-                score -= 5;
-                signals.push({ type: 'sell', text: 'MACD柱转负，动能减弱', indicator: 'MACD' });
-            }
+            score += macdScore;
         }
+        breakdown.macd = macdScore;
         
-        // 均线分析
+        // 均线分析 (权重: 15分)
+        let maScore = 0;
         if (ma7 && ma25 && currentPrice) {
             const lastMA7 = ma7[ma7.length - 1];
             const lastMA25 = ma25[ma25.length - 1];
             
             if (lastMA7 && lastMA25) {
                 if (currentPrice > lastMA7 && lastMA7 > lastMA25) {
-                    score += 12;
-                    signals.push({ type: 'buy', text: '价格站上均线，多头排列', indicator: 'MA' });
+                    maScore += 12;
+                    signals.push({ type: 'buy', text: '价格站上均线，多头排列', indicator: 'MA', strength: 'strong' });
                 } else if (currentPrice < lastMA7 && lastMA7 < lastMA25) {
-                    score -= 12;
-                    signals.push({ type: 'sell', text: '价格跌破均线，空头排列', indicator: 'MA' });
+                    maScore -= 12;
+                    signals.push({ type: 'sell', text: '价格跌破均线，空头排列', indicator: 'MA', strength: 'strong' });
                 } else if (currentPrice > lastMA7 && lastMA7 < lastMA25) {
-                    score += 5;
-                    signals.push({ type: 'buy', text: '短期均线拐头，关注突破', indicator: 'MA' });
+                    maScore += 5;
+                    signals.push({ type: 'buy', text: '短期均线拐头，关注突破', indicator: 'MA', strength: 'weak' });
                 } else {
-                    score -= 3;
-                    signals.push({ type: 'neutral', text: '均线交织，方向不明', indicator: 'MA' });
+                    maScore -= 3;
+                    signals.push({ type: 'neutral', text: '均线交织，方向不明', indicator: 'MA', strength: 'none' });
                 }
             }
+            
+            // MA200 判断大趋势
+            if (ma200 && ma200[ma200.length - 1]) {
+                const lastMA200 = ma200[ma200.length - 1];
+                if (currentPrice > lastMA200) {
+                    maScore += 3;
+                    signals.push({ type: 'buy', text: '价格站在MA200上方，大趋势偏多', indicator: 'MA200', strength: 'weak' });
+                } else {
+                    maScore -= 3;
+                    signals.push({ type: 'sell', text: '价格在MA200下方，大趋势偏空', indicator: 'MA200', strength: 'weak' });
+                }
+            }
+            score += maScore;
         }
+        breakdown.ma = maScore;
         
-        // 布林带分析
+        // 布林带分析 (权重: 8分)
+        let bollScore = 0;
         if (bollingerBands && currentPrice) {
             const lastUpper = bollingerBands.upper[bollingerBands.upper.length - 1];
             const lastLower = bollingerBands.lower[bollingerBands.lower.length - 1];
             
             if (lastUpper && lastLower) {
                 if (currentPrice >= lastUpper) {
-                    score -= 8;
-                    signals.push({ type: 'sell', text: '触及布林上轨，注意压力', indicator: 'BOLL' });
+                    bollScore = -8;
+                    signals.push({ type: 'sell', text: '触及布林上轨，注意压力', indicator: 'BOLL', strength: 'medium' });
                 } else if (currentPrice <= lastLower) {
-                    score += 8;
-                    signals.push({ type: 'buy', text: '触及布林下轨，关注支撑', indicator: 'BOLL' });
+                    bollScore = 8;
+                    signals.push({ type: 'buy', text: '触及布林下轨，关注支撑', indicator: 'BOLL', strength: 'medium' });
                 }
             }
+            score += bollScore;
         }
+        breakdown.bollinger = bollScore;
+        
+        // VWAP 分析 (权重: 5分)
+        let vwapScore = 0;
+        if (vwap && vwap[vwap.length - 1] && currentPrice) {
+            const lastVWAP = vwap[vwap.length - 1];
+            if (currentPrice > lastVWAP) {
+                vwapScore = 5;
+                signals.push({ type: 'buy', text: '价格在VWAP上方，日内偏多', indicator: 'VWAP', strength: 'weak' });
+            } else {
+                vwapScore = -5;
+                signals.push({ type: 'sell', text: '价格在VWAP下方，日内偏空', indicator: 'VWAP', strength: 'weak' });
+            }
+            score += vwapScore;
+        }
+        breakdown.vwap = vwapScore;
+        
+        // Stochastic RSI 分析 (权重: 10分)
+        let stochScore = 0;
+        if (stochRSI && stochRSI.k && stochRSI.d) {
+            const lastK = stochRSI.k[stochRSI.k.length - 1];
+            const lastD = stochRSI.d[stochRSI.d.length - 1];
+            
+            if (lastK !== null && lastD !== null) {
+                if (lastK < 20 && lastD < 20) {
+                    stochScore = 10;
+                    signals.push({ type: 'buy', text: 'StochRSI超卖，反弹概率大', indicator: 'StochRSI', strength: 'strong' });
+                } else if (lastK > 80 && lastD > 80) {
+                    stochScore = -10;
+                    signals.push({ type: 'sell', text: 'StochRSI超买，回调风险高', indicator: 'StochRSI', strength: 'strong' });
+                } else if (lastK > lastD && lastK < 50) {
+                    stochScore = 5;
+                    signals.push({ type: 'buy', text: 'StochRSI金叉向上', indicator: 'StochRSI', strength: 'weak' });
+                } else if (lastK < lastD && lastK > 50) {
+                    stochScore = -5;
+                    signals.push({ type: 'sell', text: 'StochRSI死叉向下', indicator: 'StochRSI', strength: 'weak' });
+                }
+            }
+            score += stochScore;
+        }
+        breakdown.stochRSI = stochScore;
+        
+        // KDJ 分析 (权重: 10分)
+        let kdjScore = 0;
+        if (kdj && kdj.k && kdj.d && kdj.j) {
+            const lastK = kdj.k[kdj.k.length - 1];
+            const lastD = kdj.d[kdj.d.length - 1];
+            const lastJ = kdj.j[kdj.j.length - 1];
+            
+            if (lastK !== null && lastD !== null && lastJ !== null) {
+                if (lastK < 20 && lastD < 20) {
+                    kdjScore += 8;
+                    signals.push({ type: 'buy', text: 'KDJ超卖区，关注金叉', indicator: 'KDJ', strength: 'medium' });
+                } else if (lastK > 80 && lastD > 80) {
+                    kdjScore -= 8;
+                    signals.push({ type: 'sell', text: 'KDJ超买区，关注死叉', indicator: 'KDJ', strength: 'medium' });
+                }
+                
+                if (lastK > lastD) {
+                    kdjScore += 2;
+                } else {
+                    kdjScore -= 2;
+                }
+                
+                if (lastJ > 100) {
+                    kdjScore -= 3;
+                    signals.push({ type: 'sell', text: 'J值超100，短期见顶信号', indicator: 'KDJ', strength: 'weak' });
+                } else if (lastJ < 0) {
+                    kdjScore += 3;
+                    signals.push({ type: 'buy', text: 'J值低于0，短期见底信号', indicator: 'KDJ', strength: 'weak' });
+                }
+            }
+            score += kdjScore;
+        }
+        breakdown.kdj = kdjScore;
+        
+        // AHR999 分析 (权重: 7分)
+        let ahrScore = 0;
+        if (ahr999 && ahr999.value !== null) {
+            if (ahr999.zone === 'deep_value') {
+                ahrScore = 7;
+                signals.push({ type: 'buy', text: ahr999.description, indicator: 'AHR999', strength: 'strong' });
+            } else if (ahr999.zone === 'accumulation') {
+                ahrScore = 4;
+                signals.push({ type: 'buy', text: ahr999.description, indicator: 'AHR999', strength: 'medium' });
+            } else {
+                ahrScore = -5;
+                signals.push({ type: 'sell', text: ahr999.description, indicator: 'AHR999', strength: 'weak' });
+            }
+            score += ahrScore;
+        }
+        breakdown.ahr999 = ahrScore;
+        
+        // OBV 趋势分析 (权重: 5分)
+        let obvScore = 0;
+        if (obv && obv.length >= 10) {
+            const recentOBV = obv.slice(-10);
+            const firstOBV = recentOBV[0];
+            const lastOBV = recentOBV[recentOBV.length - 1];
+            const obvRising = lastOBV > firstOBV;
+            
+            if (obvRising && currentPrice > ma25?.[ma25.length - 1]) {
+                obvScore = 5;
+                signals.push({ type: 'buy', text: 'OBV上升，资金持续流入', indicator: 'OBV', strength: 'weak' });
+            } else if (!obvRising && currentPrice < ma25?.[ma25.length - 1]) {
+                obvScore = -5;
+                signals.push({ type: 'sell', text: 'OBV下降，资金持续流出', indicator: 'OBV', strength: 'weak' });
+            }
+            score += obvScore;
+        }
+        breakdown.obv = obvScore;
         
         // 限制分数范围
         score = Math.max(0, Math.min(100, score));
         
         return {
             score: Math.round(score),
-            signals: signals
+            signals: signals,
+            breakdown: breakdown
         };
     },
 

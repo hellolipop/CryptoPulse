@@ -14,9 +14,9 @@ const SignalGenerator = {
     generateSignal(techData, newsData, priceData) {
         const techScore = techData.score || 50;
         const newsScore = newsData.score || 50;
-        
-        // 综合评分（技术面权重60%，消息面权重40%）
-        const totalScore = Math.round(techScore * 0.6 + newsScore * 0.4);
+
+        // 如果 priceData 中提供了 totalScore，使用它（多因子综合评分）
+        const totalScore = priceData.totalScore !== undefined ? priceData.totalScore : Math.round(techScore * 0.6 + newsScore * 0.4);
         
         // 判断信号类型
         let signalType = 'hold';
@@ -60,6 +60,7 @@ const SignalGenerator = {
             techScore: techScore,
             newsScore: newsScore,
             totalScore: totalScore,
+            breakdown: priceData.breakdown || null,
             actionTips: actionTips,
             positionAdvice: positionAdvice,
             techSignals: techData.signals || [],
