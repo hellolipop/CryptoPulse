@@ -61,6 +61,30 @@ const ChartManager = {
                     timeVisible: true,
                     secondsVisible: false,
                 },
+                // 中国大陆时区时间格式化
+                localization: {
+                    timeFormatter: (businessDayOrTimestamp) => {
+                        const date = new Date((businessDayOrTimestamp) * 1000);
+                        // 使用中国大陆时区（UTC+8）
+                        const options = {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            hour12: false,
+                            timeZone: 'Asia/Shanghai'
+                        };
+                        return date.toLocaleTimeString('zh-CN', options);
+                    },
+                    dateFormatter: (businessDayOrTimestamp) => {
+                        const date = new Date((businessDayOrTimestamp) * 1000);
+                        const options = {
+                            year: 'numeric',
+                            month: '2-digit',
+                            day: '2-digit',
+                            timeZone: 'Asia/Shanghai'
+                        };
+                        return date.toLocaleDateString('zh-CN', options);
+                    },
+                },
                 handleScroll: true,
                 handleScale: true,
             });
