@@ -129,6 +129,52 @@ const SignalGenerator = {
             }
         }
         
+        // 基于量能因子的建议（量价配合是买卖信号的重要确认条件）
+        const vm = priceData.volumeMetrics;
+        if (vm) {
+            const ratioTxt = vm.ratio.toFixed(2);
+
+            if (vm.priceVolumeState === 'confirm') {
+                tips.push({
+                    type: 'buy',
+                    icon: '📊',
+                    text: `量价齐升（量比 ${ratioTxt}），上涨获量能确认，可顺势参与`,
+                    priority: 'high'
+                });
+            } else if (vm.priceVolumeState === 'diverge') {
+                tips.push({
+                    type: 'watch',
+                    icon: '📊',
+                    text: `缩量上涨（量比 ${ratioTxt}），量能未跟进，追高需谨慎`,
+                    priority: 'high'
+                });
+            } else if (vm.priceVolumeState === 'panic') {
+                tips.push({
+                    type: 'sell',
+                    icon: '📊',
+                    text: `放量下跌（量比 ${ratioTxt}），抛压沉重，建议降低仓位`,
+                    priority: 'high'
+                });
+            } else if (vm.priceVolumeState === 'exhausted') {
+                tips.push({
+                    type: 'watch',
+                    icon: '📊',
+                    text: `缩量回调（量比 ${ratioTxt}），抛压趋于衰竭，可等待企稳`,
+                    priority: 'medium'
+                });
+            }
+
+            // 放量突破的额外提示（放量下跌已由上面的 panic 覆盖）
+            if (vm.ratio >= 2 && vm.priceVolumeState !== 'panic') {
+                tips.push({
+                    type: 'watch',
+                    icon: '🔥',
+                    text: `成交量放大至均量的 ${ratioTxt} 倍，短期波动可能加大`,
+                    priority: 'medium'
+                });
+            }
+        }
+
         // 基于消息面的建议
         if (newsData.label === 'positive' && newsData.positiveCount > 0) {
             tips.push({
@@ -240,6 +286,28 @@ const SignalGenerator = {
             strength: 'strong'
         });
         
+        // 量能因子对仓位执行的修正提示
+        const vm = priceData.volumeMetrics;
+        if (vm) {
+            const ratioTxt = vm.ratio.toFixed(2);
+            if (vm.priceVolumeState === 'panic') {
+                advice.note = `当前放量下跌（量比 ${ratioTxt}），建议先降仓、待缩量企稳后再考虑承接`;
+                advice.bias = 'caution';
+            } else if (vm.priceVolumeState === 'diverge') {
+                advice.note = `当前缩量上涨（量比 ${ratioTxt}），上攻量能不足，建议减半仓位试探`;
+                advice.bias = 'caution';
+            } else if (vm.priceVolumeState === 'confirm') {
+                advice.note = `当前量价齐升（量比 ${ratioTxt}），量能已确认上涨，可按计划执行`;
+                advice.bias = 'support';
+            } else if (vm.priceVolumeState === 'exhausted') {
+                advice.note = `当前缩量回调（量比 ${ratioTxt}），抛压趋弱，可分批低吸`;
+                advice.bias = 'support';
+            } else {
+                advice.note = `量比 ${ratioTxt}，量能平稳，按关键价位正常执行即可`;
+                advice.bias = 'neutral';
+            }
+        }
+
         return advice;
     },
 

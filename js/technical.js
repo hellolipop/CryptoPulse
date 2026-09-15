@@ -459,6 +459,148 @@ const TechnicalAnalysis = {
     },
 
     /**
+     * 量能因子分析 (0-100)
+     *
+     * 从三个角度衡量量能对买卖信号的确认程度：
+     *   1. 量比   —— 成交量相对20周期均量的倍数（放量/缩量）
+     *   2. 量价配合 —— 价格方向与量能变化的组合关系
+     *   3. 量能趋势 —— 近5周期均量相对前5周期的变化（资金流入/流出）
+     *
+     * 注意：K线数据最后一根是尚未走完的当前周期，成交量不完整，
+     * 若直接参与比较会恒定为「缩量」。因此评分只使用已完成K线，
+     * 未完成K线单独按时间进度折算为「盘中预估量比」。
+     *
+     * 评分基准 50 为中性，>50 偏多，<50 偏空。
+     *
+     * @param {Array} candleData - K线数据 [{time, open, high, low, close, volume}]
+     * @param {number} intervalSeconds - 单根K线秒数（用于折算盘中量能）
+     * @returns {Object} { score, signals, metrics }
+     */
+    analyzeVolume(candleData, intervalSeconds) {
+        const empty = { score: 50, signals: [], metrics: null };
+        if (!candleData || candleData.length < 21) return empty;
+
+        // 剔除尚未走完的最后一根K线
+        const closed = candleData.slice(0, -1);
+        const volumes = closed.map(d => d.volume);
+        const closes = closed.map(d => d.close);
+        const n = volumes.length;
+
+        const mean = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
+
+        const lastIdx = n - 1;
+        const currentVol = volumes[lastIdx];
+        const avg5 = mean(volumes.slice(-5));
+        const avg10 = mean(volumes.slice(-10));
+        const avg20 = mean(volumes.slice(-20));
+        const prev5 = mean(volumes.slice(-10, -5));
+
+        if (!avg20) return empty;
+
+        // 量比：最近一根已完成K线相对20周期均量
+        const ratio = currentVol / avg20;
+        // 5周期均量相对20周期均量的水平
+        const ratio5 = avg5 / avg20;
+        // 近5根已完成K线的价格变化
+        const refClose = closes[Math.max(0, lastIdx - 5)];
+        const priceChangePct = refClose ? (closes[lastIdx] / refClose - 1) : 0;
+
+        let score = 50;
+        const signals = [];
+
+        // 价格方向（量能信号的多空倾向需要结合价格方向）
+        const priceUp = priceChangePct > 0.005;
+        const priceDown = priceChangePct < -0.005;
+        const volBias = priceUp ? 'bull' : (priceDown ? 'bear' : 'neutral');
+
+        // ---------- 1. 量比：放量还是缩量 ----------
+        if (ratio >= 2) {
+            score += 12;
+            signals.push({ type: 'volume', strength: 'strong', bias: volBias, text: `显著放量（量比 ${ratio.toFixed(2)}），资金关注度高` });
+        } else if (ratio >= 1.5) {
+            score += 7;
+            signals.push({ type: 'volume', strength: 'medium', bias: volBias, text: `温和放量（量比 ${ratio.toFixed(2)}），交投转活跃` });
+        } else if (ratio < 0.5) {
+            score -= 8;
+            signals.push({ type: 'volume', strength: 'medium', bias: 'neutral', text: `极度缩量（量比 ${ratio.toFixed(2)}），市场观望情绪浓` });
+        } else if (ratio < 0.8) {
+            score -= 4;
+            signals.push({ type: 'volume', strength: 'weak', bias: 'neutral', text: `小幅缩量（量比 ${ratio.toFixed(2)}），交投清淡` });
+        }
+
+        // ---------- 2. 量价配合 ----------
+        let priceVolumeState = 'neutral';
+
+        if (priceUp && ratio >= 1.2) {
+            // 价涨量增：最健康的上涨形态
+            score += 12;
+            priceVolumeState = 'confirm';
+            signals.push({ type: 'volume', strength: 'strong', bias: 'bull', text: '量价齐升，上涨获量能确认，多头动能充足' });
+        } else if (priceUp && ratio < 0.8) {
+            // 价涨量缩：上涨乏力，警惕背离
+            score -= 10;
+            priceVolumeState = 'diverge';
+            signals.push({ type: 'volume', strength: 'strong', bias: 'bear', text: '缩量上涨，量能未能跟进，上攻动能不足需防背离' });
+        } else if (priceDown && ratio >= 1.2) {
+            // 价跌量增：抛压沉重
+            score -= 14;
+            priceVolumeState = 'panic';
+            signals.push({ type: 'volume', strength: 'strong', bias: 'bear', text: '放量下跌，抛压沉重，短线风险偏高' });
+        } else if (priceDown && ratio < 0.8) {
+            // 价跌量缩：抛压衰竭，可能是底部特征
+            score += 6;
+            priceVolumeState = 'exhausted';
+            signals.push({ type: 'volume', strength: 'medium', bias: 'bull', text: '缩量回调，抛压有所衰竭，关注企稳信号' });
+        }
+
+        // ---------- 3. 量能趋势 ----------
+        if (avg5 > prev5 * 1.15) {
+            score += 6;
+            signals.push({ type: 'volume', strength: 'weak', bias: 'bull', text: '近5周期量能持续放大，资金呈流入迹象' });
+        } else if (avg5 < prev5 * 0.85) {
+            score -= 6;
+            signals.push({ type: 'volume', strength: 'weak', bias: 'bear', text: '近5周期量能持续萎缩，资金参与度下降' });
+        }
+
+        score = Math.max(0, Math.min(100, score));
+
+        // ---------- 盘中量能节奏（按已过去的时间比例折算） ----------
+        let liveRatio = null;
+        if (intervalSeconds > 0) {
+            const live = candleData[candleData.length - 1];
+            const elapsed = Math.floor(Date.now() / 1000) - live.time;
+            const progress = Math.min(1, Math.max(0.05, elapsed / intervalSeconds));
+            if (progress < 0.95) {
+                liveRatio = (live.volume / progress) / avg20;
+                if (liveRatio >= 1.8) {
+                    signals.push({
+                        type: 'volume',
+                        strength: 'medium',
+                        bias: volBias,
+                        text: `盘中量能明显放大，按当前节奏预估量比约 ${liveRatio.toFixed(2)}`
+                    });
+                }
+            }
+        }
+
+        return {
+            score: Math.round(score),
+            signals,
+            metrics: {
+                current: currentVol,
+                avg5,
+                avg10,
+                avg20,
+                ratio,
+                ratio5,
+                priceChangePct,
+                priceVolumeState,
+                liveRatio,
+            },
+        };
+    },
+
+    /**
      * 计算技术面综合评分 (0-100) - 多因子版本
      * @param {Object} indicators - 技术指标数据
      * @returns {Object} { score, signals, breakdown }

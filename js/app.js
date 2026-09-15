@@ -2544,11 +2544,20 @@ const CryptoPulseApp = {
         const sentimentScore = this.calculateSentimentScore();
         const derivativesScore = this.calculateDerivativesScore();
 
+        // 量能因子：基于K线成交量评估放量/缩量与量价配合
+        const volumeResult = TechnicalAnalysis.analyzeVolume(
+            this.state.candleData,
+            this.getTimeframeConfig(this.state.currentTimeframe).seconds
+        );
+        this.state.volumeAnalysis = volumeResult;
+
+        // 五因子加权：技术面 / 量能 / 市场情绪 / 消息面 / 衍生品
         const totalScore = Math.round(
-            techScoreResult.score * 0.5 +
-            newsScoreResult.score * 0.15 +
-            sentimentScore * 0.2 +
-            derivativesScore * 0.15
+            techScoreResult.score * 0.40 +
+            volumeResult.score * 0.20 +
+            sentimentScore * 0.16 +
+            newsScoreResult.score * 0.12 +
+            derivativesScore * 0.12
         );
 
         const signal = SignalGenerator.generateSignal(
@@ -2559,9 +2568,13 @@ const CryptoPulseApp = {
                 currentPrice: ind.currentPrice,
                 sentimentScore,
                 derivativesScore,
+                volumeScore: volumeResult.score,
+                volumeMetrics: volumeResult.metrics,
+                volumeSignals: volumeResult.signals,
                 totalScore,
                 breakdown: {
                     technical: techScoreResult.score,
+                    volume: volumeResult.score,
                     news: newsScoreResult.score,
                     sentiment: sentimentScore,
                     derivatives: derivativesScore
@@ -2679,31 +2692,41 @@ const CryptoPulseApp = {
             scoreBarEl.style.width = `${totalScore}%`;
         }
 
-        // 四维评分 Mini
+        // 五维评分 Mini
+        const scoreColorOf = (v) => SignalGenerator.getScoreColor(v)
+            .replace('crypto-', '').replace('green', 'rise-green').replace('red', 'fall-red').replace('gold', 'golden');
+
         const techMini = document.getElementById('techScoreMini');
         if (techMini) {
             techMini.textContent = signal.techScore;
-            techMini.className = `text-sm font-semibold mt-0.5 ${SignalGenerator.getScoreColor(signal.techScore).replace('crypto-', '').replace('green', 'rise-green').replace('red', 'fall-red').replace('gold', 'golden')}`;
+            techMini.className = `text-sm font-semibold mt-0.5 ${scoreColorOf(signal.techScore)}`;
+        }
+
+        const volumeMini = document.getElementById('volumeScoreMini');
+        const volumeScore = signal.breakdown?.volume ?? 50;
+        if (volumeMini) {
+            volumeMini.textContent = volumeScore;
+            volumeMini.className = `text-sm font-semibold mt-0.5 ${scoreColorOf(volumeScore)}`;
         }
 
         const sentimentMini = document.getElementById('sentimentScoreMini');
         const sentimentScore = signal.breakdown?.sentiment ?? 50;
         if (sentimentMini) {
             sentimentMini.textContent = sentimentScore;
-            sentimentMini.className = `text-sm font-semibold mt-0.5 ${SignalGenerator.getScoreColor(sentimentScore).replace('crypto-', '').replace('green', 'rise-green').replace('red', 'fall-red').replace('gold', 'golden')}`;
+            sentimentMini.className = `text-sm font-semibold mt-0.5 ${scoreColorOf(sentimentScore)}`;
         }
 
         const newsMini = document.getElementById('newsScoreMini');
         if (newsMini) {
             newsMini.textContent = signal.newsScore;
-            newsMini.className = `text-sm font-semibold mt-0.5 ${SignalGenerator.getScoreColor(signal.newsScore).replace('crypto-', '').replace('green', 'rise-green').replace('red', 'fall-red').replace('gold', 'golden')}`;
+            newsMini.className = `text-sm font-semibold mt-0.5 ${scoreColorOf(signal.newsScore)}`;
         }
 
         const derivMini = document.getElementById('derivScoreMini');
         const derivScore = signal.breakdown?.derivatives ?? 50;
         if (derivMini) {
             derivMini.textContent = derivScore;
-            derivMini.className = `text-sm font-semibold mt-0.5 ${SignalGenerator.getScoreColor(derivScore).replace('crypto-', '').replace('green', 'rise-green').replace('red', 'fall-red').replace('gold', 'golden')}`;
+            derivMini.className = `text-sm font-semibold mt-0.5 ${scoreColorOf(derivScore)}`;
         }
     },
 
@@ -2733,7 +2756,7 @@ const CryptoPulseApp = {
         // 预测摘要
         const summaryEl = document.getElementById('predictSummary');
         if (summaryEl) {
-            summaryEl.textContent = signal.desc || '综合技术指标、市场情绪、消息面和衍生品数据分析中...';
+            summaryEl.textContent = signal.desc || '综合技术指标、量能、市场情绪、消息面和衍生品数据分析中...';
         }
 
         // 操作建议列表
@@ -2789,8 +2812,21 @@ const CryptoPulseApp = {
                 html += '</div>';
             }
 
+            // 量能因子对仓位执行的修正提示
+            if (advice.note) {
+                const noteCls = advice.bias === 'caution'
+                    ? 'mt-2 p-2.5 rounded-lg bg-fall-red/10 text-xs text-fall-red leading-relaxed'
+                    : (advice.bias === 'support'
+                        ? 'mt-2 p-2.5 rounded-lg bg-rise-green/10 text-xs text-rise-green leading-relaxed'
+                        : 'mt-2 p-2.5 rounded-lg bg-gray-50 text-xs text-text-secondary leading-relaxed');
+                html += `<div class="${noteCls}">${advice.note}</div>`;
+            }
+
             posAdviceEl.innerHTML = html || '<span class="text-text-secondary text-sm">暂无建议</span>';
         }
+
+        // 量能分析
+        this.renderVolumeAnalysis();
 
         // 信号明细列表
         const detailsEl = document.getElementById('signalDetailsList');
@@ -2832,6 +2868,107 @@ const CryptoPulseApp = {
                         }
                     });
                 });
+            }
+        }
+    },
+
+    // 渲染量能分析卡片
+    renderVolumeAnalysis() {
+        const analysis = this.state.volumeAnalysis;
+        const metrics = analysis?.metrics;
+
+        const fmtVol = (v) => (v || v === 0) ? TechnicalAnalysis.formatLargeNumber(v) : '--';
+
+        // 量能因子评分标签
+        const scoreTag = document.getElementById('volumeScoreTag');
+        if (scoreTag) {
+            const s = analysis?.score ?? 50;
+            scoreTag.textContent = `量能因子 ${s}`;
+            let cls = 'text-xs px-2 py-0.5 rounded-full font-medium ';
+            if (s >= 60) cls += 'bg-rise-green/10 text-rise-green';
+            else if (s >= 45) cls += 'bg-golden/10 text-golden';
+            else cls += 'bg-fall-red/10 text-fall-red';
+            scoreTag.className = cls;
+        }
+
+        const stateEl = document.getElementById('volPriceVolumeState');
+        const listEl = document.getElementById('volumeSignalsList');
+
+        if (!metrics) {
+            if (stateEl) {
+                stateEl.textContent = 'K线数据不足，暂无法计算量能';
+                stateEl.className = 'p-3 rounded-xl bg-gray-50 text-sm text-text-secondary mb-2.5';
+            }
+            if (listEl) listEl.innerHTML = '';
+            return;
+        }
+
+        // 量比
+        const ratioEl = document.getElementById('volRatioValue');
+        if (ratioEl) {
+            ratioEl.textContent = metrics.ratio.toFixed(2);
+            const ratioColor = metrics.ratio >= 1.2 ? 'text-rise-green'
+                : (metrics.ratio < 0.8 ? 'text-fall-red' : 'text-text-primary');
+            ratioEl.className = `text-lg font-bold tabular-nums ${ratioColor}`;
+        }
+
+        const curEl = document.getElementById('volCurrentValue');
+        if (curEl) curEl.textContent = fmtVol(metrics.current);
+
+        // 盘中预估量比（未完成K线按时间进度折算，周期刚开盘时不可靠）
+        const liveEl = document.getElementById('volLiveRatioValue');
+        if (liveEl) {
+            if (metrics.liveRatio === null || metrics.liveRatio === undefined) {
+                liveEl.textContent = '--';
+                liveEl.className = 'text-lg font-bold tabular-nums text-text-tertiary';
+            } else {
+                liveEl.textContent = metrics.liveRatio.toFixed(2);
+                const liveColor = metrics.liveRatio >= 1.2 ? 'text-rise-green'
+                    : (metrics.liveRatio < 0.8 ? 'text-fall-red' : 'text-text-primary');
+                liveEl.className = `text-lg font-bold tabular-nums ${liveColor}`;
+            }
+        }
+
+        const avgEl = document.getElementById('volAvg20Value');
+        if (avgEl) avgEl.textContent = fmtVol(metrics.avg20);
+
+        // 量价配合状态
+        const stateMap = {
+            confirm:   { text: '量价齐升：上涨有量能支撑，趋势相对健康', cls: 'p-3 rounded-xl bg-rise-green/10 text-sm text-rise-green mb-2.5' },
+            diverge:   { text: '缩量上涨：量能未跟进，警惕上攻乏力与顶背离', cls: 'p-3 rounded-xl bg-fall-red/10 text-sm text-fall-red mb-2.5' },
+            panic:     { text: '放量下跌：抛压沉重，短线需控制风险', cls: 'p-3 rounded-xl bg-fall-red/10 text-sm text-fall-red mb-2.5' },
+            exhausted: { text: '缩量回调：抛压有所衰竭，可关注企稳反弹', cls: 'p-3 rounded-xl bg-rise-green/10 text-sm text-rise-green mb-2.5' },
+            neutral:   { text: '量价关系中性，量能未给出明确方向', cls: 'p-3 rounded-xl bg-gray-50 text-sm text-text-secondary mb-2.5' },
+        };
+        const stateInfo = stateMap[metrics.priceVolumeState] || stateMap.neutral;
+        if (stateEl) {
+            stateEl.textContent = stateInfo.text;
+            stateEl.className = stateInfo.cls;
+        }
+
+        // 量能明细
+        if (listEl) {
+            const signals = analysis.signals || [];
+            if (signals.length === 0) {
+                listEl.innerHTML = '<p class="text-sm text-text-secondary">量能平稳，无显著信号</p>';
+            } else {
+                listEl.innerHTML = signals.map(sig => {
+                    let iconBg = 'bg-gray-100 text-text-secondary';
+                    let textCls = 'text-text-secondary';
+                    if (sig.bias === 'bull') { iconBg = 'bg-rise-green/10 text-rise-green'; textCls = 'text-rise-green'; }
+                    else if (sig.bias === 'bear') { iconBg = 'bg-fall-red/10 text-fall-red'; textCls = 'text-fall-red'; }
+
+                    return `
+                        <div class="flex items-start gap-3 p-3 rounded-xl bg-gray-50">
+                            <div class="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${iconBg}">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                                </svg>
+                            </div>
+                            <span class="text-sm ${textCls} leading-relaxed">${sig.text}</span>
+                        </div>
+                    `;
+                }).join('');
             }
         }
     },
