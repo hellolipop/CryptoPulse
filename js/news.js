@@ -24,6 +24,25 @@ const NewsAnalyzer = {
     ],
 
     /**
+     * 带超时的 fetch 封装
+     * 新闻源/代理经常长时间无响应，必须限制等待时间，
+     * 否则整页新闻会被一个挂死的请求拖到几十秒。
+     * @param {string} url - 请求地址
+     * @param {Object} options - fetch 配置
+     * @param {number} timeoutMs - 超时毫秒数
+     * @returns {Promise<Response>}
+     */
+    async fetchWithTimeout(url, options = {}, timeoutMs = 6000) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            return await fetch(url, { ...options, signal: controller.signal });
+        } finally {
+            clearTimeout(timer);
+        }
+    },
+
+    /**
      * 获取加密货币新闻（多源聚合 + 中文翻译）
      * @param {string} coinId - 币种ID
      * @returns {Promise<Array>} 新闻列表
@@ -50,7 +69,7 @@ const NewsAnalyzer = {
         try {
             const categories = ['general', category, 'etf', 'defi'].filter((v, i, a) => a.indexOf(v) === i);
             const fetchPromises = categories.slice(0, 3).map(cat =>
-                fetch(`https://cryptocurrency.cv/api/news?category=${cat}&limit=10`)
+                this.fetchWithTimeout(`https://cryptocurrency.cv/api/news?category=${cat}&limit=10`, {}, 8000)
                     .then(r => r.json())
                     .then(d => {
                         if (d.articles && Array.isArray(d.articles)) {
@@ -83,10 +102,10 @@ const NewsAnalyzer = {
 
         // ========== 源2: Binance 公告（通过 CORS 代理）==========
         try {
-            const bnResp = await fetch(
+            const bnResp = await this.fetchWithTimeout(
                 'https://corsproxy.io/?' + encodeURIComponent(
                     'https://www.binance.com/bapi/composite/v1/public/cms/article/list/query?type=1&pageNo=1&pageSize=5'
-                )
+                ), {}, 6000
             );
             if (bnResp.ok) {
                 const bnData = await bnResp.json();
@@ -192,7 +211,7 @@ const NewsAnalyzer = {
         for (const proxy of proxies) {
             let raw = '';
             try {
-                const resp = await fetch(proxy.build(target));
+                const resp = await this.fetchWithTimeout(proxy.build(target), {}, 5000);
                 if (!resp.ok) {
                     lastReason = `${proxy.name} 返回 HTTP ${resp.status}`;
                     continue;
@@ -308,6 +327,82 @@ const NewsAnalyzer = {
     },
 
     /**
+     * 判断翻译接口返回的内容是否为有效译文
+     * MyMemory 在额度用尽/请求超限时会返回 WARNING 文本而非译文，
+     * 必须拦截，否则会把警告当新闻标题显示出来。
+     * @param {string} text - 译文
+     * @returns {boolean} 是否有效
+     */
+    isValidTranslation(text) {
+        if (!text || typeof text !== 'string') return false;
+        const t = text.trim();
+        if (t.length < 2) return false;
+
+        const invalidMarkers = [
+            'MYMEMORY WARNING',
+            'QUERY LENGTH LIMIT',
+            'YOU USED ALL AVAILABLE FREE TRANSLATIONS',
+            'INVALID EMAIL PROVIDED',
+            'INVALID SOURCE LANGUAGE',
+            'INVALID TARGET LANGUAGE',
+            'NO QUERY SPECIFIED',
+            'TOO MANY REQUESTS',
+            'PLEASE CONTACT',
+        ];
+        const upper = t.toUpperCase();
+        if (invalidMarkers.some(m => upper.includes(m))) return false;
+
+        // 纯英文/数字的返回说明没有翻译成功
+        if (!/[\u4e00-\u9fa5]/.test(t)) return false;
+
+        return true;
+    },
+
+    /**
+     * 调用单个翻译接口
+     * @param {string} text - 待翻译文本
+     * @returns {Promise<string>} 译文（失败返回空串）
+     */
+    async requestTranslation(text) {
+        if (!text) return '';
+        const q = text.substring(0, 480);
+
+        // 接口1：Google 非官方端点（无需 Key）
+        try {
+            const resp = await this.fetchWithTimeout(
+                `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-CN&dt=t&q=${encodeURIComponent(q)}`,
+                {}, 5000
+            );
+            if (resp.ok) {
+                const data = await resp.json();
+                const out = Array.isArray(data?.[0])
+                    ? data[0].map(seg => seg?.[0] || '').join('')
+                    : '';
+                if (this.isValidTranslation(out)) return out.trim();
+            }
+        } catch (e) { /* 降级到下一个接口 */ }
+
+        // 接口2：MyMemory（免费额度有限，超额会返回警告文本）
+        try {
+            const resp = await this.fetchWithTimeout(
+                `https://api.mymemory.translated.net/get?q=${encodeURIComponent(q)}&langpair=en|zh-CN`,
+                {}, 5000
+            );
+            if (resp.ok) {
+                const data = await resp.json();
+                const status = Number(data?.responseStatus);
+                const out = data?.responseData?.translatedText;
+                // 仅当状态码正常且译文通过校验时才采用
+                if ((!status || status === 200) && this.isValidTranslation(out)) {
+                    return out.trim();
+                }
+            }
+        } catch (e) { /* 两个接口都失败，返回空串 */ }
+
+        return '';
+    },
+
+    /**
      * 翻译英文新闻为中文
      * @param {Array} newsList - 新闻列表
      */
@@ -320,39 +415,37 @@ const NewsAnalyzer = {
 
         for (const news of batch) {
             try {
-                // 翻译标题
-                const titleResp = await fetch(
-                    `https://api.mymemory.translated.net/get?q=${encodeURIComponent(news.title.substring(0, 200))}&langpair=en|zh-CN`
-                );
-                const titleData = await titleResp.json();
-                const translatedTitle = titleData.responseData?.translatedText;
+                if (!news.title) continue;
+
+                // 翻译标题（带接口降级校验）
+                const translatedTitle = await this.requestTranslation(news.title);
+
+                // 标题翻译失败则保留英文原文，不再浪费额度翻译摘要
+                if (!translatedTitle) {
+                    console.warn('标题翻译不可用，保留英文原文:', news.title.substring(0, 40));
+                    continue;
+                }
 
                 // 翻译摘要（如果有）
                 let translatedDesc = '';
-                if (news.description && news.description.length > 0) {
-                    const descResp = await fetch(
-                        `https://api.mymemory.translated.net/get?q=${encodeURIComponent(news.description.substring(0, 300))}&langpair=en|zh-CN`
-                    );
-                    const descData = await descResp.json();
-                    translatedDesc = descData.responseData?.translatedText || '';
+                if (news.description) {
+                    translatedDesc = await this.requestTranslation(news.description);
                 }
 
-                if (translatedTitle) {
-                    // 保存英文原文，用中文替换显示
-                    news.originalTitle = news.title;
-                    news.originalDescription = news.description;
-                    news.title = translatedTitle;
-                    news.description = translatedDesc || news.description;
-                    news.translated = true;
+                // 保存英文原文，用中文替换显示
+                news.originalTitle = news.title;
+                news.originalDescription = news.description;
+                news.title = translatedTitle;
+                news.description = translatedDesc || news.description;
+                news.translated = true;
 
-                    // 重新提取关键词（基于中文）
-                    news.keywords = this.extractKeywords(translatedTitle + ' ' + (translatedDesc || ''));
+                // 重新提取关键词（基于中文）
+                news.keywords = this.extractKeywords(translatedTitle + ' ' + (translatedDesc || ''));
 
-                    // 重新进行情感分析（基于中文）
-                    const sentiment = this.analyzeSentiment(translatedTitle + ' ' + (translatedDesc || ''));
-                    news.sentiment = sentiment.score;
-                    news.sentimentLabel = sentiment.label;
-                }
+                // 重新进行情感分析（基于中文）
+                const sentiment = this.analyzeSentiment(translatedTitle + ' ' + (translatedDesc || ''));
+                news.sentiment = sentiment.score;
+                news.sentimentLabel = sentiment.label;
             } catch (e) {
                 console.warn('翻译失败:', news.title?.substring(0, 30), e.message);
             }
@@ -656,17 +749,17 @@ const NewsAnalyzer = {
         switch (label) {
             case 'positive':
                 return {
-                    className: 'bg-crypto-green/20 text-crypto-green',
+                    className: 'bg-rise-green/15 text-rise-green',
                     text: '利好'
                 };
             case 'negative':
                 return {
-                    className: 'bg-crypto-red/20 text-crypto-red',
+                    className: 'bg-fall-red/15 text-fall-red',
                     text: '利空'
                 };
             default:
                 return {
-                    className: 'bg-gray-600/50 text-gray-300',
+                    className: 'bg-gray-200 text-text-secondary',
                     text: '中性'
                 };
         }

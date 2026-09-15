@@ -22,28 +22,28 @@ const SignalGenerator = {
         let signalType = 'hold';
         let signalText = '观望';
         let signalDesc = '建议观望，等待明确信号';
-        let signalColor = 'crypto-gold';
+        let signalColor = 'golden';
         
         if (totalScore >= 70) {
             signalType = 'strong_buy';
             signalText = '强烈买入';
             signalDesc = '技术面与消息面均向好，可考虑建仓';
-            signalColor = 'crypto-green';
+            signalColor = 'rise-green';
         } else if (totalScore >= 58) {
             signalType = 'buy';
             signalText = '买入';
             signalDesc = '整体趋势偏多，可逢低布局';
-            signalColor = 'crypto-green';
+            signalColor = 'rise-green';
         } else if (totalScore <= 30) {
             signalType = 'strong_sell';
             signalText = '强烈卖出';
             signalDesc = '风险较高，建议减仓或离场观望';
-            signalColor = 'crypto-red';
+            signalColor = 'fall-red';
         } else if (totalScore <= 42) {
             signalType = 'sell';
             signalText = '卖出';
             signalDesc = '整体趋势偏空，注意控制仓位';
-            signalColor = 'crypto-red';
+            signalColor = 'fall-red';
         }
         
         // 生成操作建议
@@ -284,11 +284,11 @@ const SignalGenerator = {
      * @returns {string} 颜色类名
      */
     getScoreColor(score) {
-        if (score >= 70) return 'text-crypto-green';
-        if (score >= 55) return 'text-crypto-green/70';
-        if (score >= 45) return 'text-crypto-gold';
-        if (score >= 30) return 'text-crypto-red/70';
-        return 'text-crypto-red';
+        if (score >= 70) return 'text-rise-green';
+        if (score >= 55) return 'text-rise-green/70';
+        if (score >= 45) return 'text-golden';
+        if (score >= 30) return 'text-fall-red/70';
+        return 'text-fall-red';
     },
 
     /**
@@ -297,11 +297,11 @@ const SignalGenerator = {
      * @returns {string} Tailwind背景色类名
      */
     getScoreBg(score) {
-        if (score >= 70) return 'bg-crypto-green/10';
-        if (score >= 55) return 'bg-crypto-green/5';
-        if (score >= 45) return 'bg-crypto-gold/10';
-        if (score >= 30) return 'bg-crypto-red/5';
-        return 'bg-crypto-red/10';
+        if (score >= 70) return 'bg-rise-green/10';
+        if (score >= 55) return 'bg-rise-green/5';
+        if (score >= 45) return 'bg-golden/10';
+        if (score >= 30) return 'bg-fall-red/5';
+        return 'bg-fall-red/10';
     },
 
     /**

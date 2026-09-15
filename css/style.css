@@ -1,23 +1,22 @@
-/* CryptoPulse - 自定义样式 */
+/* CryptoPulse - 币安风格白色主题 */
 
-/* 滚动条美化 */
+/* 滚动条美化 - 浅色主题 */
 ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 4px;
+    height: 4px;
 }
 
 ::-webkit-scrollbar-track {
-    background: #1e293b;
-    border-radius: 3px;
+    background: #f5f5f5;
 }
 
 ::-webkit-scrollbar-thumb {
-    background: #475569;
-    border-radius: 3px;
+    background: #d1d5db;
+    border-radius: 2px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: #64748b;
+    background: #9ca3af;
 }
 
 /* 隐藏滚动条但保留滚动功能 */
@@ -30,182 +29,128 @@
     scrollbar-width: none;
 }
 
+/* 时间周期按钮样式 */
+.tf-btn {
+    color: #707a8a;
+}
+
+.tf-btn:hover {
+    color: #1a1a1a;
+}
+
+.tf-btn.active {
+    background: #f0b90b;
+    color: #fff;
+}
+
+/* 子标签切换动画 */
+.sub-tab {
+    transition: all 0.2s ease;
+}
+
+/* 新闻卡片样式 */
+.news-card {
+    transition: all 0.2s ease;
+}
+
+.news-card:active {
+    background: #f9fafb;
+}
+
+/* 币种列表项 */
+.coin-list-item {
+    transition: background-color 0.15s ease;
+}
+
+.coin-list-item:active {
+    background: #f9fafb;
+}
+
+/* 涨跌标签样式 */
+.rise-tag {
+    background: rgba(8, 153, 129, 0.1);
+    color: #089981;
+}
+
+.fall-tag {
+    background: rgba(242, 54, 69, 0.1);
+    color: #f23645;
+}
+
 /* 动画 */
-@keyframes pulse-glow {
-    0%, 100% {
-        box-shadow: 0 0 5px rgba(139, 92, 246, 0.3);
-    }
-    50% {
-        box-shadow: 0 0 20px rgba(139, 92, 246, 0.6);
-    }
-}
-
-.pulse-glow {
-    animation: pulse-glow 2s ease-in-out infinite;
-}
-
-@keyframes slideIn {
-    from {
-        opacity: 0;
-        transform: translateY(-10px);
-    }
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
-}
-
-.slide-in {
-    animation: slideIn 0.3s ease-out;
-}
-
 @keyframes fadeIn {
     from { opacity: 0; }
     to { opacity: 1; }
 }
 
 .fade-in {
-    animation: fadeIn 0.3s ease-out;
+    animation: fadeIn 0.25s ease-out;
 }
 
-/* 币种标签样式 */
-.coin-tab {
-    transition: all 0.2s ease;
-}
-
-.coin-tab:hover {
-    transform: translateY(-1px);
-}
-
-.coin-tab.active {
-    background: linear-gradient(135deg, rgba(139, 92, 246, 0.2), rgba(59, 130, 246, 0.2));
-    border-color: #8b5cf6;
-}
-
-/* 时间周期按钮 */
-.timeframe-btn {
-    color: #94a3b8;
-}
-
-.timeframe-btn:hover {
-    color: #e2e8f0;
-}
-
-.timeframe-btn.active {
-    background: #8b5cf6;
-    color: white;
-}
-
-/* 信号卡片样式 */
-.signal-buy {
-    background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(16, 185, 129, 0.1));
-}
-
-.signal-sell {
-    background: linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(239, 68, 68, 0.1));
-}
-
-.signal-hold {
-    background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(245, 158, 11, 0.1));
-}
-
-/* 新闻卡片悬停效果 */
-.news-card {
-    transition: all 0.2s ease;
-}
-
-.news-card:hover {
-    transform: translateY(-2px);
-    border-color: #475569;
-}
-
-/* 价格上涨/下跌动画 */
-.price-up {
-    color: #10b981;
-    animation: priceFlash 0.5s ease-out;
-}
-
-.price-down {
-    color: #ef4444;
-    animation: priceFlash 0.5s ease-out;
-}
-
-@keyframes priceFlash {
-    0% { transform: scale(1.1); }
-    100% { transform: scale(1); }
-}
-
-/* 图表容器 */
-#chartContainer {
-    position: relative;
-}
-
-/* 移动端优化 */
-@media (max-width: 640px) {
-    .coin-tab {
-        min-width: 100px;
-    }
-    
-    #chartContainer {
-        height: 280px;
-    }
-}
-
-/* 模态框动画 */
-.modal-enter {
-    animation: modalIn 0.2s ease-out;
-}
-
-@keyframes modalIn {
+@keyframes slideUp {
     from {
-        opacity: 0;
-        transform: scale(0.95);
+        transform: translateY(100%);
     }
     to {
-        opacity: 1;
-        transform: scale(1);
+        transform: translateY(0);
     }
 }
 
-/* 提示标签 */
-.tip-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 8px;
-    border-radius: 9999px;
-    font-size: 11px;
-    font-weight: 500;
+.slide-up {
+    animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.tip-buy {
-    background: rgba(16, 185, 129, 0.15);
-    color: #10b981;
+@keyframes pulse-soft {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
 }
 
-.tip-sell {
-    background: rgba(239, 68, 68, 0.15);
-    color: #ef4444;
+/* 价格数字动画 */
+.price-flash-up {
+    animation: flashGreen 0.6s ease-out;
 }
 
-.tip-watch {
-    background: rgba(245, 158, 11, 0.15);
-    color: #f59e0b;
+.price-flash-down {
+    animation: flashRed 0.6s ease-out;
 }
 
-/* 图表水印 */
-.chart-watermark {
-    position: absolute;
-    bottom: 10px;
-    right: 10px;
-    font-size: 10px;
-    color: rgba(148, 163, 184, 0.5);
-    pointer-events: none;
+@keyframes flashGreen {
+    0% { background-color: rgba(8, 153, 129, 0.3); }
+    100% { background-color: transparent; }
 }
 
-/* 加载骨架屏 */
+@keyframes flashRed {
+    0% { background-color: rgba(242, 54, 69, 0.3); }
+    100% { background-color: transparent; }
+}
+
+/* 数字等宽字体 */
+.tabular-nums {
+    font-variant-numeric: tabular-nums;
+    -webkit-font-variant-numeric: tabular-nums;
+}
+
+/* 底部安全区域适配 */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+    .pb-20 {
+        padding-bottom: calc(5rem + env(safe-area-inset-bottom));
+    }
+}
+
+/* 模态框背景遮罩 */
+.modal-backdrop {
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+}
+
+/* 信号强度条 */
+.signal-bar-1 { background-color: #ef4444; }
+.signal-bar-2 { background-color: #f59e0b; }
+.signal-bar-3 { background-color: #10b981; }
+
+/* 骨架屏加载动画 */
 .skeleton {
-    background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%);
+    background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%);
     background-size: 200% 100%;
     animation: skeleton-loading 1.5s infinite;
 }
@@ -215,7 +160,25 @@
     100% { background-position: -200% 0; }
 }
 
-/* 数字字体 */
-.font-mono {
-    font-variant-numeric: tabular-nums;
+/* Tap 高亮消除 */
+* {
+    -webkit-tap-highlight-color: transparent;
+}
+
+/* 按钮点击效果 */
+button:active {
+    transform: scale(0.98);
+}
+
+button {
+    transition: transform 0.1s ease;
+}
+
+/* 币种分类按钮激活态 */
+.coin-cat-btn {
+    position: relative;
+}
+
+.coin-cat-btn.text-golden {
+    font-weight: 600;
 }

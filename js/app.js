@@ -1,5 +1,5 @@
 /**
- * CryptoPulse - 主应用逻辑
+ * CryptoPulse - 主应用逻辑（币安白色主题版）
  * 负责数据获取、状态管理、UI更新和用户交互
  */
 
@@ -7,7 +7,8 @@ const CryptoPulseApp = {
     // 状态
     state: {
         currentCoin: 'bitcoin',
-        currentTimeframe: 24, // 小时数
+        currentTimeframe: 24, // 小时数（对应 data-tf 值）
+        currentTab: 'quote',  // 当前子tab: quote | info | signals | news
         watchlist: ['bitcoin', 'ethereum', 'binancecoin', 'solana', 'ripple'],
         coinInfo: {},
         priceData: null,
@@ -18,14 +19,17 @@ const CryptoPulseApp = {
         isLoading: false,
         lastUpdate: null,
         showSignalMarkers: true,
+        showMA: true,
+        showVolume: true,
         coinCatalog: [],        // 联网获取的币安全量交易对
         catalogLoaded: false,
         catalogLoading: false,
         coinMeta: {},           // 联网添加的币种元数据 { coinId: {id, symbol, name, binanceSymbol} }
         watchlistQuotes: {},    // 自选币种行情 { coinId: {price, changePercent} }
-        marketTab: 'watchlist', // 当前市场分类：watchlist | hot | all
+        marketTab: 'watchlist', // 币种选择器内的分类：watchlist | hot | all | defi | meme
         coinListLimit: 50,      // 列表模式显示条数
-        coinListQuotes: {}      // 列表模式行情缓存 { binanceSymbol: {price, changePercent} }
+        coinListQuotes: {},      // 列表模式行情缓存 { binanceSymbol: {price, changePercent} }
+        usdtToCnyRate: 7.25,    // USDT兑人民币汇率（估算）
     },
 
     // 常见币种的中文名（联网币种若无中文名则显示符号）
@@ -42,7 +46,6 @@ const CryptoPulseApp = {
         'MKR': 'Maker', 'GRT': 'The Graph', 'FTM': 'Fantom', 'INJ': 'Injective',
         'SEI': 'Sei', 'TIA': 'Celestia', 'WIF': 'dogwifhat', 'BONK': 'Bonk',
         'ORDI': 'Ordinals', 'JUP': 'Jupiter', 'PYTH': 'Pyth', 'STRK': 'Starknet',
-        // 扩充常见币种，减少列表中出现 XXX/USDT 的占位显示
         'SNX': 'Synthetix', 'CRV': 'Curve', 'COMP': 'Compound', 'ZEC': 'Zcash',
         'XMR': '门罗币', 'DASH': '达世币', 'EGLD': 'MultiversX', 'RENDER': 'Render',
         'IMX': 'Immutable', 'LDO': 'Lido', 'GALA': 'Gala', 'APE': 'ApeCoin',
@@ -218,6 +221,12 @@ const CryptoPulseApp = {
         { id: 'stellar', symbol: 'XLM', name: '恒星币', image: 'X', binanceSymbol: 'XLMUSDT' },
     ],
 
+    // DeFi 币种
+    defiCoins: ['UNI', 'AAVE', 'COMP', 'SNX', 'CRV', 'MKR', 'GRT', '1INCH', 'DYDX', 'GMX', 'LDO', 'RPL', 'SSV', 'PENDLE', 'JTO', 'ENA', 'ZK'],
+
+    // MEME 币种
+    memeCoins: ['DOGE', 'SHIB', 'PEPE', 'WIF', 'BONK', 'FLOKI', 'DOGS', 'POPCAT', 'MEW', 'TOKEN'],
+
     // 获取币安交易对符号
     getBinanceSymbol(coinId) {
         const coin = this.popularCoins.find(c => c.id === coinId);
@@ -226,10 +235,18 @@ const CryptoPulseApp = {
         return meta ? meta.binanceSymbol : null;
     },
 
+    // 将 data-tf 值转换为小时数（用于K线间隔计算）
+    tfToHours(tfVal) {
+        // data-tf: 0.25=分时(1m), 0.5=15分, 1=1小时, 4=4小时, 24=日线
+        if (tfVal === 'more') return 24;
+        const val = parseFloat(tfVal);
+        if (val <= 0.25) return 1;    // 分时 -> 1小时跨度
+        if (val <= 0.5) return 6;     // 15分 -> 6小时跨度
+        return val;                   // 1, 4, 24 直接对应
+    },
+
     /**
      * 联网加载币安全量交易对目录
-     * 使用 Binance 公开接口 exchangeInfo（无需 Key、支持 CORS）
-     * 结果缓存在内存 + localStorage，24 小时内不重复请求
      */
     async loadCoinCatalog(force = false) {
         if (this.state.catalogLoading) return;
@@ -240,7 +257,6 @@ const CryptoPulseApp = {
             try {
                 const cached = JSON.parse(localStorage.getItem('cryptoPulse_catalog_v2') || 'null');
                 if (cached && cached.ts && Date.now() - cached.ts < 24 * 3600 * 1000 && cached.list?.length) {
-                    // 加载时重新应用名称与排序，保证规则调整后立即生效
                     this.state.coinCatalog = this.sortCatalog(this.applyCoinNames(cached.list));
                     this.state.catalogLoaded = true;
                     return;
@@ -249,7 +265,6 @@ const CryptoPulseApp = {
         }
 
         this.state.catalogLoading = true;
-        this.updateCatalogStatus('正在联网获取币种列表…');
 
         try {
             const resp = await fetch(`${this.binanceApiBase}/exchangeInfo`);
@@ -265,15 +280,11 @@ const CryptoPulseApp = {
                         symbol: base,
                         name: this.coinNameMap[base] || base,
                         binanceSymbol: s.symbol,
-                        // 记录交易量用于排序（若有）
                         _vol: 0
                     };
                 })
-                // 去重：同一 base 只保留一个（优先最短交易对名）
                 .sort((a, b) => a.binanceSymbol.length - b.binanceSymbol.length);
 
-            // 排序：内置热门优先，其余字母序（避免冷门单字母币排在前面）
-            // 注意：内置用 id（bitcoin），联网目录用 coinId（btc），必须以交易对为共同键
             const seen = new Set();
             const unique = this.sortCatalog(this.applyCoinNames(list.filter(c => {
                 if (seen.has(c.coinId)) return false;
@@ -286,26 +297,23 @@ const CryptoPulseApp = {
             this.state.catalogLoading = false;
 
             localStorage.setItem('cryptoPulse_catalog_v2', JSON.stringify({ ts: Date.now(), list: unique }));
-            this.updateCatalogStatus(`已联网获取 ${unique.length} 个币种`);
             console.log(`[币种目录] 联网获取成功，共 ${unique.length} 个 USDT 交易对`);
 
-            // 目录更新后重绘搜索结果
-            const input = document.getElementById('searchCoinInput');
-            if (input && !document.getElementById('addCoinModal')?.classList.contains('hidden')) {
-                this.searchCoins(input.value);
+            // 目录更新后重绘币种选择器列表
+            const modal = document.getElementById('coinSelectorModal');
+            if (modal && !modal.classList.contains('hidden')) {
+                this.renderCoinSelectorList();
             }
 
-            // 若当前处于「主流 / 全部」列表模式，目录到位后重绘列表
+            // 若当前处于非自选分类，重绘列表
             if (this.state.marketTab !== 'watchlist') {
-                this.renderCoinList();
+                this.renderCoinSelectorList();
             }
 
             return unique;
         } catch (e) {
             this.state.catalogLoading = false;
             console.warn('[币种目录] 联网获取失败，降级为内置列表:', e.message);
-            this.updateCatalogStatus('联网获取失败，已降级为内置币种列表');
-            // 降级：使用内置列表
             this.state.coinCatalog = this.popularCoins.map(c => ({
                 coinId: c.id, symbol: c.symbol, name: c.name, binanceSymbol: c.binanceSymbol
             }));
@@ -314,11 +322,6 @@ const CryptoPulseApp = {
         }
     },
 
-    /**
-     * 补齐币种名称：缓存中的旧数据可能缺少名称映射
-     * @param {Array} list - 币种列表
-     * @returns {Array} 处理后的列表
-     */
     applyCoinNames(list) {
         list.forEach(c => {
             const mapped = this.coinNameMap[c.symbol];
@@ -327,12 +330,6 @@ const CryptoPulseApp = {
         return list;
     },
 
-    /**
-     * 币种目录排序：内置主流币优先，其余按符号字母序
-     * 用币安交易对作为共同键（内置 id 是 bitcoin，目录 coinId 是 btc）
-     * @param {Array} list - 币种列表
-     * @returns {Array} 排序后的列表
-     */
     sortCatalog(list) {
         const hotRank = new Map(this.popularCoins.map((c, i) => [c.binanceSymbol, i]));
         return list.sort((a, b) => {
@@ -343,14 +340,8 @@ const CryptoPulseApp = {
         });
     },
 
-    // 更新联网状态提示
-    updateCatalogStatus(text) {
-        const el = document.getElementById('catalogStatus');
-        if (el) el.textContent = text;
-    },
-
     /**
-     * 批量拉取自选币种行情（用于自选区展示价格与涨跌幅）
+     * 批量拉取自选币种行情
      */
     async loadWatchlistQuotes() {
         const symbols = this.state.watchlist
@@ -367,7 +358,6 @@ const CryptoPulseApp = {
             const quotes = {};
             const arr = Array.isArray(data) ? data : [data];
             arr.forEach(t => {
-                // 反查 coinId
                 const coinId = this.state.watchlist.find(id => this.getBinanceSymbol(id) === t.symbol);
                 if (coinId) {
                     quotes[coinId] = {
@@ -377,11 +367,10 @@ const CryptoPulseApp = {
                 }
             });
             this.state.watchlistQuotes = quotes;
-            this.renderCoinTabs();
-            // 若自选弹窗打开，同步刷新
-            const wlModal = document.getElementById('watchlistModal');
-            if (wlModal && !wlModal.classList.contains('hidden')) {
-                this.renderWatchlistModal();
+            // 若币种选择器打开，同步刷新
+            const modal = document.getElementById('coinSelectorModal');
+            if (modal && !modal.classList.contains('hidden')) {
+                this.renderCoinSelectorList();
             }
         } catch (e) {
             console.warn('自选行情加载失败:', e.message);
@@ -395,10 +384,9 @@ const CryptoPulseApp = {
         this.loadUIState();
         this.bindEvents();
         this.initChart();
-        this.renderCoinTabs();
-        // 恢复界面选择（市场分类、时间周期、图表开关）
+        this.initTabs();
         this.applyUIState();
-        // 后台联网拉取币种目录与自选行情（不阻塞主数据加载）
+        // 后台联网拉取币种目录与自选行情
         this.loadCoinCatalog();
         this.loadWatchlistQuotes();
         await this.loadCoinData(this.state.currentCoin);
@@ -414,147 +402,78 @@ const CryptoPulseApp = {
         });
 
         // 新闻刷新
-        document.getElementById('refreshNewsBtn').addEventListener('click', () => {
-            this.loadNews(this.state.currentCoin);
-        });
+        const refreshNewsBtn = document.getElementById('refreshNewsBtn');
+        if (refreshNewsBtn) {
+            refreshNewsBtn.addEventListener('click', () => {
+                this.loadNews(this.state.currentCoin);
+            });
+        }
 
-        // 时间周期切换
-        document.querySelectorAll('.timeframe-btn').forEach(btn => {
+        // 时间周期切换（tf-btn）
+        document.querySelectorAll('.tf-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
-                document.querySelectorAll('.timeframe-btn').forEach(b => b.classList.remove('active'));
-                e.target.classList.add('active');
-                const tf = parseInt(e.target.dataset.tf);
-                this.state.currentTimeframe = tf;
+                const tf = e.currentTarget.dataset.tf;
+                if (tf === 'more') return; // "更多"按钮暂不展开
+                document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+                e.currentTarget.classList.add('active');
+                this.state.currentTimeframe = this.tfToHours(tf);
                 this.saveUIState();
                 this.loadCandleData(this.state.currentCoin);
             });
         });
 
-        // MA显示切换
-        document.getElementById('showMA').addEventListener('change', (e) => {
-            ChartManager.toggleMA(e.target.checked);
-            this.saveUIState();
-        });
+        // 图表设置按钮（保留接口，点击无操作或展开设置面板）
+        const chartSettingsBtn = document.getElementById('chartSettingsBtn');
+        if (chartSettingsBtn) {
+            chartSettingsBtn.addEventListener('click', () => {
+                // 切换MA显示作为简单设置
+                this.state.showMA = !this.state.showMA;
+                ChartManager.toggleMA(this.state.showMA);
+                this.saveUIState();
+            });
+        }
 
-        // 成交量显示切换
-        document.getElementById('showVolume').addEventListener('change', (e) => {
-            ChartManager.toggleVolume(e.target.checked);
-            this.saveUIState();
-        });
+        // 底部栏自选按钮 -> 打开币种选择器
+        const watchlistToggleBtn = document.getElementById('watchlistToggleBtn');
+        if (watchlistToggleBtn) {
+            watchlistToggleBtn.addEventListener('click', () => {
+                this.showCoinSelectorModal();
+            });
+        }
 
-        // 买卖信号显示切换
-        document.getElementById('showSignals').addEventListener('change', (e) => {
-            this.state.showSignalMarkers = e.target.checked;
-            if (e.target.checked) {
-                this.addSwingMarkers();
-            } else {
-                ChartManager.clearMarkers();
-            }
-            this.saveUIState();
-        });
+        // 币种选择器关闭按钮
+        const closeCoinSelectorBtn = document.getElementById('closeCoinSelectorBtn');
+        if (closeCoinSelectorBtn) {
+            closeCoinSelectorBtn.addEventListener('click', () => {
+                this.hideCoinSelectorModal();
+            });
+        }
 
-        // 重置视图按钮
-        document.getElementById('resetViewBtn').addEventListener('click', () => {
-            ChartManager.resetView();
-        });
-
-        // 更多指标折叠面板
-        const toggleMoreBtn = document.getElementById('toggleMoreIndicators');
-        if (toggleMoreBtn) {
-            toggleMoreBtn.addEventListener('click', () => {
-                const panel = document.getElementById('moreIndicatorsPanel');
-                const arrow = document.getElementById('moreIndicatorsArrow');
-                if (panel) {
-                    panel.classList.toggle('hidden');
-                    if (arrow) {
-                        arrow.classList.toggle('rotate-180');
-                    }
-                    this.saveUIState();
+        // 点击币种选择器遮罩关闭
+        const coinSelectorModal = document.getElementById('coinSelectorModal');
+        if (coinSelectorModal) {
+            coinSelectorModal.addEventListener('click', (e) => {
+                if (e.target.id === 'coinSelectorModal') {
+                    this.hideCoinSelectorModal();
                 }
             });
         }
 
-        // 添加币种按钮
-        const addCoinBtn = document.getElementById('addCoinBtn');
-        if (addCoinBtn) {
-            addCoinBtn.addEventListener('click', () => {
-                this.showAddCoinModal();
-            });
-        }
-
-        // 关闭模态框
-        const closeModalBtn = document.getElementById('closeModalBtn');
-        if (closeModalBtn) {
-            closeModalBtn.addEventListener('click', () => {
-                this.hideAddCoinModal();
-            });
-        }
-
-        // 点击模态框外部关闭
-        const addCoinModal = document.getElementById('addCoinModal');
-        if (addCoinModal) {
-            addCoinModal.addEventListener('click', (e) => {
-                if (e.target.id === 'addCoinModal') {
-                    this.hideAddCoinModal();
-                }
-            });
-        }
-
-        // 搜索币种
-        const searchCoinInput = document.getElementById('searchCoinInput');
-        if (searchCoinInput) {
-            searchCoinInput.addEventListener('input', (e) => {
-                this.searchCoins(e.target.value);
-            });
-        }
-
-        // 市场分类切换（自选 / 主流 / 全部）
-        document.querySelectorAll('.market-tab').forEach(btn => {
-            btn.addEventListener('click', () => this.switchMarketTab(btn.dataset.market));
-        });
-
-        // 全部自选弹窗
-        const moreWatchlistBtn = document.getElementById('moreWatchlistBtn');
-        if (moreWatchlistBtn) {
-            moreWatchlistBtn.addEventListener('click', () => this.showWatchlistModal());
-        }
-
-        const closeWatchlistBtn = document.getElementById('closeWatchlistBtn');
-        if (closeWatchlistBtn) {
-            closeWatchlistBtn.addEventListener('click', () => this.hideWatchlistModal());
-        }
-
-        const watchlistModal = document.getElementById('watchlistModal');
-        if (watchlistModal) {
-            watchlistModal.addEventListener('click', (e) => {
-                if (e.target.id === 'watchlistModal') this.hideWatchlistModal();
-            });
-        }
-
-        const watchlistAddBtn = document.getElementById('watchlistAddBtn');
-        if (watchlistAddBtn) {
-            watchlistAddBtn.addEventListener('click', () => {
-                this.hideWatchlistModal();
-                this.showAddCoinModal();
-            });
-        }
-
-        // 列表模式搜索与分页
-        const coinListSearch = document.getElementById('coinListSearch');
-        if (coinListSearch) {
-            coinListSearch.addEventListener('input', () => {
+        // 币种选择器搜索
+        const coinSearchInput = document.getElementById('coinSearchInput');
+        if (coinSearchInput) {
+            coinSearchInput.addEventListener('input', (e) => {
                 this.state.coinListLimit = 50;
-                this.renderCoinList();
+                this.renderCoinSelectorList(e.target.value);
             });
         }
 
-        const coinListMoreBtn = document.getElementById('coinListMoreBtn');
-        if (coinListMoreBtn) {
-            coinListMoreBtn.addEventListener('click', () => {
-                this.state.coinListLimit += 50;
-                this.renderCoinList();
+        // 币种选择器分类切换
+        document.querySelectorAll('.coin-cat-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.switchCoinCategory(btn.dataset.market);
             });
-        }
+        });
 
         // 资讯详情弹窗
         const closeNewsDetailBtn = document.getElementById('closeNewsDetailBtn');
@@ -589,15 +508,64 @@ const CryptoPulseApp = {
                 }
             });
         }
+
+        // 顶部币种标题点击 -> 打开币种选择器
+        const coinPairTitle = document.getElementById('coinPairTitle');
+        if (coinPairTitle) {
+            coinPairTitle.style.cursor = 'pointer';
+            coinPairTitle.parentElement.addEventListener('click', () => {
+                this.showCoinSelectorModal();
+            });
+        }
     },
 
     // 初始化图表
     initChart() {
         ChartManager.init('chartContainer');
-        // 设置信号标记点击回调
         ChartManager.setMarkerClickCallback((signalText, price, time) => {
             this.showSignalDetail(signalText, price, time);
         });
+    },
+
+    // ===== Tab 切换 =====
+    initTabs() {
+        document.querySelectorAll('.sub-tab').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.switchTab(btn.dataset.tab);
+            });
+        });
+    },
+
+    switchTab(tabName) {
+        if (!tabName || tabName === this.state.currentTab) return;
+        this.state.currentTab = tabName;
+        this.saveUIState();
+
+        // 更新 tab 按钮样式
+        document.querySelectorAll('.sub-tab').forEach(btn => {
+            const active = btn.dataset.tab === tabName;
+            if (active) {
+                btn.classList.add('border-golden', 'text-golden');
+                btn.classList.remove('border-transparent', 'text-text-secondary');
+            } else {
+                btn.classList.remove('border-golden', 'text-golden');
+                btn.classList.add('border-transparent', 'text-text-secondary');
+            }
+        });
+
+        // 切换面板显示
+        document.querySelectorAll('.tab-panel').forEach(panel => {
+            panel.classList.add('hidden');
+        });
+        const targetPanel = document.getElementById('tab-' + tabName);
+        if (targetPanel) {
+            targetPanel.classList.remove('hidden');
+        }
+
+        // 如果切换到图表tab，触发图表尺寸适配
+        if (tabName === 'quote') {
+            setTimeout(() => ChartManager.handleResize?.(), 50);
+        }
     },
 
     // 加载自选列表
@@ -611,8 +579,7 @@ const CryptoPulseApp = {
             }
         }
 
-        // 迁移清理：按交易对去重（历史上可能同时存在 dogecoin / doge）
-        // 注意：必须保留「当前选中」的币种，否则去重会把用户的选择删掉
+        // 迁移清理：按交易对去重
         if (Array.isArray(this.state.watchlist) && this.state.watchlist.length > 1) {
             const currentSaved = localStorage.getItem('cryptoPulse_currentCoin');
             const seenSymbols = new Set();
@@ -637,33 +604,29 @@ const CryptoPulseApp = {
         if (currentCoin && this.state.watchlist.includes(currentCoin)) {
             this.state.currentCoin = currentCoin;
         } else if (currentCoin) {
-            // 选中的币种不在自选中（例如被移除过）：补回自选，保证选择不丢失
             this.state.watchlist.push(currentCoin);
             this.state.currentCoin = currentCoin;
             localStorage.setItem('cryptoPulse_watchlist', JSON.stringify(this.state.watchlist));
         }
     },
 
-    // 保存自选列表
     saveWatchlist() {
         localStorage.setItem('cryptoPulse_watchlist', JSON.stringify(this.state.watchlist));
         localStorage.setItem('cryptoPulse_currentCoin', this.state.currentCoin);
     },
 
-    // ===== 界面选择状态持久化 =====
-    // 保存：当前币种、市场分类、时间周期、图表显示开关、更多指标面板
-
+    // ===== UI 状态持久化 =====
     uiStateKey: 'cryptoPulse_uiState',
 
     saveUIState() {
         const state = {
             currentCoin: this.state.currentCoin,
+            currentTab: this.state.currentTab,
             marketTab: this.state.marketTab,
             timeframe: this.state.currentTimeframe,
-            showMA: document.getElementById('showMA')?.checked ?? true,
-            showVolume: document.getElementById('showVolume')?.checked ?? true,
+            showMA: this.state.showMA,
+            showVolume: this.state.showVolume,
             showSignals: this.state.showSignalMarkers,
-            moreIndicatorsOpen: !(document.getElementById('moreIndicatorsPanel')?.classList.contains('hidden') ?? true)
         };
         try {
             localStorage.setItem(this.uiStateKey, JSON.stringify(state));
@@ -678,7 +641,6 @@ const CryptoPulseApp = {
         } catch (e) {
             this._savedUIState = null;
         }
-        // 一次性清理：旧版本遗留的目录缓存键
         try {
             if (localStorage.getItem('cryptoPulse_catalog')) {
                 localStorage.removeItem('cryptoPulse_catalog');
@@ -686,53 +648,73 @@ const CryptoPulseApp = {
         } catch (e) { /* 忽略 */ }
     },
 
-    // 将保存的界面状态应用到 DOM（需在 DOM 与图表就绪后调用）
     applyUIState() {
         const saved = this._savedUIState;
 
         if (saved) {
-            // 时间周期按钮
+            // 时间周期按钮（tf-btn）
             if (saved.timeframe) {
                 this.state.currentTimeframe = saved.timeframe;
-                document.querySelectorAll('.timeframe-btn').forEach(b => {
-                    b.classList.toggle('active', parseInt(b.dataset.tf) === saved.timeframe);
+                // 找到最接近的 tf-btn 并激活
+                const tfMap = { 1: '1', 4: '4', 24: '24' };
+                let targetTf = '24';
+                if (saved.timeframe <= 1) targetTf = '0.25';
+                else if (saved.timeframe <= 6) targetTf = '0.5';
+                else if (saved.timeframe <= 4) targetTf = '4';
+                // 简化：根据小时数匹配 data-tf
+                document.querySelectorAll('.tf-btn').forEach(b => {
+                    const tf = b.dataset.tf;
+                    if (tf === 'more') return;
+                    const hours = this.tfToHours(tf);
+                    const diff = Math.abs(hours - saved.timeframe);
+                    const currentActive = document.querySelector('.tf-btn.active');
+                    if (currentActive) {
+                        const currentHours = this.tfToHours(currentActive.dataset.tf);
+                        if (diff < Math.abs(currentHours - saved.timeframe)) {
+                            currentActive.classList.remove('active');
+                            b.classList.add('active');
+                        }
+                    } else if (hours === saved.timeframe || (saved.timeframe >= 20 && tf === '24')) {
+                        b.classList.add('active');
+                    }
                 });
+                // 如果没有 active 的，默认选中日线
+                if (!document.querySelector('.tf-btn.active')) {
+                    const dailyBtn = document.querySelector('.tf-btn[data-tf="24"]');
+                    if (dailyBtn) dailyBtn.classList.add('active');
+                }
             }
 
             // 图表显示开关
-            const setChecked = (id, val) => {
-                const el = document.getElementById(id);
-                if (el && val !== undefined) el.checked = val;
-            };
-            setChecked('showMA', saved.showMA);
-            setChecked('showVolume', saved.showVolume);
-            setChecked('showSignals', saved.showSignals);
-
+            if (saved.showMA !== undefined) {
+                this.state.showMA = saved.showMA;
+                try { ChartManager.toggleMA(saved.showMA); } catch (e) {}
+            }
+            if (saved.showVolume !== undefined) {
+                this.state.showVolume = saved.showVolume;
+                try { ChartManager.toggleVolume(saved.showVolume); } catch (e) {}
+            }
             if (saved.showSignals !== undefined) {
                 this.state.showSignalMarkers = saved.showSignals;
             }
 
-            // 应用图表系列可见性（图表已在 initChart 中初始化）
-            try {
-                if (saved.showMA !== undefined) ChartManager.toggleMA(saved.showMA);
-                if (saved.showVolume !== undefined) ChartManager.toggleVolume(saved.showVolume);
-            } catch (e) {
-                console.warn('恢复图表开关失败:', e.message);
+            // Tab 切换
+            if (saved.currentTab) {
+                this.switchTab(saved.currentTab);
             }
 
-            // 更多指标面板
-            if (saved.moreIndicatorsOpen) {
-                document.getElementById('moreIndicatorsPanel')?.classList.remove('hidden');
-                document.getElementById('moreIndicatorsArrow')?.classList.add('rotate-180');
+            // 市场分类
+            if (saved.marketTab) {
+                this.state.marketTab = saved.marketTab;
             }
+        } else {
+            // 默认选中日线
+            const dailyBtn = document.querySelector('.tf-btn[data-tf="24"]');
+            if (dailyBtn) dailyBtn.classList.add('active');
         }
 
-        // 市场分类（会同步更新标签样式与面板显示）
-        this.renderMarketTabs();
-        const tab = saved?.marketTab;
-        if (tab && tab !== 'watchlist') {
-            this.switchMarketTab(tab);
-        }
+        // 更新分类按钮样式
+        this.updateCoinCategoryButtons();
     },
 
     // 自选行情价格格式化
@@ -744,7 +726,7 @@ const CryptoPulseApp = {
         return '$' + price.toFixed(6);
     },
 
-    // 币种副标题（无中文名时显示交易对，避免与符号重复）
+    // 币种副标题
     getCoinSubtitle(coin) {
         if (coin.name && coin.name !== coin.symbol && coin.name !== coin.coinId) {
             return coin.name;
@@ -752,172 +734,110 @@ const CryptoPulseApp = {
         return (coin.symbol || coin.coinId || '') + '/USDT';
     },
 
-    // 渲染币种标签（自选区）
-    renderCoinTabs() {
-        const container = document.getElementById('coinTabs');
-        if (!container) return;
-        container.innerHTML = '';
+    // ===== 币种选择器 =====
+    showCoinSelectorModal() {
+        const modal = document.getElementById('coinSelectorModal');
+        if (!modal) return;
+        modal.classList.remove('hidden');
+        document.body.style.overflow = 'hidden';
 
-        this.state.watchlist.forEach(coinId => {
-            const coinInfo = this.getCoinInfo(coinId);
-            const isActive = coinId === this.state.currentCoin;
-            const quote = this.state.watchlistQuotes[coinId];
-
-            const hasQuote = !!quote;
-            const up = hasQuote ? quote.changePercent >= 0 : true;
-            const changeText = hasQuote
-                ? `${up ? '+' : ''}${quote.changePercent.toFixed(2)}%`
-                : '--';
-            const changeClass = !hasQuote
-                ? 'text-gray-500'
-                : (up ? 'text-crypto-green' : 'text-crypto-red');
-            const priceText = hasQuote ? this.formatWatchPrice(quote.price) : '--';
-
-            const tab = document.createElement('div');
-            tab.className = `coin-tab group relative flex items-center gap-2.5 pl-3 pr-1.5 py-2 rounded-xl border cursor-pointer flex-shrink-0 transition-all duration-200 ${
-                isActive
-                    ? 'active border-crypto-purple/60 bg-crypto-purple/10'
-                    : 'border-crypto-border bg-crypto-card hover:border-crypto-purple/40'
-            }`;
-
-            tab.innerHTML = `
-                <div class="w-8 h-8 rounded-full flex items-center justify-center text-[13px] font-bold text-white flex-shrink-0 ${
-                    isActive
-                        ? 'bg-gradient-to-br from-crypto-purple to-crypto-blue'
-                        : 'bg-crypto-dark ring-1 ring-crypto-border text-gray-300'
-                }">
-                    ${coinInfo.symbol.charAt(0)}
-                </div>
-                <div class="min-w-0 pr-1">
-                    <div class="flex items-center gap-1.5">
-                        <span class="text-[13px] font-semibold leading-tight">${coinInfo.symbol}</span>
-                        <span class="text-[11px] font-semibold leading-tight tabular-nums ${changeClass}">${changeText}</span>
-                    </div>
-                    <p class="text-[11px] text-gray-500 leading-tight tabular-nums mt-0.5">${priceText}</p>
-                </div>
-                ${this.state.watchlist.length > 1 ? `
-                <button class="remove-coin w-5 h-5 rounded-md flex items-center justify-center text-gray-600 opacity-0 group-hover:opacity-100 hover:text-crypto-red hover:bg-crypto-red/10 transition-all" data-coin="${coinId}" title="移除自选">
-                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                    </svg>
-                </button>` : ''}
-            `;
-
-            tab.addEventListener('click', (e) => {
-                if (!e.target.closest('.remove-coin')) {
-                    this.switchCoin(coinId);
-                }
-            });
-
-            container.appendChild(tab);
-        });
-
-        // 末尾的"添加币种"按钮
-        const addBtn = document.createElement('button');
-        addBtn.id = 'addCoinBtn';
-        addBtn.className = 'flex items-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-crypto-border text-gray-400 hover:text-crypto-purple hover:border-crypto-purple/50 hover:bg-crypto-purple/5 transition-all flex-shrink-0';
-        addBtn.title = '添加币种（联网搜索）';
-        addBtn.innerHTML = `
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
-            </svg>
-            <span class="text-[13px] font-medium">添加</span>
-        `;
-        addBtn.addEventListener('click', () => this.showAddCoinModal());
-        container.appendChild(addBtn);
-
-        // 绑定移除按钮（限定在容器内）
-        container.querySelectorAll('.remove-coin').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.removeFromWatchlist(btn.dataset.coin);
-            });
-        });
-    },
-
-    // ===== 市场分类（自选 / 主流 / 全部）=====
-
-    // 渲染市场分类标签样式
-    renderMarketTabs() {
-        document.querySelectorAll('.market-tab').forEach(btn => {
-            const active = btn.dataset.market === this.state.marketTab;
-            btn.className = `market-tab px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                active
-                    ? 'bg-crypto-purple/15 text-crypto-purple'
-                    : 'text-gray-400 hover:text-gray-200 hover:bg-crypto-dark'
-            }`;
-        });
-    },
-
-    // 切换市场分类
-    switchMarketTab(tab) {
-        if (!tab || tab === this.state.marketTab) return;
-        this.state.marketTab = tab;
-        this.state.coinListLimit = 50;
-        this.renderMarketTabs();
-        this.saveUIState();
-
-        const watchRow = document.getElementById('watchlistRow');
-        const listPanel = document.getElementById('coinListPanel');
-        const hint = document.getElementById('marketHint');
-
-        if (tab === 'watchlist') {
-            if (watchRow) watchRow.classList.remove('hidden');
-            if (listPanel) listPanel.classList.add('hidden');
-            if (hint) hint.textContent = '';
-            this.renderCoinTabs();
-        } else {
-            if (watchRow) watchRow.classList.add('hidden');
-            if (listPanel) listPanel.classList.remove('hidden');
-            if (hint) {
-                hint.textContent = tab === 'hot'
-                    ? '主流币种'
-                    : `共 ${this.state.coinCatalog.length} 个币种`;
-            }
-            const search = document.getElementById('coinListSearch');
-            if (search) search.value = '';
-            this.renderCoinList();
+        const input = document.getElementById('coinSearchInput');
+        if (input) {
+            input.value = '';
+            setTimeout(() => input.focus(), 60);
         }
+
+        // 渲染列表
+        this.renderCoinSelectorList();
+
+        // 后台联网拉取目录
+        this.loadCoinCatalog();
+        this.loadWatchlistQuotes();
+    },
+
+    hideCoinSelectorModal() {
+        const modal = document.getElementById('coinSelectorModal');
+        if (!modal) return;
+        modal.classList.add('hidden');
+        document.body.style.overflow = '';
+
+        const input = document.getElementById('coinSearchInput');
+        if (input) input.value = '';
+    },
+
+    // 切换币种选择器内的分类
+    switchCoinCategory(cat) {
+        if (!cat || cat === this.state.marketTab) return;
+        this.state.marketTab = cat;
+        this.state.coinListLimit = 50;
+        this.updateCoinCategoryButtons();
+        this.saveUIState();
+        this.renderCoinSelectorList();
+    },
+
+    updateCoinCategoryButtons() {
+        document.querySelectorAll('.coin-cat-btn').forEach(btn => {
+            const active = btn.dataset.market === this.state.marketTab;
+            if (active) {
+                btn.classList.add('text-golden');
+                btn.classList.remove('text-text-secondary');
+            } else {
+                btn.classList.remove('text-golden');
+                btn.classList.add('text-text-secondary');
+            }
+        });
     },
 
     // 获取某个分类下的币种
-    getMarketCoins(tab) {
+    getCategoryCoins(cat) {
         const catalog = this.state.coinCatalog.length
             ? this.state.coinCatalog
             : this.popularCoins.map(c => ({
                 coinId: c.id, symbol: c.symbol, name: c.name, binanceSymbol: c.binanceSymbol
             }));
 
-        if (tab === 'all') return catalog;
+        if (cat === 'all') return catalog;
 
-        // 主流：内置热门币种（按交易对匹配）
-        const hotSymbols = this.popularCoins.map(c => c.binanceSymbol);
-        const hot = catalog.filter(c => hotSymbols.includes(c.binanceSymbol));
-        return hot.length > 0 ? hot : catalog.slice(0, 20);
+        if (cat === 'watchlist') {
+            return this.state.watchlist.map(id => {
+                const info = this.getCoinInfo(id);
+                return {
+                    coinId: id,
+                    symbol: info.symbol,
+                    name: info.name,
+                    binanceSymbol: this.getBinanceSymbol(id)
+                };
+            });
+        }
+
+        // 主流：内置热门币种
+        if (cat === 'hot') {
+            const hotSymbols = this.popularCoins.map(c => c.binanceSymbol);
+            const hot = catalog.filter(c => hotSymbols.includes(c.binanceSymbol));
+            return hot.length > 0 ? hot : catalog.slice(0, 20);
+        }
+
+        // DeFi
+        if (cat === 'defi') {
+            return catalog.filter(c => this.defiCoins.includes(c.symbol));
+        }
+
+        // MEME
+        if (cat === 'meme') {
+            return catalog.filter(c => this.memeCoins.includes(c.symbol));
+        }
+
+        return catalog;
     },
 
-    // 判断某交易对是否已在自选中（内置 id 与联网 coinId 不同，需按交易对比较）
-    isSymbolInWatchlist(binanceSymbol) {
-        if (!binanceSymbol) return false;
-        return this.state.watchlist.some(id => this.getBinanceSymbol(id) === binanceSymbol);
-    },
+    // 渲染币种选择器列表
+    renderCoinSelectorList(query) {
+        const container = document.getElementById('coinSelectorList');
+        if (!container) return;
 
-    // 找到自选中持有该交易对的条目 id
-    findWatchlistIdBySymbol(binanceSymbol) {
-        if (!binanceSymbol) return null;
-        return this.state.watchlist.find(id => this.getBinanceSymbol(id) === binanceSymbol) || null;
-    },
+        const q = (query || document.getElementById('coinSearchInput')?.value || '').trim().toLowerCase();
 
-    // 渲染列表模式的币种列表
-    renderCoinList() {
-        const items = document.getElementById('coinListItems');
-        const moreBtn = document.getElementById('coinListMoreBtn');
-        if (!items || this.state.marketTab === 'watchlist') return;
-
-        const input = document.getElementById('coinListSearch');
-        const q = (input?.value || '').trim().toLowerCase();
-
-        let pool = this.getMarketCoins(this.state.marketTab);
+        let pool = this.getCategoryCoins(this.state.marketTab);
         if (q) {
             pool = pool.filter(c =>
                 (c.symbol || '').toLowerCase().includes(q) ||
@@ -929,15 +849,14 @@ const CryptoPulseApp = {
         const shown = pool.slice(0, this.state.coinListLimit);
 
         if (shown.length === 0) {
-            items.innerHTML = `<div class="py-10 text-center">
-                <p class="text-sm text-gray-400">未找到相关币种</p>
-                <p class="text-xs text-gray-600 mt-1">试试输入符号，如 BTC、PEPE、ARB</p>
+            container.innerHTML = `<div class="py-10 text-center">
+                <p class="text-sm text-text-secondary">未找到相关币种</p>
+                <p class="text-xs text-text-tertiary mt-1">试试输入符号，如 BTC、ETH</p>
             </div>`;
-            if (moreBtn) moreBtn.classList.add('hidden');
             return;
         }
 
-        // 行情缺失的币种批量补拉
+        // 行情缺失的批量补拉
         const pending = this._listQuotePending || (this._listQuotePending = new Set());
         const missing = shown
             .filter(c => !this.state.coinListQuotes[c.binanceSymbol] && !pending.has(c.binanceSymbol))
@@ -946,31 +865,34 @@ const CryptoPulseApp = {
             this.loadCoinListQuotes(missing);
         }
 
-        items.innerHTML = shown.map(coin => {
-            const quote = this.state.coinListQuotes[coin.binanceSymbol];
-            const hasQuote = !!quote;
-            const up = hasQuote ? quote.changePercent >= 0 : true;
+        container.innerHTML = shown.map(coin => {
             const isActive = coin.coinId === this.state.currentCoin;
             const inWatchlist = this.isSymbolInWatchlist(coin.binanceSymbol);
 
+            // 优先用自选行情，其次用列表行情
+            let quote = this.state.watchlistQuotes[coin.coinId];
+            if (!quote) quote = this.state.coinListQuotes[coin.binanceSymbol];
+            const hasQuote = !!quote;
+            const up = hasQuote ? quote.changePercent >= 0 : true;
+
             return `
-                <div class="coin-list-item flex items-center justify-between px-3 py-2.5 cursor-pointer hover:bg-crypto-dark/60 transition-colors ${isActive ? 'bg-crypto-purple/5' : ''}"
+                <div class="coin-selector-item flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-gray-50 transition-colors ${isActive ? 'bg-golden/5' : ''}"
                      data-coin-id="${coin.coinId}" data-symbol="${coin.binanceSymbol}">
                     <div class="flex items-center gap-3 min-w-0">
-                        <div class="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0 ${
-                            isActive ? 'bg-gradient-to-br from-crypto-purple to-crypto-blue' : 'bg-crypto-dark ring-1 ring-crypto-border text-gray-300'
-                        }">${coin.symbol.charAt(0)}</div>
+                        <div class="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-sm font-bold text-text-primary flex-shrink-0">
+                            ${coin.symbol.charAt(0)}
+                        </div>
                         <div class="min-w-0">
                             <div class="flex items-center gap-1.5">
-                                <span class="text-sm font-semibold">${coin.symbol}</span>
-                                ${inWatchlist ? '<span class="text-[10px] text-crypto-gold">★</span>' : ''}
+                                <span class="text-sm font-semibold text-text-primary">${coin.symbol}</span>
+                                ${inWatchlist ? '<span class="text-[10px] text-golden">★</span>' : ''}
                             </div>
-                            <p class="text-xs text-gray-500 truncate">${this.getCoinSubtitle(coin)}</p>
+                            <p class="text-xs text-text-secondary truncate">${this.getCoinSubtitle(coin)}</p>
                         </div>
                     </div>
                     <div class="text-right flex-shrink-0">
-                        <p class="text-sm font-medium tabular-nums">${hasQuote ? this.formatWatchPrice(quote.price) : '--'}</p>
-                        <p class="text-xs tabular-nums ${!hasQuote ? 'text-gray-600' : (up ? 'text-crypto-green' : 'text-crypto-red')}">
+                        <p class="text-sm font-medium tabular-nums text-text-primary">${hasQuote ? this.formatWatchPrice(quote.price) : '--'}</p>
+                        <p class="text-xs tabular-nums ${!hasQuote ? 'text-text-tertiary' : (up ? 'text-rise-green' : 'text-fall-red')}">
                             ${hasQuote ? (up ? '+' : '') + quote.changePercent.toFixed(2) + '%' : '--'}
                         </p>
                     </div>
@@ -978,20 +900,38 @@ const CryptoPulseApp = {
             `;
         }).join('');
 
-        // 点击进入该币种详情
-        items.querySelectorAll('.coin-list-item').forEach(el => {
+        // 绑定点击事件
+        container.querySelectorAll('.coin-selector-item').forEach(el => {
             el.addEventListener('click', () => {
                 this.addOrSwitchToCoin(el.dataset.coinId, el.dataset.symbol);
             });
         });
 
-        if (moreBtn) {
-            moreBtn.classList.toggle('hidden', pool.length <= this.state.coinListLimit);
-            moreBtn.textContent = `显示更多（还有 ${Math.max(0, pool.length - this.state.coinListLimit)} 个）`;
+        // 加载更多按钮（如果还有更多）
+        if (pool.length > this.state.coinListLimit) {
+            const moreDiv = document.createElement('div');
+            moreDiv.className = 'px-4 py-3 text-center';
+            moreDiv.innerHTML = `<button class="text-sm text-golden">加载更多（还有 ${pool.length - this.state.coinListLimit} 个）</button>`;
+            moreDiv.querySelector('button').addEventListener('click', () => {
+                this.state.coinListLimit += 50;
+                this.renderCoinSelectorList();
+            });
+            container.appendChild(moreDiv);
         }
     },
 
-    // 批量拉取列表行情（分块，每块最多100个交易对）
+    // 判断某交易对是否已在自选中
+    isSymbolInWatchlist(binanceSymbol) {
+        if (!binanceSymbol) return false;
+        return this.state.watchlist.some(id => this.getBinanceSymbol(id) === binanceSymbol);
+    },
+
+    findWatchlistIdBySymbol(binanceSymbol) {
+        if (!binanceSymbol) return null;
+        return this.state.watchlist.find(id => this.getBinanceSymbol(id) === binanceSymbol) || null;
+    },
+
+    // 批量拉取列表行情
     async loadCoinListQuotes(symbols) {
         const pending = this._listQuotePending || (this._listQuotePending = new Set());
         symbols.forEach(s => pending.add(s));
@@ -1022,30 +962,28 @@ const CryptoPulseApp = {
         }
 
         // 行情到位后刷新列表
-        if (this.state.marketTab !== 'watchlist') this.renderCoinList();
+        const modal = document.getElementById('coinSelectorModal');
+        if (modal && !modal.classList.contains('hidden')) {
+            this.renderCoinSelectorList();
+        }
     },
 
     /**
      * 从列表点击币种：已在自选则直接切换，否则先加入自选再切换
-     * 统一按「交易对」判断，避免 bitcoin / btc 这类 id 差异导致重复
-     * @param {string} coinId - 目录中的 coinId
-     * @param {string} binanceSymbol - 币安交易对
      */
     async addOrSwitchToCoin(coinId, binanceSymbol) {
-        // 1) 自选中已有同一交易对 → 直接切换
         const existing = this.findWatchlistIdBySymbol(binanceSymbol);
         if (existing) {
+            this.hideCoinSelectorModal();
             this.switchCoin(existing);
             return;
         }
 
-        // 2) 内置币种 → 直接走标准添加流程
         if (this.popularCoins.find(c => c.id === coinId)) {
             await this.addToWatchlist(coinId);
             return;
         }
 
-        // 3) 联网币种 → 先登记元数据，再走标准添加流程
         const fromCatalog = this.state.coinCatalog.find(c => c.coinId === coinId);
         if (fromCatalog) {
             this.state.coinMeta[coinId] = {
@@ -1060,97 +998,6 @@ const CryptoPulseApp = {
         await this.addToWatchlist(coinId);
     },
 
-    // ===== 全部自选弹窗 =====
-
-    showWatchlistModal() {
-        const modal = document.getElementById('watchlistModal');
-        if (!modal) return;
-        this.renderWatchlistModal();
-        modal.classList.remove('hidden');
-        modal.classList.add('flex');
-        document.body.style.overflow = 'hidden';
-        // 顺带刷新一次行情
-        this.loadWatchlistQuotes();
-    },
-
-    hideWatchlistModal() {
-        const modal = document.getElementById('watchlistModal');
-        if (!modal) return;
-        modal.classList.add('hidden');
-        modal.classList.remove('flex');
-        document.body.style.overflow = '';
-    },
-
-    renderWatchlistModal() {
-        const container = document.getElementById('watchlistItems');
-        if (!container) return;
-
-        const countEl = document.getElementById('watchlistCount');
-        if (countEl) countEl.textContent = `共 ${this.state.watchlist.length} 个币种`;
-
-        if (this.state.watchlist.length === 0) {
-            container.innerHTML = '<div class="py-10 text-center text-sm text-gray-500">暂无自选币种</div>';
-            return;
-        }
-
-        container.innerHTML = this.state.watchlist.map(coinId => {
-            const coin = this.getCoinInfo(coinId);
-            const quote = this.state.watchlistQuotes[coinId];
-            const hasQuote = !!quote;
-            const up = hasQuote ? quote.changePercent >= 0 : true;
-            const isActive = coinId === this.state.currentCoin;
-
-            return `
-                <div class="watchlist-row group flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-crypto-dark/60 transition-colors ${isActive ? 'bg-crypto-purple/5' : ''}"
-                     data-coin-id="${coinId}">
-                    <div class="flex items-center gap-3 min-w-0">
-                        <div class="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold text-white flex-shrink-0 ${
-                            isActive ? 'bg-gradient-to-br from-crypto-purple to-crypto-blue' : 'bg-crypto-dark ring-1 ring-crypto-border text-gray-300'
-                        }">${coin.symbol.charAt(0)}</div>
-                        <div class="min-w-0">
-                            <div class="flex items-center gap-1.5">
-                                <span class="text-sm font-semibold">${coin.symbol}</span>
-                                ${isActive ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-crypto-purple/15 text-crypto-purple">当前</span>' : ''}
-                            </div>
-                            <p class="text-xs text-gray-500 truncate">${this.getCoinSubtitle(coin)}</p>
-                        </div>
-                    </div>
-                    <div class="flex items-center gap-3 flex-shrink-0">
-                        <div class="text-right">
-                            <p class="text-sm font-medium tabular-nums">${hasQuote ? this.formatWatchPrice(quote.price) : '--'}</p>
-                            <p class="text-xs tabular-nums ${!hasQuote ? 'text-gray-600' : (up ? 'text-crypto-green' : 'text-crypto-red')}">
-                                ${hasQuote ? (up ? '+' : '') + quote.changePercent.toFixed(2) + '%' : '--'}
-                            </p>
-                        </div>
-                        ${this.state.watchlist.length > 1 ? `
-                        <button class="wl-remove w-6 h-6 rounded-md flex items-center justify-center text-gray-600 opacity-0 group-hover:opacity-100 hover:text-crypto-red hover:bg-crypto-red/10 transition-all" data-coin="${coinId}" title="移除自选">
-                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                            </svg>
-                        </button>` : ''}
-                    </div>
-                </div>
-            `;
-        }).join('');
-
-        // 点击切换币种
-        container.querySelectorAll('.watchlist-row').forEach(row => {
-            row.addEventListener('click', (e) => {
-                if (e.target.closest('.wl-remove')) return;
-                this.hideWatchlistModal();
-                this.switchCoin(row.dataset.coinId);
-            });
-        });
-
-        // 移除
-        container.querySelectorAll('.wl-remove').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.removeFromWatchlist(btn.dataset.coin);
-                this.renderWatchlistModal();
-            });
-        });
-    },
 
     // 获取币种信息
     getCoinInfo(coinId) {
@@ -1160,7 +1007,6 @@ const CryptoPulseApp = {
         const meta = this.state.coinMeta[coinId];
         if (meta) return meta;
 
-        // 从联网目录中查找
         const fromCatalog = this.state.coinCatalog.find(c => c.coinId === coinId);
         if (fromCatalog) return fromCatalog;
 
@@ -1176,24 +1022,18 @@ const CryptoPulseApp = {
     async switchCoin(coinId) {
         if (coinId === this.state.currentCoin) return;
         this.state.currentCoin = coinId;
-        // 立即持久化，保证刷新后仍停留在该币种
         this.saveWatchlist();
         this.saveUIState();
-        this.renderCoinTabs();
         await this.loadCoinData(coinId);
     },
 
     // 加载币种数据
     async loadCoinData(coinId, forceRefresh = false) {
-        // 用递增 token 保证「最后一次请求生效」
-        // 避免快速切换币种时，旧币种的请求回来覆盖新币种的数据
         const token = ++this._loadToken;
-
         this.state.isLoading = true;
         this.showLoading(true);
 
         try {
-            // 用 allSettled：单个数据源失败不影响其余数据展示
             await Promise.allSettled([
                 this.loadPriceData(coinId),
                 this.loadCandleData(coinId),
@@ -1202,16 +1042,10 @@ const CryptoPulseApp = {
                 this.loadDerivativesData(coinId)
             ]);
 
-            // 若期间用户又切了币种，丢弃本次结果
             if (token !== this._loadToken) return;
-
-            // 若加载过程中用户已切换，coinInfo 会对不上，这里再校验一次
             if (this.state.currentCoin !== coinId) return;
 
             this.state.lastUpdate = new Date();
-            this.updateLastUpdateTime();
-
-            // 所有数据加载完成后，重新计算综合信号
             this.updateSignal();
         } catch (error) {
             console.error('加载数据失败:', error);
@@ -1240,7 +1074,6 @@ const CryptoPulseApp = {
 
             const data = await response.json();
 
-            // 防止旧请求覆盖新币种的数据
             if (this.state.currentCoin !== coinId) return;
 
             const coinInfo = this.getCoinInfo(coinId);
@@ -1254,15 +1087,18 @@ const CryptoPulseApp = {
                 price_change_percentage_24h: parseFloat(data.priceChangePercent),
                 high_24h: parseFloat(data.highPrice),
                 low_24h: parseFloat(data.lowPrice),
-                total_volume: parseFloat(data.quoteVolume),
-                market_cap: 0, // 币安24小时接口不提供市值
+                open_24h: parseFloat(data.openPrice),
+                weighted_avg_price: parseFloat(data.weightedAvgPrice),
+                trade_count: parseInt(data.count, 10),
+                total_volume: parseFloat(data.volume),       // 成交量（币数量）
+                quote_volume: parseFloat(data.quoteVolume),  // 成交额（USDT）
+                market_cap: 0,
             };
 
             this.updatePriceUI();
 
         } catch (error) {
             console.error('获取价格数据失败:', error);
-            // 回退到模拟数据
             if (this.state.currentCoin === coinId) {
                 this.useMockPriceData(coinId);
             }
@@ -1296,7 +1132,8 @@ const CryptoPulseApp = {
             price_change_percentage_24h: change * 100,
             high_24h: currentPrice * 1.05,
             low_24h: currentPrice * 0.95,
-            total_volume: basePrice * 500000,
+            total_volume: basePrice * 10000,
+            quote_volume: basePrice * 500000,
             market_cap: basePrice * 20000000,
         };
         
@@ -1306,9 +1143,10 @@ const CryptoPulseApp = {
     // 获取币安K线间隔参数
     getBinanceInterval(hours) {
         if (hours <= 1) return { interval: '1m', limit: 200 };
-        if (hours <= 24) return { interval: '15m', limit: 200 }; // 200根15分钟K线 = 50小时
-        if (hours <= 168) return { interval: '1h', limit: 200 }; // 200根1小时K线 = 8.3天
-        return { interval: '4h', limit: 200 }; // 200根4小时K线 = 33.3天
+        if (hours <= 6) return { interval: '15m', limit: 200 };
+        if (hours <= 24) return { interval: '1h', limit: 200 };
+        if (hours <= 168) return { interval: '4h', limit: 200 };
+        return { interval: '1d', limit: 200 };
     },
 
     // 加载K线数据（币安 API）
@@ -1329,9 +1167,8 @@ const CryptoPulseApp = {
 
             const data = await response.json();
 
-            // 转换数据格式：币安返回 [开仓时间, 开, 高, 低, 收, 成交量, 平仓时间, 成交额, ...]
             const candleData = data.map(item => ({
-                time: Math.floor(item[0] / 1000), // 毫秒转秒
+                time: Math.floor(item[0] / 1000),
                 open: parseFloat(item[1]),
                 high: parseFloat(item[2]),
                 low: parseFloat(item[3]),
@@ -1369,12 +1206,10 @@ const CryptoPulseApp = {
 
         } catch (error) {
             console.warn('获取恐惧贪婪指数失败:', error);
-            // 使用模拟数据
             this.useMockFearGreedIndex();
         }
     },
 
-    // 使用模拟恐惧贪婪指数
     useMockFearGreedIndex() {
         const value = 50 + Math.floor(Math.random() * 20 - 10);
         let classification = '中性';
@@ -1393,7 +1228,7 @@ const CryptoPulseApp = {
         this.updateFearGreedUI();
     },
 
-    // 加载衍生品数据（资金费率、OI）
+    // 加载衍生品数据
     async loadDerivativesData(coinId) {
         const binanceSymbol = this.getBinanceSymbol(coinId);
         if (!binanceSymbol) {
@@ -1402,7 +1237,6 @@ const CryptoPulseApp = {
         }
 
         try {
-            // 尝试从币安期货API获取资金费率
             const response = await fetch(
                 `https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${binanceSymbol}`,
                 { signal: AbortSignal.timeout(5000) }
@@ -1413,12 +1247,11 @@ const CryptoPulseApp = {
             const data = await response.json();
 
             this.state.derivatives = {
-                fundingRate: parseFloat(data.lastFundingRate) * 100, // 转为百分比
+                fundingRate: parseFloat(data.lastFundingRate) * 100,
                 nextFundingTime: data.nextFundingTime,
-                openInterest: null // OI需要单独接口
+                openInterest: null
             };
 
-            // 尝试获取OI
             try {
                 const oiResponse = await fetch(
                     `https://fapi.binance.com/fapi/v1/openInterest?symbol=${binanceSymbol}`,
@@ -1440,7 +1273,6 @@ const CryptoPulseApp = {
         }
     },
 
-    // 使用模拟衍生品数据
     useMockDerivativesData(coinId) {
         const basePrices = {
             'bitcoin': 78000, 'ethereum': 3500, 'binancecoin': 580,
@@ -1449,10 +1281,7 @@ const CryptoPulseApp = {
         };
         const basePrice = basePrices[coinId] || 100;
 
-        // 模拟资金费率（通常在 -0.05% 到 +0.1% 之间）
         const fundingRate = (Math.random() - 0.3) * 0.1;
-
-        // 模拟OI（基于价格估算）
         const openInterest = basePrice * 1000 * (0.8 + Math.random() * 0.4);
 
         this.state.derivatives = {
@@ -1478,20 +1307,18 @@ const CryptoPulseApp = {
         };
         
         const basePrice = basePrices[coinId] || 100;
-        // 确保至少有100根K线，以便计算所有技术指标
         const candleCount = Math.max(100, this.state.currentTimeframe);
         const candleData = [];
         let price = basePrice;
         
         const now = Math.floor(Date.now() / 1000);
-        // 每根K线的时间间隔（秒）
         const totalSeconds = this.state.currentTimeframe * 3600;
         const interval = totalSeconds / candleCount;
         
         for (let i = candleCount - 1; i >= 0; i--) {
             const time = now - i * interval;
-            const volatility = 0.02; // 2% 波动
-            const trend = Math.sin(i / 20) * 0.005; // 趋势
+            const volatility = 0.02;
+            const trend = Math.sin(i / 20) * 0.005;
             
             const open = price;
             const change = (Math.random() - 0.5 + trend) * volatility * price;
@@ -1526,10 +1353,13 @@ const CryptoPulseApp = {
         const volumes = this.state.candleData.map(d => d.volume);
         const currentPrice = closes[closes.length - 1];
 
-        // 计算各指标
         const ma7 = TechnicalAnalysis.calculateSMA(closes, 7);
         const ma25 = TechnicalAnalysis.calculateSMA(closes, 25);
+        const ma99 = TechnicalAnalysis.calculateSMA(closes, 99);
         const ma200 = TechnicalAnalysis.calculateSMA(closes, 200);
+        const ema7 = TechnicalAnalysis.calculateEMA(closes, 7);
+        const ema25 = TechnicalAnalysis.calculateEMA(closes, 25);
+        const ema99 = TechnicalAnalysis.calculateEMA(closes, 99);
         const rsi = TechnicalAnalysis.calculateRSI(closes, 14);
         const macd = TechnicalAnalysis.calculateMACD(closes);
         const bollinger = TechnicalAnalysis.calculateBollingerBands(closes, 20);
@@ -1539,14 +1369,21 @@ const CryptoPulseApp = {
         const kdj = TechnicalAnalysis.calculateKDJ(highs, lows, closes);
         const supportResistance = TechnicalAnalysis.calculateSupportResistance(highs, lows, closes, currentPrice);
 
-        // 计算 AHR999
         const lastMA200 = ma200[ma200.length - 1];
         const ahr999 = TechnicalAnalysis.calculateAHR999(currentPrice, lastMA200);
+
+        // 计算成交量MA
+        const volMa5 = TechnicalAnalysis.calculateSMA(volumes, 5);
+        const volMa10 = TechnicalAnalysis.calculateSMA(volumes, 10);
 
         this.state.indicators = {
             ma7,
             ma25,
+            ma99,
             ma200,
+            ema7,
+            ema25,
+            ema99,
             rsi: rsi[rsi.length - 1],
             macd: {
                 value: macd.macd[macd.macd.length - 1],
@@ -1561,31 +1398,33 @@ const CryptoPulseApp = {
             kdj,
             ahr999,
             supportResistance,
+            volMa5,
+            volMa10,
             currentPrice
         };
 
         this.updateIndicatorsUI();
+        this.updateQuickInfoBar();
+        this.updateVolumeInfo();
+        this.updateInfoTab();
     },
 
     // 更新图表
     updateChart() {
         if (!this.state.candleData || this.state.candleData.length === 0) return;
         
-        // 更新K线
         ChartManager.updateCandlestickData(this.state.candleData);
         
-        // 更新均线
         const timeData = this.state.candleData.map(d => d.time);
-        ChartManager.updateMAData(timeData, this.state.indicators.ma7, this.state.indicators.ma25);
+        ChartManager.updateMAData(timeData, this.state.indicators.ma7, this.state.indicators.ma25, this.state.indicators.ma99);
         
-        // 绘制支撑压力位
         if (this.state.indicators.supportResistance) {
             ChartManager.drawSupportResistance(this.state.indicators.supportResistance);
         }
         
-        // 添加高低点标记
         this.addSwingMarkers();
     },
+
 
     // 添加高低点标记
     addSwingMarkers() {
@@ -1596,40 +1435,35 @@ const CryptoPulseApp = {
         const data = this.state.candleData;
         const ind = this.state.indicators;
 
-        // 寻找局部高点和低点
         for (let i = 5; i < data.length - 5; i++) {
-            // 局部高点
             if (data[i].high >= data[i-1].high && data[i].high >= data[i-2].high &&
                 data[i].high >= data[i-3].high && data[i].high >= data[i+1].high &&
                 data[i].high >= data[i+2].high && data[i].high >= data[i+3].high) {
                 markers.push({
                     time: data[i].time,
                     position: 'aboveBar',
-                    color: '#ef4444',
+                    color: '#f23645',
                     shape: 'arrowDown',
                     text: '高点'
                 });
             }
 
-            // 局部低点
             if (data[i].low <= data[i-1].low && data[i].low <= data[i-2].low &&
                 data[i].low <= data[i-3].low && data[i].low <= data[i+1].low &&
                 data[i].low <= data[i+2].low && data[i].low <= data[i+3].low) {
                 markers.push({
                     time: data[i].time,
                     position: 'belowBar',
-                    color: '#10b981',
+                    color: '#089981',
                     shape: 'arrowUp',
                     text: '低点'
                 });
             }
         }
 
-        // 添加技术指标买卖信号标记
         const signalMarkers = this.generateSignalMarkers(data, ind);
         markers.push(...signalMarkers);
 
-        // 按时间排序
         markers.sort((a, b) => a.time - b.time);
 
         ChartManager.addMarkers(markers);
@@ -1643,7 +1477,7 @@ const CryptoPulseApp = {
         const closes = data.map(d => d.close);
         const len = closes.length;
 
-        // === MACD 金叉死叉信号 ===
+        // MACD 金叉死叉
         if (ind.macd && ind.macd.macd && ind.macd.signal) {
             const macdLine = ind.macd.macd;
             const signalLine = ind.macd.signal;
@@ -1652,23 +1486,21 @@ const CryptoPulseApp = {
                 if (macdLine[i] === null || signalLine[i] === null) continue;
                 if (macdLine[i-1] === null || signalLine[i-1] === null) continue;
 
-                // MACD 金叉（买入）
                 if (macdLine[i-1] <= signalLine[i-1] && macdLine[i] > signalLine[i]) {
                     markers.push({
                         time: data[i].time,
                         position: 'belowBar',
-                        color: '#22c55e',
+                        color: '#089981',
                         shape: 'arrowUp',
                         text: 'MACD金叉'
                     });
                 }
 
-                // MACD 死叉（卖出）
                 if (macdLine[i-1] >= signalLine[i-1] && macdLine[i] < signalLine[i]) {
                     markers.push({
                         time: data[i].time,
                         position: 'aboveBar',
-                        color: '#f97316',
+                        color: '#f23645',
                         shape: 'arrowDown',
                         text: 'MACD死叉'
                     });
@@ -1676,7 +1508,7 @@ const CryptoPulseApp = {
             }
         }
 
-        // === KDJ 金叉死叉信号 ===
+        // KDJ 金叉死叉
         if (ind.kdj && ind.kdj.k && ind.kdj.d) {
             const kLine = ind.kdj.k;
             const dLine = ind.kdj.d;
@@ -1685,45 +1517,41 @@ const CryptoPulseApp = {
                 if (kLine[i] === null || dLine[i] === null) continue;
                 if (kLine[i-1] === null || dLine[i-1] === null) continue;
 
-                // KDJ 超卖区金叉（强买入）
                 if (kLine[i] < 30 && dLine[i] < 30 &&
                     kLine[i-1] <= dLine[i-1] && kLine[i] > dLine[i]) {
                     markers.push({
                         time: data[i].time,
                         position: 'belowBar',
-                        color: '#15803d',
+                        color: '#089981',
                         shape: 'arrowUp',
                         text: 'KDJ超卖金叉'
                     });
                 }
-                // KDJ 金叉
                 else if (kLine[i-1] <= dLine[i-1] && kLine[i] > dLine[i]) {
                     markers.push({
                         time: data[i].time,
                         position: 'belowBar',
-                        color: '#4ade80',
+                        color: '#089981',
                         shape: 'arrowUp',
                         text: 'KDJ金叉'
                     });
                 }
 
-                // KDJ 超买区死叉（强卖出）
                 if (kLine[i] > 70 && dLine[i] > 70 &&
                     kLine[i-1] >= dLine[i-1] && kLine[i] < dLine[i]) {
                     markers.push({
                         time: data[i].time,
                         position: 'aboveBar',
-                        color: '#b91c1c',
+                        color: '#f23645',
                         shape: 'arrowDown',
                         text: 'KDJ超买死叉'
                     });
                 }
-                // KDJ 死叉
                 else if (kLine[i-1] >= dLine[i-1] && kLine[i] < dLine[i]) {
                     markers.push({
                         time: data[i].time,
                         position: 'aboveBar',
-                        color: '#fb923c',
+                        color: '#f23645',
                         shape: 'arrowDown',
                         text: 'KDJ死叉'
                     });
@@ -1731,35 +1559,33 @@ const CryptoPulseApp = {
             }
         }
 
-        // === RSI 超买超卖信号 ===
+        // RSI 超买超卖
         const rsiLine = TechnicalAnalysis.calculateRSI(closes, 14);
         for (let i = 1; i < Math.min(rsiLine.length, len); i++) {
             if (rsiLine[i] === null) continue;
 
-            // RSI 从超卖区回升（买入）
             if (rsiLine[i-1] !== null && rsiLine[i-1] < 30 && rsiLine[i] >= 30) {
                 markers.push({
                     time: data[i].time,
                     position: 'belowBar',
-                    color: '#059669',
+                    color: '#089981',
                     shape: 'arrowUp',
                     text: 'RSI超卖回升'
                 });
             }
 
-            // RSI 从超买区回落（卖出）
             if (rsiLine[i-1] !== null && rsiLine[i-1] > 70 && rsiLine[i] <= 70) {
                 markers.push({
                     time: data[i].time,
                     position: 'aboveBar',
-                    color: '#dc2626',
+                    color: '#f23645',
                     shape: 'arrowDown',
                     text: 'RSI超买回落'
                 });
             }
         }
 
-        // === MA 均线交叉信号 ===
+        // MA 均线交叉
         if (ind.ma7 && ind.ma25) {
             const ma7 = ind.ma7;
             const ma25 = ind.ma25;
@@ -1768,23 +1594,21 @@ const CryptoPulseApp = {
                 if (ma7[i] === null || ma25[i] === null) continue;
                 if (ma7[i-1] === null || ma25[i-1] === null) continue;
 
-                // MA7 上穿 MA25（金叉，买入）
                 if (ma7[i-1] <= ma25[i-1] && ma7[i] > ma25[i]) {
                     markers.push({
                         time: data[i].time,
                         position: 'belowBar',
-                        color: '#16a34a',
+                        color: '#089981',
                         shape: 'arrowUp',
                         text: '均线金叉'
                     });
                 }
 
-                // MA7 下穿 MA25（死叉，卖出）
                 if (ma7[i-1] >= ma25[i-1] && ma7[i] < ma25[i]) {
                     markers.push({
                         time: data[i].time,
                         position: 'aboveBar',
-                        color: '#ea580c',
+                        color: '#f23645',
                         shape: 'arrowDown',
                         text: '均线死叉'
                     });
@@ -1792,31 +1616,28 @@ const CryptoPulseApp = {
             }
         }
 
-        // === 布林带突破信号 ===
+        // 布林带突破
         if (ind.bollingerBands && ind.bollingerBands.upper && ind.bollingerBands.lower) {
             const upper = ind.bollingerBands.upper;
             const lower = ind.bollingerBands.lower;
-
             for (let i = 1; i < Math.min(upper.length, len); i++) {
                 if (upper[i] === null || lower[i] === null) continue;
 
-                // 价格触及下轨后回升（买入）
                 if (data[i-1].low <= lower[i-1] && data[i].close > lower[i]) {
                     markers.push({
                         time: data[i].time,
                         position: 'belowBar',
-                        color: '#0d9488',
+                        color: '#089981',
                         shape: 'arrowUp',
                         text: '布林下轨反弹'
                     });
                 }
 
-                // 价格触及上轨后回落（卖出）
                 if (data[i-1].high >= upper[i-1] && data[i].close < upper[i]) {
                     markers.push({
                         time: data[i].time,
                         position: 'aboveBar',
-                        color: '#c2410c',
+                        color: '#f23645',
                         shape: 'arrowDown',
                         text: '布林上轨回落'
                     });
@@ -1824,7 +1645,7 @@ const CryptoPulseApp = {
             }
         }
 
-        // === StochRSI 信号 ===
+        // StochRSI 信号
         if (ind.stochRSI && ind.stochRSI.k && ind.stochRSI.d) {
             const stochK = ind.stochRSI.k;
             const stochD = ind.stochRSI.d;
@@ -1833,25 +1654,23 @@ const CryptoPulseApp = {
                 if (stochK[i] === null || stochD[i] === null) continue;
                 if (stochK[i-1] === null || stochD[i-1] === null) continue;
 
-                // StochRSI 超卖区金叉
                 if (stochK[i] < 20 && stochD[i] < 20 &&
                     stochK[i-1] <= stochD[i-1] && stochK[i] > stochD[i]) {
                     markers.push({
                         time: data[i].time,
                         position: 'belowBar',
-                        color: '#047857',
+                        color: '#089981',
                         shape: 'arrowUp',
                         text: 'StochRSI超卖金叉'
                     });
                 }
 
-                // StochRSI 超买区死叉
                 if (stochK[i] > 80 && stochD[i] > 80 &&
                     stochK[i-1] >= stochD[i-1] && stochK[i] < stochD[i]) {
                     markers.push({
                         time: data[i].time,
                         position: 'aboveBar',
-                        color: '#991b1b',
+                        color: '#f23645',
                         shape: 'arrowDown',
                         text: 'StochRSI超买死叉'
                     });
@@ -1859,14 +1678,13 @@ const CryptoPulseApp = {
             }
         }
 
-        // 去重：同一根K线只保留一个最强信号
+        // 去重
         const uniqueMarkers = new Map();
         for (const marker of markers) {
             const key = `${marker.time}_${marker.position}`;
             if (!uniqueMarkers.has(key)) {
                 uniqueMarkers.set(key, marker);
             } else {
-                // 保留更强的信号（文字越长通常描述越详细）
                 const existing = uniqueMarkers.get(key);
                 if (marker.text.length > existing.text.length) {
                     uniqueMarkers.set(key, marker);
@@ -1875,8 +1693,6 @@ const CryptoPulseApp = {
         }
         const dedupedMarkers = Array.from(uniqueMarkers.values());
 
-        // 只保留最近的信号标记（避免图表太乱）
-        // 买入信号最近4个，卖出信号最近4个
         const buySignals = dedupedMarkers.filter(m => m.position === 'belowBar').slice(-5);
         const sellSignals = dedupedMarkers.filter(m => m.position === 'aboveBar').slice(-5);
 
@@ -1888,32 +1704,39 @@ const CryptoPulseApp = {
         const info = this.state.coinInfo;
         if (!info) return;
 
-        // 币种名称（使用 getCoinInfo 以支持联网添加的币种）
         const coin = this.getCoinInfo(this.state.currentCoin);
-        const coinNameEl = document.getElementById('coinNameLarge');
-        const coinSymbolEl = document.getElementById('coinSymbolLarge');
-        const coinIconEl = document.getElementById('coinIconLarge');
-        if (coinNameEl) coinNameEl.textContent = coin.name || coin.symbol;
-        if (coinSymbolEl) coinSymbolEl.textContent = coin.symbol + '/USDT';
-        if (coinIconEl) coinIconEl.textContent = coin.image || coin.symbol.charAt(0);
+
+        // 币种交易对标题
+        const pairTitleEl = document.getElementById('coinPairTitle');
+        if (pairTitleEl) pairTitleEl.textContent = coin.symbol + '/USDT';
+
+        // 币种英文名/中文名副标题
+        const nameSubEl = document.getElementById('coinNameSub');
+        if (nameSubEl) nameSubEl.textContent = coin.name || coin.symbol;
 
         // 当前价格
-        document.getElementById('currentPrice').textContent = '$' + TechnicalAnalysis.formatPrice(info.current_price);
+        const priceEl = document.getElementById('currentPrice');
+        if (priceEl) {
+            priceEl.textContent = TechnicalAnalysis.formatPrice(info.current_price);
+            const isPositive = info.price_change_percentage_24h >= 0;
+            priceEl.className = `text-3xl font-bold tabular-nums ${isPositive ? 'text-rise-green' : 'text-fall-red'}`;
+        }
 
-        // 价格变化
+        // 人民币换算价
+        const cnyEl = document.getElementById('cnyPrice');
+        if (cnyEl) {
+            const cnyPrice = info.current_price * this.state.usdtToCnyRate;
+            cnyEl.textContent = '≈ ¥' + TechnicalAnalysis.formatLargeNumber(cnyPrice);
+        }
+
+        // 价格变化徽章
         const changePercent = info.price_change_percentage_24h;
         const isPositive = changePercent >= 0;
 
-        const priceChangeText = document.getElementById('priceChangeText');
-        if (priceChangeText) {
-            priceChangeText.textContent = `24H ${isPositive ? '+' : ''}$${TechnicalAnalysis.formatPrice(info.price_change_24h)} (${isPositive ? '+' : ''}${changePercent.toFixed(2)}%)`;
-            priceChangeText.className = `text-sm sm:text-base mt-1 ${isPositive ? 'text-crypto-green' : 'text-crypto-red'}`;
-        }
-
-        const priceChangeBadge = document.getElementById('priceChangeBadge');
-        if (priceChangeBadge) {
-            priceChangeBadge.textContent = `${isPositive ? '+' : ''}${changePercent.toFixed(2)}%`;
-            priceChangeBadge.className = `ml-auto px-3 py-1.5 rounded-full text-sm font-semibold ${isPositive ? 'bg-crypto-green/10 text-crypto-green' : 'bg-crypto-red/10 text-crypto-red'}`;
+        const badge = document.getElementById('priceChangeBadge');
+        if (badge) {
+            badge.textContent = `${isPositive ? '+' : ''}${changePercent.toFixed(2)}%`;
+            badge.className = `text-xs font-medium px-2 py-0.5 rounded ${isPositive ? 'bg-rise-green/10 text-rise-green' : 'bg-fall-red/10 text-fall-red'}`;
         }
 
         // 24H最高/最低
@@ -1922,70 +1745,140 @@ const CryptoPulseApp = {
         const lowEl = document.getElementById('low24h');
         if (lowEl) lowEl.textContent = '$' + TechnicalAnalysis.formatPrice(info.low_24h);
 
-        // 24H成交量
+        // 24H成交量（币数量）
         const volEl = document.getElementById('volume24h');
-        if (volEl) volEl.textContent = '$' + TechnicalAnalysis.formatLargeNumber(info.total_volume);
+        if (volEl) volEl.textContent = TechnicalAnalysis.formatLargeNumber(info.total_volume);
+
+        // 24H成交额（USDT）
+        const quoteVolEl = document.getElementById('quoteVolume24h');
+        if (quoteVolEl) {
+            const qv = info.quote_volume || info.total_volume * info.current_price;
+            quoteVolEl.textContent = '$' + TechnicalAnalysis.formatLargeNumber(qv);
+        }
     },
 
-    // 设置状态徽章文本和样式
+    // 设置状态徽章
     setStatusBadge(elementId, text, color) {
         const el = document.getElementById(elementId);
         if (!el) return;
         el.textContent = text;
-        let bgClass = 'bg-gray-700/50';
-        let textClass = 'text-gray-400';
+        let bgClass = 'bg-gray-200';
+        let textClass = 'text-text-secondary';
         if (color === 'green') {
-            bgClass = 'bg-crypto-green/10';
-            textClass = 'text-crypto-green';
+            bgClass = 'bg-rise-green/10';
+            textClass = 'text-rise-green';
         } else if (color === 'red') {
-            bgClass = 'bg-crypto-red/10';
-            textClass = 'text-crypto-red';
+            bgClass = 'bg-fall-red/10';
+            textClass = 'text-fall-red';
         } else if (color === 'gold') {
-            bgClass = 'bg-crypto-gold/10';
-            textClass = 'text-crypto-gold';
+            bgClass = 'bg-golden/10';
+            textClass = 'text-golden';
         } else if (color === 'blue') {
-            bgClass = 'bg-crypto-blue/10';
-            textClass = 'text-crypto-blue';
+            bgClass = 'bg-blue-500/10';
+            textClass = 'text-blue-500';
         }
-        el.className = `text-xs px-1.5 py-0.5 rounded ${bgClass} ${textClass}`;
+        el.className = `text-[10px] px-1.5 py-0.5 rounded ${bgClass} ${textClass}`;
     },
 
-    // 更新技术指标UI
+    // 更新快速信息栏
+    updateQuickInfoBar() {
+        const ind = this.state.indicators;
+        if (!ind) return;
+
+        const ema7 = ind.ema7?.[ind.ema7.length - 1];
+        const ema25 = ind.ema25?.[ind.ema25.length - 1];
+        const ema99 = ind.ema99?.[ind.ema99.length - 1];
+        const currentPrice = ind.currentPrice;
+
+        const ema7El = document.getElementById('ema7Value');
+        if (ema7El && ema7) {
+            ema7El.textContent = TechnicalAnalysis.formatPrice(ema7);
+            ema7El.className = `font-medium tabular-nums ${currentPrice >= ema7 ? 'text-rise-green' : 'text-fall-red'}`;
+        }
+
+        const ema25El = document.getElementById('ema25Value');
+        if (ema25El && ema25) {
+            ema25El.textContent = TechnicalAnalysis.formatPrice(ema25);
+            ema25El.className = `font-medium tabular-nums ${currentPrice >= ema25 ? 'text-rise-green' : 'text-fall-red'}`;
+        }
+
+        const ema99El = document.getElementById('ema99Value');
+        if (ema99El && ema99) {
+            ema99El.textContent = TechnicalAnalysis.formatPrice(ema99);
+            ema99El.className = `font-medium tabular-nums ${currentPrice >= ema99 ? 'text-rise-green' : 'text-fall-red'}`;
+        }
+
+        const rsiQuickEl = document.getElementById('rsiQuickValue');
+        if (rsiQuickEl && ind.rsi !== null && ind.rsi !== undefined) {
+            rsiQuickEl.textContent = ind.rsi.toFixed(1);
+            let rsiColor = 'text-text-secondary';
+            if (ind.rsi > 70) rsiColor = 'text-fall-red';
+            else if (ind.rsi < 30) rsiColor = 'text-rise-green';
+            rsiQuickEl.className = `font-medium tabular-nums ${rsiColor}`;
+        }
+    },
+
+    // 更新成交量说明
+    updateVolumeInfo() {
+        const ind = this.state.indicators;
+        if (!ind || !this.state.candleData.length) return;
+
+        const lastVol = this.state.candleData[this.state.candleData.length - 1]?.volume;
+        const volDisplay = document.getElementById('volDisplay');
+        if (volDisplay && lastVol) {
+            volDisplay.textContent = TechnicalAnalysis.formatLargeNumber(lastVol);
+        }
+
+        const volMa5El = document.getElementById('volMa5');
+        const ma5 = ind.volMa5?.[ind.volMa5.length - 1];
+        if (volMa5El && ma5) {
+            volMa5El.textContent = TechnicalAnalysis.formatLargeNumber(ma5);
+        }
+
+        const volMa10El = document.getElementById('volMa10');
+        const ma10 = ind.volMa10?.[ind.volMa10.length - 1];
+        if (volMa10El && ma10) {
+            volMa10El.textContent = TechnicalAnalysis.formatLargeNumber(ma10);
+        }
+    },
+
+
+    // 更新技术指标UI（Mini版）
     updateIndicatorsUI() {
         const ind = this.state.indicators;
         const currentPrice = ind.currentPrice;
 
         // RSI
         const rsiValue = ind.rsi;
-        const rsiEl = document.getElementById('rsiValue');
-        const rsiBar = document.getElementById('rsiBar');
+        const rsiValEl = document.getElementById('rsiValueMini');
 
         if (rsiValue !== null && rsiValue !== undefined && !isNaN(rsiValue)) {
-            rsiEl.textContent = rsiValue.toFixed(1);
-            const rsiColor = SignalGenerator.getRSIColor(rsiValue);
-            rsiEl.style.color = rsiColor;
-            rsiBar.style.width = rsiValue + '%';
-            rsiBar.style.backgroundColor = rsiColor;
-            // RSI状态徽章
+            if (rsiValEl) {
+                rsiValEl.textContent = rsiValue.toFixed(1);
+                let rsiColor = 'text-text-primary';
+                if (rsiValue > 70) rsiColor = 'text-fall-red';
+                else if (rsiValue < 30) rsiColor = 'text-rise-green';
+                rsiValEl.className = `text-lg font-bold tabular-nums ${rsiColor}`;
+            }
             let rsiStatus = '中性';
             let rsiStatusColor = 'gold';
             if (rsiValue > 70) { rsiStatus = '超买'; rsiStatusColor = 'red'; }
             else if (rsiValue < 30) { rsiStatus = '超卖'; rsiStatusColor = 'green'; }
-            this.setStatusBadge('rsiStatus', rsiStatus, rsiStatusColor);
-        } else {
-            rsiEl.textContent = '--';
+            this.setStatusBadge('rsiStatusMini', rsiStatus, rsiStatusColor);
+        } else if (rsiValEl) {
+            rsiValEl.textContent = '--';
         }
 
         // MACD
         const macdValue = ind.macd?.value;
         const macdSignal = ind.macd?.signal;
-        const macdEl = document.getElementById('macdValue');
-        const macdSignalEl = document.getElementById('macdSignal');
+        const macdValEl = document.getElementById('macdValueMini');
 
         if (typeof macdValue === 'number' && !isNaN(macdValue)) {
-            macdEl.textContent = macdValue.toFixed(4);
-            macdEl.className = `text-xl font-bold ${macdValue > 0 ? 'text-crypto-green' : 'text-crypto-red'}`;
-            // MACD状态
+            if (macdValEl) {
+                macdValEl.textContent = macdValue.toFixed(4);
+                macdValEl.className = `text-lg font-bold tabular-nums ${macdValue > 0 ? 'text-rise-green' : 'text-fall-red'}`;
+            }
             if (macdSignal && typeof macdSignal[macdSignal.length - 1] === 'number') {
                 const lastMacd = macdValue;
                 const lastSignal = macdSignal[macdSignal.length - 1];
@@ -1995,57 +1888,42 @@ const CryptoPulseApp = {
                 else if (lastMacd > lastSignal) { macdStatus = '金叉'; macdColor = 'green'; }
                 else if (lastMacd < lastSignal && lastMacd < 0) { macdStatus = '死叉空头'; macdColor = 'red'; }
                 else if (lastMacd < lastSignal) { macdStatus = '死叉'; macdColor = 'red'; }
-                this.setStatusBadge('macdStatus', macdStatus, macdColor);
+                this.setStatusBadge('macdStatusMini', macdStatus, macdColor);
             }
-        } else {
-            macdEl.textContent = '--';
-        }
-
-        if (typeof macdSignal === 'number') {
-            macdSignalEl.textContent = `信号: ${macdSignal.toFixed(4)}`;
-        } else if (Array.isArray(macdSignal) && macdSignal[macdSignal.length - 1] !== null) {
-            macdSignalEl.textContent = `信号: ${macdSignal[macdSignal.length - 1].toFixed(4)}`;
-        } else {
-            macdSignalEl.textContent = '--';
+        } else if (macdValEl) {
+            macdValEl.textContent = '--';
         }
 
         // KDJ
         const kdj = ind.kdj;
-        const kdjKEl = document.getElementById('kdjKValue');
-        const kdjDJEl = document.getElementById('kdjDJValue');
+        const kdjKEl = document.getElementById('kdjKValueMini');
         if (kdj && kdj.k && kdj.k[kdj.k.length - 1] !== null) {
             const lastK = kdj.k[kdj.k.length - 1];
             const lastD = kdj.d[kdj.d.length - 1];
-            const lastJ = kdj.j[kdj.j.length - 1];
-            kdjKEl.textContent = lastK.toFixed(1);
-            kdjKEl.className = `text-xl font-bold ${lastK > 80 ? 'text-crypto-red' : lastK < 20 ? 'text-crypto-green' : 'text-white'}`;
-            kdjDJEl.textContent = `D: ${lastD?.toFixed(1) || '--'}  J: ${lastJ?.toFixed(1) || '--'}`;
-            // KDJ状态
+            if (kdjKEl) {
+                kdjKEl.textContent = lastK.toFixed(1);
+                kdjKEl.className = `text-lg font-bold tabular-nums ${lastK > 80 ? 'text-fall-red' : lastK < 20 ? 'text-rise-green' : 'text-text-primary'}`;
+            }
             let kdjStatus = '中性';
             let kdjColor = 'gold';
             if (lastK > 80 && lastD > 80) { kdjStatus = '超买'; kdjColor = 'red'; }
             else if (lastK < 20 && lastD < 20) { kdjStatus = '超卖'; kdjColor = 'green'; }
             else if (lastK > lastD) { kdjStatus = '偏多'; kdjColor = 'green'; }
             else { kdjStatus = '偏空'; kdjColor = 'red'; }
-            this.setStatusBadge('kdjStatus', kdjStatus, kdjColor);
-        } else {
+            this.setStatusBadge('kdjStatusMini', kdjStatus, kdjColor);
+        } else if (kdjKEl) {
             kdjKEl.textContent = '--';
-            kdjDJEl.textContent = 'D: -- J: --';
         }
-
-        // 均线排列
-        this.updateMAAlignment(ind);
 
         // 布林带
         const boll = ind.bollingerBands;
         if (boll && boll.upper && boll.lower) {
             const lastUpper = boll.upper[boll.upper.length - 1];
             const lastLower = boll.lower[boll.lower.length - 1];
-            const upperShort = document.getElementById('bollUpperShort');
-            const lowerShort = document.getElementById('bollLowerShort');
-            if (upperShort && lastUpper) upperShort.textContent = '上: $' + TechnicalAnalysis.formatPrice(lastUpper);
-            if (lowerShort && lastLower) lowerShort.textContent = '下: $' + TechnicalAnalysis.formatPrice(lastLower);
-            // 布林带状态
+            const upperMini = document.getElementById('bollUpperMini');
+            const lowerMini = document.getElementById('bollLowerMini');
+            if (upperMini && lastUpper) upperMini.textContent = '上: ' + TechnicalAnalysis.formatPrice(lastUpper);
+            if (lowerMini && lastLower) lowerMini.textContent = '下: ' + TechnicalAnalysis.formatPrice(lastLower);
             let bollStatus = '中性';
             let bollColor = 'gold';
             if (currentPrice >= lastUpper) { bollStatus = '突破上轨'; bollColor = 'red'; }
@@ -2055,113 +1933,17 @@ const CryptoPulseApp = {
                 if (position > 0.7) { bollStatus = '偏强'; bollColor = 'green'; }
                 else if (position < 0.3) { bollStatus = '偏弱'; bollColor = 'red'; }
             }
-            this.setStatusBadge('bollStatus', bollStatus, bollColor);
+            this.setStatusBadge('bollStatusMini', bollStatus, bollColor);
         }
 
-        // AHR999
-        const ahr = ind.ahr999;
-        const ahrEl = document.getElementById('ahr999Value');
-        const ahrZoneEl = document.getElementById('ahr999Zone');
-        if (ahr && ahr.value !== null && !isNaN(ahr.value)) {
-            ahrEl.textContent = ahr.value.toFixed(3);
-            ahrZoneEl.textContent = this.getAHR999ZoneText(ahr.zone);
-            let ahrColor = 'gold';
-            if (ahr.zone === 'deep_value') ahrColor = 'green';
-            else if (ahr.zone === 'accumulation') ahrColor = 'blue';
-            else if (ahr.zone === 'overheated') ahrColor = 'red';
-            ahrEl.className = `text-xl font-bold ${ahrColor === 'green' ? 'text-crypto-green' : ahrColor === 'blue' ? 'text-crypto-blue' : ahrColor === 'red' ? 'text-crypto-red' : 'text-crypto-gold'}`;
-            this.setStatusBadge('ahrStatus', this.getAHR999ZoneText(ahr.zone), ahrColor);
-        } else {
-            ahrEl.textContent = '--';
-            ahrZoneEl.textContent = '--';
-        }
-
-        // 更多指标（折叠面板内）
-        // Stochastic RSI
-        const stochK = ind.stochRSI?.k;
-        const stochD = ind.stochRSI?.d;
-        const stochEl = document.getElementById('stochRSIValue');
-        const stochSignalEl = document.getElementById('stochRSISignal');
-        if (stochK && stochK[stochK.length - 1] !== null) {
-            const lastK = stochK[stochK.length - 1];
-            const lastD = stochD?.[stochD.length - 1];
-            stochEl.textContent = lastK.toFixed(1);
-            stochEl.className = `text-lg font-bold ${lastK > 80 ? 'text-crypto-red' : lastK < 20 ? 'text-crypto-green' : 'text-white'}`;
-            if (lastD !== null && lastD !== undefined) {
-                stochSignalEl.textContent = `D: ${lastD.toFixed(1)}`;
-            }
-            let stochStatus = '中性';
-            let stochColor = 'gold';
-            if (lastK > 80) { stochStatus = '超买'; stochColor = 'red'; }
-            else if (lastK < 20) { stochStatus = '超卖'; stochColor = 'green'; }
-            else if (lastK > lastD) { stochStatus = '偏多'; stochColor = 'green'; }
-            else { stochStatus = '偏空'; stochColor = 'red'; }
-            this.setStatusBadge('stochRSIStatus', stochStatus, stochColor);
-        } else {
-            stochEl && (stochEl.textContent = '--');
-        }
-
-        // VWAP
-        const vwapEl = document.getElementById('vwapValue');
-        const vwapPosEl = document.getElementById('vwapPosition');
-        const vwap = ind.vwap;
-        if (vwap && vwap[vwap.length - 1]) {
-            const lastVWAP = vwap[vwap.length - 1];
-            vwapEl.textContent = '$' + TechnicalAnalysis.formatPrice(lastVWAP);
-            const above = currentPrice > lastVWAP;
-            vwapPosEl.textContent = above ? '价格在上方' : '价格在下方';
-            vwapPosEl.className = `text-xs ${above ? 'text-crypto-green' : 'text-crypto-red'}`;
-            this.setStatusBadge('vwapStatus', above ? '偏多' : '偏空', above ? 'green' : 'red');
-        } else {
-            vwapEl && (vwapEl.textContent = '--');
-        }
-
-        // OBV趋势
-        const obvTrendEl = document.getElementById('obvTrend');
-        const obv = ind.obv;
-        if (obv && obv.length >= 10) {
-            const recent = obv.slice(-10);
-            const rising = recent[recent.length - 1] > recent[0];
-            obvTrendEl.textContent = rising ? '上升 ↑' : '下降 ↓';
-            obvTrendEl.className = `text-lg font-bold ${rising ? 'text-crypto-green' : 'text-crypto-red'}`;
-            this.setStatusBadge('obvStatus', rising ? '流入' : '流出', rising ? 'green' : 'red');
-        } else {
-            obvTrendEl && (obvTrendEl.textContent = '--');
-        }
-
-        // MA200
-        const ma200El = document.getElementById('ma200Value');
-        const ma200 = ind.ma200;
-        if (ma200 && ma200[ma200.length - 1]) {
-            const lastMA200 = ma200[ma200.length - 1];
-            ma200El.textContent = '$' + TechnicalAnalysis.formatPrice(lastMA200);
-            const above = currentPrice > lastMA200;
-            ma200El.className = `text-lg font-bold ${above ? 'text-crypto-green' : 'text-crypto-red'}`;
-            this.setStatusBadge('ma200Status', above ? '牛市' : '熊市', above ? 'green' : 'red');
-        } else {
-            ma200El && (ma200El.textContent = '--');
-        }
-
-        // MA7 / MA25 完整值
-        const ma7Full = document.getElementById('ma7ValueFull');
-        const ma25Full = document.getElementById('ma25ValueFull');
-        const ma7 = ind.ma7;
-        const ma25 = ind.ma25;
-        if (ma7Full && ma7 && ma7[ma7.length - 1]) {
-            ma7Full.textContent = '$' + TechnicalAnalysis.formatPrice(ma7[ma7.length - 1]);
-        }
-        if (ma25Full && ma25 && ma25[ma25.length - 1]) {
-            ma25Full.textContent = '$' + TechnicalAnalysis.formatPrice(ma25[ma25.length - 1]);
-        }
-
-        // 支撑压力位
+        // 关键价位
         const sr = ind.supportResistance;
         if (sr) {
-            const r2El = document.getElementById('resistance2');
-            const r1El = document.getElementById('resistance1');
-            const cpEl = document.getElementById('currentPriceLevel');
-            const s1El = document.getElementById('support1');
-            const s2El = document.getElementById('support2');
+            const r2El = document.getElementById('resistance2Mini');
+            const r1El = document.getElementById('resistance1Mini');
+            const cpEl = document.getElementById('currentPriceLevelMini');
+            const s1El = document.getElementById('support1Mini');
+            const s2El = document.getElementById('support2Mini');
             if (r2El) r2El.textContent = '$' + TechnicalAnalysis.formatPrice(sr.resistance2);
             if (r1El) r1El.textContent = '$' + TechnicalAnalysis.formatPrice(sr.resistance1);
             if (cpEl) cpEl.textContent = '$' + TechnicalAnalysis.formatPrice(ind.currentPrice);
@@ -2170,98 +1952,31 @@ const CryptoPulseApp = {
         }
     },
 
-    // 获取 AHR999 区域文本
-    getAHR999ZoneText(zone) {
-        const zoneMap = {
-            'deep_value': '深度价值区',
-            'accumulation': '积累区间',
-            'overheated': '过热区',
-            'neutral': '中性'
-        };
-        return zoneMap[zone] || '--';
-    },
-
-    // 更新均线排列状态
-    updateMAAlignment(ind) {
-        const maAlignmentText = document.getElementById('maAlignmentText');
-        const maStatusBadge = document.getElementById('maStatus');
-        const ma7Short = document.getElementById('ma7ValueShort');
-        if (!ind.ma7 || !ind.ma25) return;
-
-        const ma7 = ind.ma7[ind.ma7.length - 1];
-        const ma25 = ind.ma25[ind.ma25.length - 1];
-        const ma200 = ind.ma200?.[ind.ma200.length - 1];
-        const price = ind.currentPrice;
-
-        if (!ma7 || !ma25) return;
-
-        let alignment = '';
-        let statusColor = 'gold';
-
-        if (price > ma7 && ma7 > ma25) {
-            if (ma200 && ma25 > ma200) {
-                alignment = '多头排列';
-                statusColor = 'green';
-            } else {
-                alignment = '短期多头';
-                statusColor = 'green';
-            }
-        } else if (price < ma7 && ma7 < ma25) {
-            if (ma200 && ma25 < ma200) {
-                alignment = '空头排列';
-                statusColor = 'red';
-            } else {
-                alignment = '短期空头';
-                statusColor = 'red';
-            }
-        } else {
-            alignment = '震荡整理';
-            statusColor = 'gold';
-        }
-
-        if (maAlignmentText) {
-            maAlignmentText.textContent = alignment;
-            const colorClass = statusColor === 'green' ? 'text-crypto-green' : statusColor === 'red' ? 'text-crypto-red' : 'text-crypto-gold';
-            maAlignmentText.className = `text-base font-bold ${colorClass}`;
-        }
-
-        this.setStatusBadge('maStatus', alignment, statusColor);
-
-        if (ma7Short) {
-            ma7Short.textContent = 'MA7: $' + TechnicalAnalysis.formatPrice(ma7);
-        }
-    },
-
-    // 更新恐惧贪婪指数UI
+    // 更新恐惧贪婪指数UI（Mini版）
     updateFearGreedUI() {
         const fng = this.state.fearGreedIndex;
         if (!fng) return;
 
-        const valueEl = document.getElementById('fngValue');
-        const classEl = document.getElementById('fngClassification');
-        const circleEl = document.getElementById('fngCircle');
+        const valueEl = document.getElementById('fngValueMini');
+        const statusEl = document.getElementById('fngStatusMini');
 
-        valueEl.textContent = fng.value;
-        classEl.textContent = this.translateFNGClassification(fng.classification);
+        if (valueEl) valueEl.textContent = fng.value;
 
-        // 更新圆环进度
-        const circumference = 2 * Math.PI * 35; // ~220
-        const offset = circumference - (fng.value / 100) * circumference;
-        circleEl.style.strokeDashoffset = offset;
+        const classification = this.translateFNGClassification(fng.classification);
+        let fngColor = 'gold';
+        if (fng.value < 25) fngColor = 'red';
+        else if (fng.value < 46) fngColor = 'red';
+        else if (fng.value < 55) fngColor = 'gold';
+        else if (fng.value < 75) fngColor = 'green';
+        else fngColor = 'green';
 
-        // 颜色
-        let color = '#fbbf24'; // 黄色
-        if (fng.value < 25) color = '#ef4444'; // 红 - 极度恐惧
-        else if (fng.value < 46) color = '#f97316'; // 橙 - 恐惧
-        else if (fng.value < 55) color = '#fbbf24'; // 黄 - 中性
-        else if (fng.value < 75) color = '#84cc16'; // 浅绿 - 贪婪
-        else color = '#10b981'; // 绿 - 极度贪婪
+        this.setStatusBadge('fngStatusMini', classification, fngColor);
 
-        circleEl.style.stroke = color;
-        classEl.style.color = color;
+        if (valueEl) {
+            valueEl.className = `text-lg font-bold tabular-nums ${fngColor === 'green' ? 'text-rise-green' : fngColor === 'red' ? 'text-fall-red' : 'text-golden'}`;
+        }
     },
 
-    // 翻译 FNG 分类
     translateFNGClassification(classification) {
         const map = {
             'Extreme Fear': '极度恐惧',
@@ -2273,52 +1988,125 @@ const CryptoPulseApp = {
         return map[classification] || classification;
     },
 
-    // 更新衍生品数据UI
+    // 更新衍生品数据UI（Mini版）
     updateDerivativesUI() {
         const deriv = this.state.derivatives;
         if (!deriv) return;
 
-        // 资金费率
-        const frEl = document.getElementById('fundingRate');
-        const frDescEl = document.getElementById('fundingRateDesc');
-        const frStatusEl = document.getElementById('fundingRateStatus');
-        if (deriv.fundingRate !== null && deriv.fundingRate !== undefined) {
-            frEl.textContent = deriv.fundingRate.toFixed(4) + '%';
-            frEl.className = `text-lg font-bold ${deriv.fundingRate > 0 ? 'text-crypto-green' : 'text-crypto-red'}`;
+        // 资金费率 Mini
+        const frMiniEl = document.getElementById('fundingRateMini');
+        if (frMiniEl && deriv.fundingRate !== null && deriv.fundingRate !== undefined) {
+            frMiniEl.textContent = deriv.fundingRate.toFixed(4) + '%';
+            frMiniEl.className = `text-lg font-bold tabular-nums ${deriv.fundingRate > 0 ? 'text-rise-green' : 'text-fall-red'}`;
 
             let frStatus = '正常';
             let frStatusColor = 'gold';
             if (deriv.fundingRate > 0.1) {
                 frStatus = '过高';
                 frStatusColor = 'red';
-                if (frDescEl) {
-                    frDescEl.textContent = '多头拥挤，警惕轧空';
-                    frDescEl.className = 'text-xs text-crypto-red';
-                }
             } else if (deriv.fundingRate < -0.05) {
                 frStatus = '负费率';
                 frStatusColor = 'green';
-                if (frDescEl) {
-                    frDescEl.textContent = '空头拥挤，关注轧空';
-                    frDescEl.className = 'text-xs text-crypto-green';
-                }
-            } else {
-                if (frDescEl) {
-                    frDescEl.textContent = '费率正常';
-                    frDescEl.className = 'text-xs text-gray-500';
-                }
             }
-            this.setStatusBadge('fundingRateStatus', frStatus, frStatusColor);
+            this.setStatusBadge('fundingStatusMini', frStatus, frStatusColor);
+        }
+    },
+
+    // 更新信息Tab数据
+    updateInfoTab() {
+        const ind = this.state.indicators;
+        const info = this.state.coinInfo;
+        const deriv = this.state.derivatives;
+        const coin = this.getCoinInfo(this.state.currentCoin);
+
+        // 币种基础信息
+        this.setText('infoCoinName', coin.name || '--');
+        this.setText('infoCoinSymbol', coin.symbol || '--');
+
+        // 24h 行情明细（币安公开接口字段）
+        const fmt = (v) => (v || v === 0) ? '$' + TechnicalAnalysis.formatPrice(v) : '--';
+        this.setText('infoOpen', fmt(info.open_24h));
+        this.setText('infoHigh', fmt(info.high_24h));
+        this.setText('infoLow', fmt(info.low_24h));
+
+        // 24h 涨跌额（带正负号与颜色）
+        const changeEl = document.getElementById('infoChange');
+        if (changeEl && info.price_change_24h !== undefined) {
+            const up = info.price_change_24h >= 0;
+            changeEl.textContent = `${up ? '+' : ''}${TechnicalAnalysis.formatPrice(info.price_change_24h)}`;
+            changeEl.className = `text-sm font-medium tabular-nums ${up ? 'text-rise-green' : 'text-fall-red'}`;
+        }
+
+        // 24h 涨跌幅
+        const pctEl = document.getElementById('infoChangePct');
+        if (pctEl && info.price_change_percentage_24h !== undefined) {
+            const up = info.price_change_percentage_24h >= 0;
+            pctEl.textContent = `${up ? '+' : ''}${info.price_change_percentage_24h.toFixed(2)}%`;
+            pctEl.className = `text-sm font-medium tabular-nums ${up ? 'text-rise-green' : 'text-fall-red'}`;
+        }
+
+        // 成交量 / 成交额
+        this.setText('infoVolume', info.total_volume
+            ? TechnicalAnalysis.formatLargeNumber(info.total_volume) + ' ' + (coin.symbol || '')
+            : '--');
+        this.setText('infoQuoteVolume', info.quote_volume
+            ? '$' + TechnicalAnalysis.formatLargeNumber(info.quote_volume)
+            : '--');
+
+        // 加权均价 / 成交笔数
+        this.setText('infoWeightedAvg', fmt(info.weighted_avg_price));
+        this.setText('infoTradeCount', info.trade_count
+            ? TechnicalAnalysis.formatLargeNumber(info.trade_count) + ' 笔'
+            : '--');
+
+        // 更多指标
+        const vwap = ind.vwap;
+        if (vwap && vwap[vwap.length - 1]) {
+            this.setText('vwapValueInfo', '$' + TechnicalAnalysis.formatPrice(vwap[vwap.length - 1]));
+        }
+
+        // OBV 趋势
+        const obv = ind.obv;
+        if (obv && obv.length >= 10) {
+            const recent = obv.slice(-10);
+            const rising = recent[recent.length - 1] > recent[0];
+            this.setText('obvTrendInfo', rising ? '上升 ↑' : '下降 ↓');
+            const el = document.getElementById('obvTrendInfo');
+            if (el) el.className = `text-base font-bold ${rising ? 'text-rise-green' : 'text-fall-red'}`;
+        }
+
+        // StochRSI
+        if (ind.stochRSI && ind.stochRSI.k) {
+            const lastK = ind.stochRSI.k[ind.stochRSI.k.length - 1];
+            if (lastK !== null && lastK !== undefined) {
+                this.setText('stochRSIInfo', lastK.toFixed(1));
+            }
+        }
+
+        // MA200
+        if (ind.ma200 && ind.ma200[ind.ma200.length - 1]) {
+            const lastMA200 = ind.ma200[ind.ma200.length - 1];
+            this.setText('ma200Info', '$' + TechnicalAnalysis.formatPrice(lastMA200));
+            const el = document.getElementById('ma200Info');
+            if (el) el.className = `text-base font-bold tabular-nums ${ind.currentPrice > lastMA200 ? 'text-rise-green' : 'text-fall-red'}`;
+        }
+
+        // AHR999
+        if (ind.ahr999 && ind.ahr999.value !== null && !isNaN(ind.ahr999.value)) {
+            this.setText('ahr999Info', ind.ahr999.value.toFixed(3));
         }
 
         // OI
-        const oiEl = document.getElementById('openInterest');
-        const oiTrendEl = document.getElementById('oiTrend');
-        if (deriv.openInterest) {
-            oiEl.textContent = TechnicalAnalysis.formatLargeNumber(deriv.openInterest);
-            if (oiTrendEl) oiTrendEl.textContent = '未平仓合约';
+        if (deriv && deriv.openInterest) {
+            this.setText('oiInfo', TechnicalAnalysis.formatLargeNumber(deriv.openInterest));
         }
     },
+
+    setText(id, text) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text;
+    },
+
 
     // 加载新闻
     async loadNews(coinId) {
@@ -2332,42 +2120,55 @@ const CryptoPulseApp = {
         }
     },
 
-    // 渲染新闻
+    // 渲染新闻（白色主题）
     renderNews() {
         const container = document.getElementById('newsList');
         const newsList = this.state.newsList;
         
+        if (!container) return;
+        
         if (!newsList || newsList.length === 0) {
-            container.innerHTML = '<p class="text-gray-400 text-sm col-span-full text-center py-8">暂无新闻数据</p>';
+            container.innerHTML = '<p class="text-text-secondary text-sm text-center py-8">暂无新闻数据</p>';
             return;
         }
         
         // 更新情感标签
         const newsScore = NewsAnalyzer.calculateNewsScore(newsList);
         const badge = document.getElementById('newsSentimentBadge');
-        if (newsScore.label === 'positive') {
-            badge.textContent = `情绪偏多 ${newsScore.score}分`;
-            badge.className = 'text-xs px-2 py-0.5 rounded-full bg-crypto-green/20 text-crypto-green';
-        } else if (newsScore.label === 'negative') {
-            badge.textContent = `情绪偏空 ${newsScore.score}分`;
-            badge.className = 'text-xs px-2 py-0.5 rounded-full bg-crypto-red/20 text-crypto-red';
-        } else {
-            badge.textContent = `情绪中性 ${newsScore.score}分`;
-            badge.className = 'text-xs px-2 py-0.5 rounded-full bg-gray-600/50 text-gray-300';
+        if (badge) {
+            if (newsScore.label === 'positive') {
+                badge.textContent = `情绪偏多 ${newsScore.score}分`;
+                badge.className = 'text-xs px-2 py-0.5 rounded-full bg-rise-green/10 text-rise-green';
+            } else if (newsScore.label === 'negative') {
+                badge.textContent = `情绪偏空 ${newsScore.score}分`;
+                badge.className = 'text-xs px-2 py-0.5 rounded-full bg-fall-red/10 text-fall-red';
+            } else {
+                badge.textContent = `情绪中性 ${newsScore.score}分`;
+                badge.className = 'text-xs px-2 py-0.5 rounded-full bg-gray-100 text-text-secondary';
+            }
         }
         
         container.innerHTML = newsList.slice(0, 6).map((news, index) => {
             const sentimentStyle = NewsAnalyzer.getSentimentStyle(news.sentimentLabel);
-            const translatedBadge = news.translated ? '<span class="text-xs text-crypto-blue/70 ml-1">译</span>' : '';
+            // 适配新的样式类名
+            let tagClass = 'text-[10px] px-1.5 py-0.5 rounded ';
+            if (sentimentStyle.className?.includes('crypto-green') || news.sentimentLabel === 'positive') {
+                tagClass += 'bg-rise-green/10 text-rise-green';
+            } else if (sentimentStyle.className?.includes('crypto-red') || news.sentimentLabel === 'negative') {
+                tagClass += 'bg-fall-red/10 text-fall-red';
+            } else {
+                tagClass += 'bg-gray-100 text-text-secondary';
+            }
+
             return `
-                <div class="news-card bg-crypto-card rounded-xl border border-crypto-border p-4 cursor-pointer hover:border-crypto-purple/50 transition-all" data-news-index="${index}">
-                    <div class="flex items-start justify-between gap-2 mb-2">
-                        <span class="text-xs text-gray-400">${news.source}${translatedBadge}</span>
-                        <span class="tip-tag ${sentimentStyle.className}">${sentimentStyle.text}</span>
+                <div class="news-card cursor-pointer hover:bg-gray-50 -mx-1 px-1 rounded-lg transition-colors" data-news-index="${index}">
+                    <div class="flex items-start justify-between gap-2 mb-1.5">
+                        <span class="text-xs text-text-tertiary">${news.source || ''}</span>
+                        <span class="${tagClass} flex-shrink-0">${sentimentStyle.text}</span>
                     </div>
-                    <h4 class="text-sm font-medium mb-2 line-clamp-2 text-gray-100">${news.title}</h4>
-                    <p class="text-xs text-gray-400 line-clamp-2 mb-2">${news.description || ''}</p>
-                    <p class="text-xs text-gray-500">${NewsAnalyzer.formatTime(news.publishedAt)}</p>
+                    <h4 class="text-sm font-medium mb-1.5 line-clamp-2 text-text-primary">${news.title}</h4>
+                    <p class="text-xs text-text-secondary line-clamp-2">${news.description || ''}</p>
+                    <p class="text-xs text-text-tertiary mt-1.5">${NewsAnalyzer.formatTime(news.publishedAt)}</p>
                 </div>
             `;
         }).join('');
@@ -2388,16 +2189,13 @@ const CryptoPulseApp = {
         const modal = document.getElementById('newsDetailModal');
         if (!modal) return;
 
-        // 标题
         document.getElementById('newsDetailTitle').textContent = news.title;
         document.getElementById('newsDetailCategory').textContent = news.source || '资讯';
         document.getElementById('newsDetailSource').textContent = news.source || '未知来源';
         document.getElementById('newsDetailTime').textContent = NewsAnalyzer.formatTime(news.publishedAt);
 
-        // 摘要
         document.getElementById('newsDetailSummary').textContent = news.description || news.title || '暂无摘要';
 
-        // 原文链接
         const linkEl = document.getElementById('newsDetailLink');
         if (news.url) {
             linkEl.href = news.url;
@@ -2409,20 +2207,28 @@ const CryptoPulseApp = {
         // 情感分析
         const sentimentLabel = news.sentimentLabel || 'neutral';
         const sentimentScore = news.sentimentScore !== undefined ? news.sentimentScore : 50;
-        const sentimentStyle = NewsAnalyzer.getSentimentStyle(sentimentLabel);
 
         const sentLabelEl = document.getElementById('newsDetailSentimentLabel');
-        sentLabelEl.textContent = sentimentStyle.text;
-        sentLabelEl.className = `text-xs px-2 py-0.5 rounded-full font-medium ${sentimentStyle.className}`;
+        const sentStyle = NewsAnalyzer.getSentimentStyle(sentimentLabel);
+        sentLabelEl.textContent = sentStyle.text;
+        let sentClass = 'text-xs px-2 py-0.5 rounded-full font-medium ';
+        if (sentimentLabel === 'positive') {
+            sentClass += 'bg-rise-green/10 text-rise-green';
+        } else if (sentimentLabel === 'negative') {
+            sentClass += 'bg-fall-red/10 text-fall-red';
+        } else {
+            sentClass += 'bg-golden/10 text-golden';
+        }
+        sentLabelEl.className = sentClass;
 
         const sentBarEl = document.getElementById('newsDetailSentimentBar');
         sentBarEl.style.width = sentimentScore + '%';
         if (sentimentLabel === 'positive') {
-            sentBarEl.className = 'h-full bg-crypto-green rounded-full transition-all';
+            sentBarEl.className = 'h-full bg-rise-green rounded-full transition-all';
         } else if (sentimentLabel === 'negative') {
-            sentBarEl.className = 'h-full bg-crypto-red rounded-full transition-all';
+            sentBarEl.className = 'h-full bg-fall-red rounded-full transition-all';
         } else {
-            sentBarEl.className = 'h-full bg-crypto-gold rounded-full transition-all';
+            sentBarEl.className = 'h-full bg-golden rounded-full transition-all';
         }
 
         const sentTextEl = document.getElementById('newsDetailSentimentText');
@@ -2438,19 +2244,17 @@ const CryptoPulseApp = {
         const keywordsContainer = document.querySelector('#newsDetailKeywords .flex');
         if (keywordsContainer && news.keywords && news.keywords.length > 0) {
             keywordsContainer.innerHTML = news.keywords.map(kw =>
-                `<span class="text-xs px-2 py-0.5 rounded-full bg-crypto-purple/10 text-crypto-purple">${kw}</span>`
+                `<span class="text-xs px-2 py-0.5 rounded-full bg-golden/10 text-golden">${kw}</span>`
             ).join('');
         } else if (keywordsContainer) {
-            keywordsContainer.innerHTML = '<span class="text-xs text-gray-500">无</span>';
+            keywordsContainer.innerHTML = '<span class="text-xs text-text-tertiary">无</span>';
         }
 
-        // 显示弹窗
         modal.classList.remove('hidden');
         modal.classList.add('flex');
         document.body.style.overflow = 'hidden';
     },
 
-    // 隐藏资讯详情
     hideNewsDetail() {
         const modal = document.getElementById('newsDetailModal');
         if (modal) {
@@ -2470,27 +2274,26 @@ const CryptoPulseApp = {
 
         const isBuy = info.type === 'buy';
 
-        // 图标和颜色
         const iconEl = document.getElementById('signalDetailIcon');
         const typeEl = document.getElementById('signalDetailType');
         const nameEl = document.getElementById('signalDetailName');
 
         if (isBuy) {
-            iconEl.className = 'w-12 h-12 rounded-xl flex items-center justify-center bg-crypto-green/15';
-            iconEl.innerHTML = `<svg class="w-6 h-6 text-crypto-green" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            iconEl.className = 'w-12 h-12 rounded-xl flex items-center justify-center bg-rise-green/10';
+            iconEl.innerHTML = `<svg class="w-6 h-6 text-rise-green" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
             </svg>`;
             typeEl.textContent = '买入信号';
-            typeEl.className = 'text-xs text-crypto-green mb-0.5';
-            nameEl.className = 'text-lg font-bold text-crypto-green';
+            typeEl.className = 'text-xs text-rise-green mb-0.5';
+            nameEl.className = 'text-lg font-bold text-rise-green';
         } else {
-            iconEl.className = 'w-12 h-12 rounded-xl flex items-center justify-center bg-crypto-red/15';
-            iconEl.innerHTML = `<svg class="w-6 h-6 text-crypto-red" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            iconEl.className = 'w-12 h-12 rounded-xl flex items-center justify-center bg-fall-red/10';
+            iconEl.innerHTML = `<svg class="w-6 h-6 text-fall-red" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 17h8m0 0V9m0 8l-8-8-4 4-6-6"></path>
             </svg>`;
             typeEl.textContent = '卖出信号';
-            typeEl.className = 'text-xs text-crypto-red mb-0.5';
-            nameEl.className = 'text-lg font-bold text-crypto-red';
+            typeEl.className = 'text-xs text-fall-red mb-0.5';
+            nameEl.className = 'text-lg font-bold text-fall-red';
         }
         nameEl.textContent = signalText;
 
@@ -2501,9 +2304,9 @@ const CryptoPulseApp = {
         const level = strengthMap[info.strength] || 1;
         strengthTextEl.textContent = info.strengthText;
 
-        const barColor = isBuy ? 'bg-crypto-green' : 'bg-crypto-red';
-        const grayColor = 'bg-crypto-border';
-        strengthTextEl.className = `text-sm font-semibold ${isBuy ? 'text-crypto-green' : 'text-crypto-red'}`;
+        const barColor = isBuy ? 'bg-rise-green' : 'bg-fall-red';
+        const grayColor = 'bg-gray-200';
+        strengthTextEl.className = `text-sm font-semibold ${isBuy ? 'text-rise-green' : 'text-fall-red'}`;
         bars.forEach((id, idx) => {
             const el = document.getElementById(id);
             if (el) {
@@ -2511,18 +2314,15 @@ const CryptoPulseApp = {
             }
         });
 
-        // 价格和时间
         document.getElementById('signalDetailDesc').textContent = info.desc;
         document.getElementById('signalDetailCondition').textContent = info.condition;
         document.getElementById('signalDetailAdvice').textContent = info.advice;
 
-        // 显示弹窗
         modal.classList.remove('hidden');
         modal.classList.add('flex');
         document.body.style.overflow = 'hidden';
     },
 
-    // 隐藏信号详情弹窗
     hideSignalDetail() {
         const modal = document.getElementById('signalDetailModal');
         if (modal) {
@@ -2532,11 +2332,11 @@ const CryptoPulseApp = {
         }
     },
 
+
     // 更新信号
     updateSignal() {
         const ind = this.state.indicators;
 
-        // 技术面评分（包含所有技术指标）
         const techScoreResult = TechnicalAnalysis.calculateTechnicalScore({
             rsi: ind.rsi,
             macd: ind.macd,
@@ -2552,16 +2352,10 @@ const CryptoPulseApp = {
             ahr999: ind.ahr999
         });
 
-        // 消息面评分
         const newsScoreResult = NewsAnalyzer.calculateNewsScore(this.state.newsList);
-
-        // 情绪面评分（恐惧贪婪指数）
         const sentimentScore = this.calculateSentimentScore();
-
-        // 衍生品面评分
         const derivativesScore = this.calculateDerivativesScore();
 
-        // 综合评分：技术面50% + 消息面15% + 情绪面20% + 衍生品面15%
         const totalScore = Math.round(
             techScoreResult.score * 0.5 +
             newsScoreResult.score * 0.15 +
@@ -2590,315 +2384,348 @@ const CryptoPulseApp = {
         this.state.signal = signal;
         this.state.signal.totalScore = totalScore;
         this.renderSignal();
+        this.renderPredictTab();
     },
 
-    // 计算情绪面评分
     calculateSentimentScore() {
         const fng = this.state.fearGreedIndex;
         if (!fng || fng.value === null || fng.value === undefined) return 50;
 
-        // 恐惧贪婪指数直接映射到 0-100 分
-        // 极度恐惧(0-25) = 高分(买入机会)，极度贪婪(75-100) = 低分(卖出信号)
-        const score = 100 - fng.value;
-
-        // 但要考虑极端情况：过度恐惧可能还会跌，过度贪婪可能还会涨
-        // 所以用更温和的映射
         let adjustedScore = 50;
-        if (fng.value < 20) adjustedScore = 75; // 极度恐惧 - 偏多
-        else if (fng.value < 40) adjustedScore = 65; // 恐惧 - 偏多
-        else if (fng.value < 50) adjustedScore = 55; // 轻度恐惧 - 微多
-        else if (fng.value < 60) adjustedScore = 45; // 轻度贪婪 - 微空
-        else if (fng.value < 80) adjustedScore = 35; // 贪婪 - 偏空
-        else adjustedScore = 25; // 极度贪婪 - 偏空
+        if (fng.value < 20) adjustedScore = 75;
+        else if (fng.value < 40) adjustedScore = 65;
+        else if (fng.value < 50) adjustedScore = 55;
+        else if (fng.value < 60) adjustedScore = 45;
+        else if (fng.value < 80) adjustedScore = 35;
+        else adjustedScore = 25;
 
         return adjustedScore;
     },
 
-    // 计算衍生品面评分
     calculateDerivativesScore() {
         const deriv = this.state.derivatives;
         if (!deriv || deriv.fundingRate === null || deriv.fundingRate === undefined) return 50;
 
         let score = 50;
-
-        // 资金费率分析
         const fr = deriv.fundingRate;
         if (fr > 0.1) {
-            score -= 20; // 费率过高，多头拥挤，风险大
+            score -= 20;
         } else if (fr > 0.05) {
-            score -= 10; // 费率偏高
+            score -= 10;
         } else if (fr < -0.05) {
-            score += 15; // 负费率，空头拥挤，可能反弹
+            score += 15;
         } else if (fr < 0) {
-            score += 5; // 轻微负费率
+            score += 5;
         }
 
         return Math.max(0, Math.min(100, score));
     },
 
-    // 渲染信号
+    // 渲染综合信号卡片
     renderSignal() {
         const signal = this.state.signal;
         if (!signal) return;
 
-        // 信号卡片
-        const signalCard = document.getElementById('signalCard');
-        const signalIcon = document.getElementById('signalIcon');
-        const signalText = document.getElementById('signalText');
-        const signalDesc = document.getElementById('signalDesc');
-        const signalGlow = document.getElementById('signalGlow');
-        const signalStrength = document.getElementById('signalStrength');
+        const signalIcon = document.getElementById('signalMainIcon');
+        const signalText = document.getElementById('signalMainText');
+        const signalDesc = document.getElementById('signalMainDesc');
+        const signalStrengthTag = document.getElementById('signalStrengthTag');
 
-        signalIcon.className = `w-14 h-14 sm:w-16 sm:h-16 mx-auto mb-3 rounded-2xl flex items-center justify-center`;
-
-        let signalColor = 'crypto-gold';
-        let signalBg = 'crypto-gold/10';
+        let signalColor = 'golden';
         let strengthText = '中性';
 
         if (signal.type === 'strong_buy') {
-            signalColor = 'crypto-green';
-            signalBg = 'crypto-green/15';
+            signalColor = 'rise-green';
             strengthText = '强烈买入';
         } else if (signal.type === 'buy') {
-            signalColor = 'crypto-green';
-            signalBg = 'crypto-green/10';
+            signalColor = 'rise-green';
             strengthText = '买入';
         } else if (signal.type === 'strong_sell') {
-            signalColor = 'crypto-red';
-            signalBg = 'crypto-red/15';
+            signalColor = 'fall-red';
             strengthText = '强烈卖出';
         } else if (signal.type === 'sell') {
-            signalColor = 'crypto-red';
-            signalBg = 'crypto-red/10';
+            signalColor = 'fall-red';
             strengthText = '卖出';
         } else {
             strengthText = '观望';
         }
 
-        signalIcon.classList.add(`bg-${signalBg}`);
-        signalText.className = `text-2xl sm:text-3xl font-bold text-${signalColor}`;
-        signalGlow.className = `absolute top-0 left-0 w-full h-1 bg-${signalColor}`;
-        signalStrength.textContent = strengthText;
-        signalStrength.className = `text-xs px-2 py-0.5 rounded-full bg-${signalBg} text-${signalColor} font-medium`;
-
-        signalIcon.innerHTML = SignalGenerator.getSignalIcon(signal.type);
-        signalText.textContent = signal.text;
-        signalDesc.textContent = signal.desc;
-
-        // 综合评分 + 进度条
-        const totalScore = signal.totalScore ?? 50;
-        document.getElementById('totalScore').textContent = totalScore;
-        document.getElementById('totalScore').className = `text-lg sm:text-xl font-bold ${SignalGenerator.getScoreColor(totalScore)}`;
-        document.getElementById('totalScoreBar').style.width = `${totalScore}%`;
-
-        // 四维评分
-        document.getElementById('techScore').textContent = signal.techScore;
-        document.getElementById('techScore').className = `text-sm font-bold ${SignalGenerator.getScoreColor(signal.techScore)}`;
-
-        document.getElementById('newsScore').textContent = signal.newsScore;
-        document.getElementById('newsScore').className = `text-sm font-bold ${SignalGenerator.getScoreColor(signal.newsScore)}`;
-
-        const sentimentScore = signal.breakdown?.sentiment ?? 50;
-        document.getElementById('sentimentScore').textContent = sentimentScore;
-        document.getElementById('sentimentScore').className = `text-sm font-bold ${SignalGenerator.getScoreColor(sentimentScore)}`;
-
-        const derivScore = signal.breakdown?.derivatives ?? 50;
-        document.getElementById('derivScore').textContent = derivScore;
-        document.getElementById('derivScore').className = `text-sm font-bold ${SignalGenerator.getScoreColor(derivScore)}`;
-
-        // 技术面评分徽章
-        const techScoreBadge = document.getElementById('techScoreBadge');
-        if (techScoreBadge) {
-            techScoreBadge.textContent = signal.techScore + ' 分';
-            techScoreBadge.className = `text-xs px-2.5 py-1 rounded-full font-medium ${SignalGenerator.getScoreBg(signal.techScore)} ${SignalGenerator.getScoreColor(signal.techScore)}`;
+        // 信号图标
+        if (signalIcon) {
+            signalIcon.className = `w-14 h-14 rounded-2xl flex items-center justify-center bg-${signalColor}/10 flex-shrink-0`;
+            signalIcon.innerHTML = SignalGenerator.getSignalIcon(signal.type);
+            // 修复图标颜色
+            const svg = signalIcon.querySelector('svg');
+            if (svg) {
+                svg.classList.remove('text-rise-green', 'text-fall-red', 'text-golden');
+                svg.classList.add(`text-${signalColor}`);
+            }
         }
 
-        // 操作建议
-        const actionTipsEl = document.getElementById('actionTips');
-        actionTipsEl.innerHTML = signal.actionTips.map(tip => {
-            let tipClass = 'text-gray-300';
-            if (tip.type === 'buy') tipClass = 'text-crypto-green';
-            if (tip.type === 'sell') tipClass = 'text-crypto-red';
-            if (tip.type === 'watch') tipClass = 'text-crypto-gold';
+        // 信号文字
+        if (signalText) {
+            signalText.textContent = signal.text;
+            signalText.className = `text-xl font-bold text-${signalColor}`;
+        }
 
-            return `
-                <div class="flex items-start gap-2 text-sm ${tipClass}">
-                    <span>${tip.icon}</span>
-                    <span>${tip.text}</span>
-                </div>
-            `;
-        }).join('');
+        // 信号描述
+        if (signalDesc) {
+            signalDesc.textContent = signal.desc;
+        }
+
+        // 信号强度标签
+        if (signalStrengthTag) {
+            signalStrengthTag.textContent = strengthText;
+            signalStrengthTag.className = `text-xs px-2 py-0.5 rounded-full bg-${signalColor}/10 text-${signalColor} font-medium`;
+        }
+
+        // 综合评分
+        const totalScore = signal.totalScore ?? 50;
+        const scoreTextEl = document.getElementById('signalScoreText');
+        if (scoreTextEl) {
+            scoreTextEl.textContent = '评分 ' + totalScore;
+        }
+
+        const scoreBarEl = document.getElementById('signalScoreBar');
+        if (scoreBarEl) {
+            scoreBarEl.style.width = `${totalScore}%`;
+        }
+
+        // 四维评分 Mini
+        const techMini = document.getElementById('techScoreMini');
+        if (techMini) {
+            techMini.textContent = signal.techScore;
+            techMini.className = `text-sm font-semibold mt-0.5 ${SignalGenerator.getScoreColor(signal.techScore).replace('crypto-', '').replace('green', 'rise-green').replace('red', 'fall-red').replace('gold', 'golden')}`;
+        }
+
+        const sentimentMini = document.getElementById('sentimentScoreMini');
+        const sentimentScore = signal.breakdown?.sentiment ?? 50;
+        if (sentimentMini) {
+            sentimentMini.textContent = sentimentScore;
+            sentimentMini.className = `text-sm font-semibold mt-0.5 ${SignalGenerator.getScoreColor(sentimentScore).replace('crypto-', '').replace('green', 'rise-green').replace('red', 'fall-red').replace('gold', 'golden')}`;
+        }
+
+        const newsMini = document.getElementById('newsScoreMini');
+        if (newsMini) {
+            newsMini.textContent = signal.newsScore;
+            newsMini.className = `text-sm font-semibold mt-0.5 ${SignalGenerator.getScoreColor(signal.newsScore).replace('crypto-', '').replace('green', 'rise-green').replace('red', 'fall-red').replace('gold', 'golden')}`;
+        }
+
+        const derivMini = document.getElementById('derivScoreMini');
+        const derivScore = signal.breakdown?.derivatives ?? 50;
+        if (derivMini) {
+            derivMini.textContent = derivScore;
+            derivMini.className = `text-sm font-semibold mt-0.5 ${SignalGenerator.getScoreColor(derivScore).replace('crypto-', '').replace('green', 'rise-green').replace('red', 'fall-red').replace('gold', 'golden')}`;
+        }
+    },
+
+    // 渲染预测Tab
+    renderPredictTab() {
+        const signal = this.state.signal;
+        if (!signal) return;
+
+        // 预测方向
+        const predictDir = document.getElementById('predictDirection');
+        if (predictDir) {
+            predictDir.textContent = signal.text || '震荡观望';
+            let color = 'text-golden';
+            if (signal.type === 'buy' || signal.type === 'strong_buy') color = 'text-rise-green';
+            else if (signal.type === 'sell' || signal.type === 'strong_sell') color = 'text-fall-red';
+            predictDir.className = `text-xl font-bold ${color}`;
+        }
+
+        // 置信度
+        const totalScore = signal.totalScore ?? 50;
+        const confidence = Math.abs(totalScore - 50) * 2; // 转换为 0-100 的置信度
+        const confEl = document.getElementById('predictConfidence');
+        if (confEl) {
+            confEl.textContent = `置信度 ${confidence.toFixed(0)}%`;
+        }
+
+        // 预测摘要
+        const summaryEl = document.getElementById('predictSummary');
+        if (summaryEl) {
+            summaryEl.textContent = signal.desc || '综合技术指标、市场情绪、消息面和衍生品数据分析中...';
+        }
+
+        // 操作建议列表
+        const actionTipsEl = document.getElementById('actionTipsList');
+        if (actionTipsEl && signal.actionTips) {
+            actionTipsEl.innerHTML = signal.actionTips.map(tip => {
+                let tipClass = 'text-text-secondary';
+                let iconBg = 'bg-gray-100 text-text-secondary';
+                if (tip.type === 'buy') { tipClass = 'text-rise-green'; iconBg = 'bg-rise-green/10 text-rise-green'; }
+                if (tip.type === 'sell') { tipClass = 'text-fall-red'; iconBg = 'bg-fall-red/10 text-fall-red'; }
+                if (tip.type === 'watch') { tipClass = 'text-golden'; iconBg = 'bg-golden/10 text-golden'; }
+
+                return `
+                    <div class="flex items-start gap-3 p-3 rounded-xl bg-gray-50">
+                        <div class="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${iconBg}">
+                            <span class="text-sm">${tip.icon || '•'}</span>
+                        </div>
+                        <span class="text-sm ${tipClass} leading-relaxed">${tip.text}</span>
+                    </div>
+                `;
+            }).join('');
+        }
 
         // 仓位建议
-        const posAdviceEl = document.getElementById('positionAdvice');
+        const posAdviceEl = document.getElementById('positionAdviceText');
         if (posAdviceEl && signal.positionAdvice) {
             const advice = signal.positionAdvice;
             let html = '';
 
-            // 买入区域
             if (advice.buyZones && advice.buyZones.length > 0) {
                 html += '<div class="mb-2">';
-                html += '<p class="text-xs text-crypto-green/70 mb-1">买入区域</p>';
+                html += '<p class="text-xs text-text-secondary mb-1">买入区域</p>';
                 advice.buyZones.forEach(zone => {
                     const strongClass = zone.strength === 'strong' ? 'font-semibold' : '';
                     html += `<div class="flex items-center justify-between py-0.5 ${strongClass}">
-                        <span class="text-xs text-crypto-green">${zone.label}</span>
-                        <span class="text-xs font-mono text-crypto-green">$${TechnicalAnalysis.formatPrice(zone.level)}</span>
+                        <span class="text-sm text-rise-green">${zone.label}</span>
+                        <span class="text-sm font-mono text-rise-green">$${TechnicalAnalysis.formatPrice(zone.level)}</span>
                     </div>`;
                 });
                 html += '</div>';
             }
 
-            // 卖出区域
             if (advice.sellZones && advice.sellZones.length > 0) {
                 html += '<div>';
-                html += '<p class="text-xs text-crypto-red/70 mb-1">卖出区域</p>';
+                html += '<p class="text-xs text-text-secondary mb-1">卖出区域</p>';
                 advice.sellZones.forEach(zone => {
                     const strongClass = zone.strength === 'strong' ? 'font-semibold' : '';
                     html += `<div class="flex items-center justify-between py-0.5 ${strongClass}">
-                        <span class="text-xs text-crypto-red">${zone.label}</span>
-                        <span class="text-xs font-mono text-crypto-red">$${TechnicalAnalysis.formatPrice(zone.level)}</span>
+                        <span class="text-sm text-fall-red">${zone.label}</span>
+                        <span class="text-sm font-mono text-fall-red">$${TechnicalAnalysis.formatPrice(zone.level)}</span>
                     </div>`;
                 });
                 html += '</div>';
             }
 
-            posAdviceEl.innerHTML = html || '<span class="text-gray-500 text-xs">暂无建议</span>';
-        }
-    },
-
-    // 显示添加币种模态框
-    async showAddCoinModal() {
-        const modal = document.getElementById('addCoinModal');
-        if (!modal) return;
-        modal.classList.remove('hidden');
-        modal.classList.add('flex');
-
-        const input = document.getElementById('searchCoinInput');
-        if (input) {
-            input.value = '';
-            setTimeout(() => input.focus(), 60);
+            posAdviceEl.innerHTML = html || '<span class="text-text-secondary text-sm">暂无建议</span>';
         }
 
-        // 先用已有目录（可能是缓存）立即渲染
-        this.searchCoins('');
-
-        // 联网拉取全量币种目录
-        await this.loadCoinCatalog();
-        this.searchCoins(document.getElementById('searchCoinInput')?.value || '');
-    },
-
-    // 隐藏添加币种模态框
-    hideAddCoinModal() {
-        const modal = document.getElementById('addCoinModal');
-        if (!modal) return;
-        modal.classList.add('hidden');
-        modal.classList.remove('flex');
-
-        const input = document.getElementById('searchCoinInput');
-        if (input) input.value = '';
-    },
-
-    /**
-     * 搜索币种（基于联网目录，非固定列表）
-     * @param {string} query - 搜索关键词
-     */
-    searchCoins(query) {
-        const container = document.getElementById('coinSearchResults');
-        if (!container) return;
-
-        const q = (query || '').trim().toLowerCase();
-
-        // 数据源：联网目录优先，未加载时用内置列表兜底
-        const pool = this.state.coinCatalog.length
-            ? this.state.coinCatalog
-            : this.popularCoins.map(c => ({
-                coinId: c.id, symbol: c.symbol, name: c.name, binanceSymbol: c.binanceSymbol
-            }));
-
-        let filtered = [];
-
-        if (!q) {
-            // 无关键词：热门币种优先，其余按目录顺序补齐
-            const hotIds = this.popularCoins.map(c => c.id);
-            const hot = pool.filter(c => hotIds.includes(c.coinId));
-            const rest = pool.filter(c => !hotIds.includes(c.coinId));
-            filtered = hot.concat(rest).slice(0, 24);
-        } else {
-            // 关键词搜索：按匹配质量排序
-            filtered = pool
-                .map(c => {
-                    const sym = (c.symbol || '').toLowerCase();
-                    const nm = (c.name || '').toLowerCase();
-                    const cid = (c.coinId || '').toLowerCase();
-                    let score = -1;
-                    if (sym === q) score = 0;
-                    else if (sym.startsWith(q)) score = 1;
-                    else if (nm.startsWith(q)) score = 2;
-                    else if (cid.startsWith(q)) score = 3;
-                    else if (sym.includes(q)) score = 4;
-                    else if (nm.includes(q)) score = 5;
-                    else if (cid.includes(q)) score = 6;
-                    return { c, score };
-                })
-                .filter(x => x.score >= 0)
-                .sort((a, b) => a.score - b.score)
-                .map(x => x.c)
-                .slice(0, 30);
-        }
-
-        if (filtered.length === 0) {
-            container.innerHTML = `
-                <div class="text-center py-8">
-                    <p class="text-gray-400 text-sm">未找到「${query}」相关币种</p>
-                    <p class="text-xs text-gray-600 mt-1">试试输入币种符号，如 BTC、PEPE、ARB</p>
-                </div>`;
-            return;
-        }
-
-        container.innerHTML = filtered.map(coin => {
-            const isInWatchlist = this.state.watchlist.includes(coin.coinId);
-            const quote = this.state.watchlistQuotes[coin.coinId];
-            const hasQuote = !!quote;
-            const up = hasQuote ? quote.changePercent >= 0 : true;
-
-            return `
-                <div class="coin-search-item flex items-center justify-between p-2.5 rounded-xl transition-colors ${
-                    isInWatchlist ? 'opacity-50 cursor-default' : 'hover:bg-crypto-dark cursor-pointer'
-                }" data-coin-id="${coin.coinId}">
-                    <div class="flex items-center gap-3 min-w-0">
-                        <div class="w-9 h-9 rounded-full bg-gradient-to-br from-crypto-purple to-crypto-blue flex items-center justify-center text-sm font-bold text-white flex-shrink-0">
-                            ${coin.symbol.charAt(0)}
-                        </div>
-                        <div class="min-w-0">
-                            <div class="flex items-center gap-2">
-                                <p class="text-sm font-semibold truncate">${coin.symbol}</p>
-                                <span class="text-[10px] text-gray-500 px-1.5 py-0.5 rounded bg-crypto-dark">USDT</span>
+        // 信号明细列表
+        const detailsEl = document.getElementById('signalDetailsList');
+        if (detailsEl) {
+            const triggeredSignals = this.getTriggeredSignalList();
+            if (triggeredSignals.length === 0) {
+                detailsEl.innerHTML = '<div class="text-sm text-text-secondary">暂无触发信号</div>';
+            } else {
+                detailsEl.innerHTML = triggeredSignals.map(sig => {
+                    const isBuy = sig.type === 'buy';
+                    return `
+                        <div class="flex items-center justify-between p-3 rounded-xl bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors signal-detail-item"
+                             data-signal="${sig.name}">
+                            <div class="flex items-center gap-3">
+                                <div class="w-8 h-8 rounded-lg flex items-center justify-center ${isBuy ? 'bg-rise-green/10' : 'bg-fall-red/10'}">
+                                    <svg class="w-4 h-4 ${isBuy ? 'text-rise-green' : 'text-fall-red'}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${isBuy ? 'M13 7h8m0 0v8m0-8l-8 8-4-4-6 6' : 'M13 17h8m0 0V9m0 8l-8-8-4 4-6-6'}"></path>
+                                    </svg>
+                                </div>
+                                <div>
+                                    <p class="text-sm font-medium text-text-primary">${sig.name}</p>
+                                    <p class="text-xs text-text-tertiary">${sig.strengthText}信号</p>
+                                </div>
                             </div>
-                            <p class="text-xs text-gray-400 truncate">${this.getCoinSubtitle(coin)}</p>
+                            <svg class="w-4 h-4 text-text-tertiary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                            </svg>
                         </div>
-                    </div>
-                    <div class="flex items-center gap-3 flex-shrink-0">
-                        ${hasQuote ? `
-                        <div class="text-right">
-                            <p class="text-xs font-medium tabular-nums">${this.formatWatchPrice(quote.price)}</p>
-                            <p class="text-[11px] tabular-nums ${up ? 'text-crypto-green' : 'text-crypto-red'}">${up ? '+' : ''}${quote.changePercent.toFixed(2)}%</p>
-                        </div>` : ''}
-                        ${isInWatchlist
-                            ? '<span class="text-xs text-crypto-green flex-shrink-0">已添加</span>'
-                            : '<span class="text-xs text-crypto-blue flex-shrink-0">+ 添加</span>'}
-                    </div>
-                </div>
-            `;
-        }).join('');
+                    `;
+                }).join('');
 
-        // 绑定点击事件（避免内联 onclick 的转义问题）
-        container.querySelectorAll('.coin-search-item').forEach(el => {
-            el.addEventListener('click', () => {
-                this.addToWatchlist(el.dataset.coinId);
-            });
-        });
+                // 绑定点击事件
+                detailsEl.querySelectorAll('.signal-detail-item').forEach(item => {
+                    item.addEventListener('click', () => {
+                        const sigName = item.dataset.signal;
+                        const info = this.signalInfoMap[sigName];
+                        if (info) {
+                            this.showSignalDetail(sigName, 0, 0);
+                        }
+                    });
+                });
+            }
+        }
     },
+
+    // 获取已触发的信号列表（基于最近的K线）
+    getTriggeredSignalList() {
+        const signals = [];
+        const ind = this.state.indicators;
+        if (!ind) return signals;
+
+        const seen = new Set();
+
+        // 检查MACD
+        if (ind.macd && ind.macd.macd && ind.macd.signal) {
+            const len = ind.macd.macd.length;
+            if (len >= 2) {
+                const last = ind.macd.macd[len - 1];
+                const prev = ind.macd.macd[len - 2];
+                const lastSig = ind.macd.signal[len - 1];
+                const prevSig = ind.macd.signal[len - 2];
+                if (prev <= prevSig && last > lastSig) {
+                    signals.push({ name: 'MACD金叉', type: 'buy', strengthText: '中等' });
+                    seen.add('MACD金叉');
+                } else if (prev >= prevSig && last < lastSig) {
+                    signals.push({ name: 'MACD死叉', type: 'sell', strengthText: '中等' });
+                    seen.add('MACD死叉');
+                }
+            }
+        }
+
+        // 检查KDJ
+        if (ind.kdj && ind.kdj.k && ind.kdj.d) {
+            const len = ind.kdj.k.length;
+            if (len >= 2) {
+                const lastK = ind.kdj.k[len - 1];
+                const prevK = ind.kdj.k[len - 2];
+                const lastD = ind.kdj.d[len - 1];
+                const prevD = ind.kdj.d[len - 2];
+                if (prevK <= prevD && lastK > lastD) {
+                    if (lastK < 30 && lastD < 30) {
+                        signals.push({ name: 'KDJ超卖金叉', type: 'buy', strengthText: '强' });
+                    } else {
+                        signals.push({ name: 'KDJ金叉', type: 'buy', strengthText: '中等' });
+                    }
+                } else if (prevK >= prevD && lastK < lastD) {
+                    if (lastK > 70 && lastD > 70) {
+                        signals.push({ name: 'KDJ超买死叉', type: 'sell', strengthText: '强' });
+                    } else {
+                        signals.push({ name: 'KDJ死叉', type: 'sell', strengthText: '中等' });
+                    }
+                }
+            }
+        }
+
+        // RSI
+        if (ind.rsi !== null && ind.rsi !== undefined) {
+            if (ind.rsi > 70) {
+                signals.push({ name: 'RSI超买回落', type: 'sell', strengthText: '强' });
+            } else if (ind.rsi < 30) {
+                signals.push({ name: 'RSI超卖回升', type: 'buy', strengthText: '强' });
+            }
+        }
+
+        // 均线
+        if (ind.ma7 && ind.ma25) {
+            const len = ind.ma7.length;
+            if (len >= 2) {
+                const lastMa7 = ind.ma7[len - 1];
+                const prevMa7 = ind.ma7[len - 2];
+                const lastMa25 = ind.ma25[len - 1];
+                const prevMa25 = ind.ma25[len - 2];
+                if (prevMa7 <= prevMa25 && lastMa7 > lastMa25) {
+                    signals.push({ name: '均线金叉', type: 'buy', strengthText: '中等' });
+                } else if (prevMa7 >= prevMa25 && lastMa7 < lastMa25) {
+                    signals.push({ name: '均线死叉', type: 'sell', strengthText: '中等' });
+                }
+            }
+        }
+
+        return signals;
+    },
+
 
     // 保存联网添加的币种元数据
     saveCoinMeta() {
@@ -2907,7 +2734,6 @@ const CryptoPulseApp = {
         } catch (e) { /* 忽略存储失败 */ }
     },
 
-    // 读取联网添加的币种元数据
     loadCoinMeta() {
         try {
             const saved = JSON.parse(localStorage.getItem('cryptoPulse_coinMeta') || '{}');
@@ -2917,9 +2743,8 @@ const CryptoPulseApp = {
         }
     },
 
-    // 添加到自选（含去重与自动跳转）
+    // 添加到自选
     async addToWatchlist(coinId) {
-        // 先登记元数据，这样 getBinanceSymbol 才能解析出交易对
         const fromPopular = this.popularCoins.find(c => c.id === coinId);
         const fromCatalog = this.state.coinCatalog.find(c => c.coinId === coinId);
         if (!fromPopular && fromCatalog) {
@@ -2933,22 +2758,20 @@ const CryptoPulseApp = {
             this.saveCoinMeta();
         }
 
-        // 去重：自选中已存在同一交易对时，直接跳转过去，避免重复项
         const targetSymbol = this.getBinanceSymbol(coinId);
         if (targetSymbol) {
             const duplicated = this.state.watchlist.find(
                 id => id !== coinId && this.getBinanceSymbol(id) === targetSymbol
             );
             if (duplicated) {
-                this.hideAddCoinModal();
+                this.hideCoinSelectorModal();
                 this.switchCoin(duplicated);
                 return;
             }
         }
 
         if (this.state.watchlist.includes(coinId)) {
-            // 已存在：直接跳转
-            this.hideAddCoinModal();
+            this.hideCoinSelectorModal();
             this.switchCoin(coinId);
             return;
         }
@@ -2960,12 +2783,10 @@ const CryptoPulseApp = {
 
         this.state.watchlist.push(coinId);
         this.saveWatchlist();
-        this.renderCoinTabs();
         this.loadWatchlistQuotes();
-        this.searchCoins(document.getElementById('searchCoinInput')?.value || '');
+        this.renderCoinSelectorList();
 
-        // 新增后自动跳转到该币种并拉取数据
-        this.hideAddCoinModal();
+        this.hideCoinSelectorModal();
         await this.switchCoin(coinId);
     },
 
@@ -2977,22 +2798,19 @@ const CryptoPulseApp = {
         if (index > -1) {
             this.state.watchlist.splice(index, 1);
 
-            // 同步清理行情缓存与币种元数据
             delete this.state.watchlistQuotes[coinId];
             if (!this.popularCoins.find(c => c.id === coinId)) {
                 delete this.state.coinMeta[coinId];
                 this.saveCoinMeta();
             }
 
-            // 如果删除的是当前选中的，切换到第一个
             if (coinId === this.state.currentCoin) {
                 this.state.currentCoin = this.state.watchlist[0];
                 this.loadCoinData(this.state.currentCoin);
             }
 
             this.saveWatchlist();
-            this.renderCoinTabs();
-            this.searchCoins(document.getElementById('searchCoinInput')?.value || '');
+            this.renderCoinSelectorList();
         }
     },
 
@@ -3005,14 +2823,6 @@ const CryptoPulseApp = {
         } else {
             overlay.classList.add('hidden');
             overlay.classList.remove('flex');
-        }
-    },
-
-    // 更新最后更新时间
-    updateLastUpdateTime() {
-        const el = document.getElementById('lastUpdate');
-        if (el && this.state.lastUpdate) {
-            el.textContent = this.state.lastUpdate.toLocaleTimeString('zh-CN');
         }
     },
 
