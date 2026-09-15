@@ -390,6 +390,7 @@ const CryptoPulseApp = {
         this.loadCoinCatalog();
         this.loadWatchlistQuotes();
         await this.loadCoinData(this.state.currentCoin);
+        this.updateFavoriteButton();
         this.saveUIState();
         this.startAutoRefresh();
     },
@@ -517,6 +518,114 @@ const CryptoPulseApp = {
                 this.showCoinSelectorModal();
             });
         }
+
+        // 返回按钮 -> 返回行情列表（选择器已打开时则关闭它）
+        const backBtn = document.getElementById('backBtn');
+        if (backBtn) {
+            backBtn.addEventListener('click', () => {
+                this.handleBack();
+            });
+        }
+
+        // 星星按钮 -> 当前币种加入/移出自选
+        const favoriteBtn = document.getElementById('favoriteBtn');
+        if (favoriteBtn) {
+            favoriteBtn.addEventListener('click', () => {
+                this.toggleFavorite();
+            });
+        }
+    },
+
+    /**
+     * 返回：优先关闭已打开的弹层，否则回到行情列表
+     */
+    handleBack() {
+        const selector = document.getElementById('coinSelectorModal');
+        if (selector && !selector.classList.contains('hidden')) {
+            this.hideCoinSelectorModal();
+            return;
+        }
+        const newsDetail = document.getElementById('newsDetailModal');
+        if (newsDetail && !newsDetail.classList.contains('hidden')) {
+            this.hideNewsDetail();
+            return;
+        }
+        const signalDetail = document.getElementById('signalDetailModal');
+        if (signalDetail && !signalDetail.classList.contains('hidden')) {
+            this.hideSignalDetail();
+            return;
+        }
+        this.showCoinSelectorModal();
+    },
+
+    /**
+     * 当前币种是否已在自选中
+     */
+    isCurrentInWatchlist() {
+        return this.state.watchlist.includes(this.state.currentCoin);
+    },
+
+    /**
+     * 刷新星星按钮的选中态样式
+     */
+    updateFavoriteButton() {
+        const btn = document.getElementById('favoriteBtn');
+        const icon = document.getElementById('favoriteIcon');
+        if (!btn || !icon) return;
+
+        const inList = this.isCurrentInWatchlist();
+
+        // 已加入自选：金色实心星；未加入：灰色描边星
+        icon.setAttribute('fill', inList ? 'currentColor' : 'none');
+        icon.classList.toggle('text-golden', inList);
+        icon.classList.toggle('text-text-secondary', !inList);
+
+        btn.setAttribute('title', inList ? '取消自选' : '加入自选');
+    },
+
+    /**
+     * 点击星星：切换当前币种的自选状态
+     */
+    async toggleFavorite() {
+        const coinId = this.state.currentCoin;
+        if (!coinId) return;
+
+        if (this.isCurrentInWatchlist()) {
+            if (this.state.watchlist.length <= 1) {
+                this.showToast('至少保留一个自选币种');
+                return;
+            }
+            // 仅移出自选，保持当前查看的币种不变
+            this.removeFromWatchlist(coinId, true);
+            this.showToast('已移出自选');
+        } else {
+            await this.addToWatchlist(coinId);
+            this.showToast('已加入自选');
+        }
+
+        this.updateFavoriteButton();
+    },
+
+    /**
+     * 轻提示
+     * @param {string} text - 提示文案
+     */
+    showToast(text) {
+        const el = document.getElementById('toast');
+        if (!el) return;
+        el.textContent = text;
+        el.classList.remove('hidden');
+        // 强制重排，保证连续点击也能触发过渡
+        void el.offsetWidth;
+        el.classList.remove('opacity-0');
+        el.classList.add('opacity-100');
+
+        clearTimeout(this._toastTimer);
+        this._toastTimer = setTimeout(() => {
+            el.classList.remove('opacity-100');
+            el.classList.add('opacity-0');
+            setTimeout(() => el.classList.add('hidden'), 220);
+        }, 1600);
     },
 
     // 初始化图表
@@ -876,16 +985,24 @@ const CryptoPulseApp = {
             const up = hasQuote ? quote.changePercent >= 0 : true;
 
             return `
-                <div class="coin-selector-item flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-gray-50 transition-colors ${isActive ? 'bg-golden/5' : ''}"
+                <div class="coin-selector-item relative flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50 transition-colors ${isActive ? 'bg-golden/5' : ''}"
                      data-coin-id="${coin.coinId}" data-symbol="${coin.binanceSymbol}">
-                    <div class="flex items-center gap-3 min-w-0">
-                        <div class="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-sm font-bold text-text-primary flex-shrink-0">
+                    ${inWatchlist ? '<span class="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-6 rounded-r-full bg-golden"></span>' : ''}
+                    <button class="coin-star-btn flex-shrink-0 p-0.5 rounded transition-transform active:scale-90"
+                            data-coin-id="${coin.coinId}" data-symbol="${coin.binanceSymbol}"
+                            title="${inWatchlist ? '取消自选' : '加入自选'}" aria-label="${inWatchlist ? '取消自选' : '加入自选'}">
+                        <svg class="w-4 h-4 ${inWatchlist ? 'text-golden' : 'text-gray-300'}" fill="${inWatchlist ? 'currentColor' : 'none'}" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"></path>
+                        </svg>
+                    </button>
+                    <div class="flex items-center gap-3 min-w-0 flex-1">
+                        <div class="w-8 h-8 rounded-full ${inWatchlist ? 'bg-golden/10' : 'bg-gray-100'} flex items-center justify-center text-sm font-bold text-text-primary flex-shrink-0">
                             ${coin.symbol.charAt(0)}
                         </div>
                         <div class="min-w-0">
                             <div class="flex items-center gap-1.5">
                                 <span class="text-sm font-semibold text-text-primary">${coin.symbol}</span>
-                                ${inWatchlist ? '<span class="text-[10px] text-golden">★</span>' : ''}
+                                ${isActive ? '<span class="text-[10px] px-1 py-px rounded bg-golden/15 text-golden">当前</span>' : ''}
                             </div>
                             <p class="text-xs text-text-secondary truncate">${this.getCoinSubtitle(coin)}</p>
                         </div>
@@ -900,10 +1017,18 @@ const CryptoPulseApp = {
             `;
         }).join('');
 
-        // 绑定点击事件
+        // 绑定行点击（切换币种）
         container.querySelectorAll('.coin-selector-item').forEach(el => {
             el.addEventListener('click', () => {
                 this.addOrSwitchToCoin(el.dataset.coinId, el.dataset.symbol);
+            });
+        });
+
+        // 绑定星星点击（加入/移出自选，不切换币种，需阻止冒泡）
+        container.querySelectorAll('.coin-star-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.toggleSymbolWatchlist(btn.dataset.coinId, btn.dataset.symbol);
             });
         });
 
@@ -1024,6 +1149,7 @@ const CryptoPulseApp = {
         this.state.currentCoin = coinId;
         this.saveWatchlist();
         this.saveUIState();
+        this.updateFavoriteButton();
         await this.loadCoinData(coinId);
     },
 
@@ -2743,8 +2869,8 @@ const CryptoPulseApp = {
         }
     },
 
-    // 添加到自选
-    async addToWatchlist(coinId) {
+    // 补齐币种元数据（从目录拉取的币种需落盘，否则切换后读不到）
+    ensureCoinMeta(coinId) {
         const fromPopular = this.popularCoins.find(c => c.id === coinId);
         const fromCatalog = this.state.coinCatalog.find(c => c.coinId === coinId);
         if (!fromPopular && fromCatalog) {
@@ -2757,6 +2883,59 @@ const CryptoPulseApp = {
             };
             this.saveCoinMeta();
         }
+    },
+
+    /**
+     * 写入自选列表（不切换币种、不关闭弹窗）
+     * @returns {boolean} 是否成功写入（已存在视为成功，超出上限返回 false）
+     */
+    registerWatchlist(coinId) {
+        this.ensureCoinMeta(coinId);
+
+        if (this.state.watchlist.includes(coinId)) return true;
+
+        const targetSymbol = this.getBinanceSymbol(coinId);
+        if (targetSymbol && this.state.watchlist.some(
+            id => id !== coinId && this.getBinanceSymbol(id) === targetSymbol
+        )) {
+            return true;
+        }
+
+        if (this.state.watchlist.length >= 15) {
+            this.showToast('自选最多添加 15 个币种');
+            return false;
+        }
+
+        this.state.watchlist.push(coinId);
+        this.saveWatchlist();
+        this.loadWatchlistQuotes();
+        return true;
+    },
+
+    /**
+     * 点击列表中的星星：加入/移出自选，但不切换当前查看的币种
+     */
+    toggleSymbolWatchlist(coinId, binanceSymbol) {
+        const existingId = this.findWatchlistIdBySymbol(binanceSymbol);
+
+        if (existingId) {
+            if (this.state.watchlist.length <= 1) {
+                this.showToast('至少保留一个自选币种');
+                return;
+            }
+            this.removeFromWatchlist(existingId, existingId === this.state.currentCoin);
+            this.showToast('已移出自选');
+        } else {
+            if (!this.registerWatchlist(coinId)) return;
+            this.renderCoinSelectorList();
+            this.updateFavoriteButton();
+            this.showToast('已加入自选');
+        }
+    },
+
+    // 添加到自选并切换过去（列表整行点击）
+    async addToWatchlist(coinId) {
+        this.ensureCoinMeta(coinId);
 
         const targetSymbol = this.getBinanceSymbol(coinId);
         if (targetSymbol) {
@@ -2776,22 +2955,18 @@ const CryptoPulseApp = {
             return;
         }
 
-        if (this.state.watchlist.length >= 15) {
-            alert('自选最多添加 15 个币种');
-            return;
-        }
+        if (!this.registerWatchlist(coinId)) return;
 
-        this.state.watchlist.push(coinId);
-        this.saveWatchlist();
-        this.loadWatchlistQuotes();
         this.renderCoinSelectorList();
+        this.updateFavoriteButton();
 
         this.hideCoinSelectorModal();
         await this.switchCoin(coinId);
     },
 
     // 从自选移除
-    removeFromWatchlist(coinId) {
+    // @param {boolean} keepCurrent - 为 true 时即使移除的是当前币种也不跳转
+    removeFromWatchlist(coinId, keepCurrent = false) {
         if (this.state.watchlist.length <= 1) return;
 
         const index = this.state.watchlist.indexOf(coinId);
@@ -2804,13 +2979,14 @@ const CryptoPulseApp = {
                 this.saveCoinMeta();
             }
 
-            if (coinId === this.state.currentCoin) {
+            if (!keepCurrent && coinId === this.state.currentCoin) {
                 this.state.currentCoin = this.state.watchlist[0];
                 this.loadCoinData(this.state.currentCoin);
             }
 
             this.saveWatchlist();
             this.renderCoinSelectorList();
+            this.updateFavoriteButton();
         }
     },
 
