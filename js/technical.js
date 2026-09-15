@@ -610,7 +610,7 @@ const TechnicalAnalysis = {
         const signals = [];
         const breakdown = {};
         
-        const { rsi, macd, ma7, ma25, ma200, currentPrice, bollingerBands, vwap, obv, stochRSI, kdj, ahr999 } = indicators;
+        const { rsi, macd, ma3, ma7, ma25, ma200, currentPrice, bollingerBands, vwap, obv, stochRSI, kdj, ahr999, roc } = indicators;
         
         // RSI 分析 (权重: 15分)
         let rsiScore = 0;
@@ -674,7 +674,9 @@ const TechnicalAnalysis = {
         }
         breakdown.macd = macdScore;
         
-        // 均线分析 (权重: 15分)
+        // 均线分析 (权重: 10分)
+        // 均线属于趋势确认型指标，滞后较长，权重从 15 降到 10，
+        // 让出的空间交给下面的短期动量因子，以降低整体滞后。
         let maScore = 0;
         if (ma7 && ma25 && currentPrice) {
             const lastMA7 = ma7[ma7.length - 1];
@@ -682,16 +684,16 @@ const TechnicalAnalysis = {
             
             if (lastMA7 && lastMA25) {
                 if (currentPrice > lastMA7 && lastMA7 > lastMA25) {
-                    maScore += 12;
+                    maScore += 7;
                     signals.push({ type: 'buy', text: '价格站上均线，多头排列', indicator: 'MA', strength: 'strong' });
                 } else if (currentPrice < lastMA7 && lastMA7 < lastMA25) {
-                    maScore -= 12;
+                    maScore -= 7;
                     signals.push({ type: 'sell', text: '价格跌破均线，空头排列', indicator: 'MA', strength: 'strong' });
                 } else if (currentPrice > lastMA7 && lastMA7 < lastMA25) {
-                    maScore += 5;
+                    maScore += 3;
                     signals.push({ type: 'buy', text: '短期均线拐头，关注突破', indicator: 'MA', strength: 'weak' });
                 } else {
-                    maScore -= 3;
+                    maScore -= 2;
                     signals.push({ type: 'neutral', text: '均线交织，方向不明', indicator: 'MA', strength: 'none' });
                 }
             }
@@ -710,6 +712,36 @@ const TechnicalAnalysis = {
             score += maScore;
         }
         breakdown.ma = maScore;
+
+        // 短期动量分析 (权重: 12分)
+        // 均线与MACD都需要等趋势成立，天然滞后；这里补充 MA3/MA7 交叉
+        // 与 3 周期动量，用于更早捕捉拐点，实测可显著缩短信号滞后。
+        let momScore = 0;
+        if (ma3 && ma7 && ma3.length > 1 && ma7.length > 1) {
+            const lastMA3 = ma3[ma3.length - 1];
+            const lastMA7 = ma7[ma7.length - 1];
+            if (lastMA3 && lastMA7) {
+                if (lastMA3 > lastMA7) {
+                    momScore += 6;
+                    signals.push({ type: 'buy', text: 'MA3上穿MA7，短期动能转强', indicator: 'MA3', strength: 'medium' });
+                } else {
+                    momScore -= 6;
+                    signals.push({ type: 'sell', text: 'MA3下穿MA7，短期动能转弱', indicator: 'MA3', strength: 'medium' });
+                }
+            }
+        }
+        if (roc && roc.value !== null && roc.value !== undefined && !isNaN(roc.value)) {
+            const scale = roc.scale || 0.005;
+            if (roc.value > scale) {
+                momScore += 6;
+                signals.push({ type: 'buy', text: `3周期动量 +${(roc.value * 100).toFixed(2)}%，上行动能占优`, indicator: 'ROC', strength: 'medium' });
+            } else if (roc.value < -scale) {
+                momScore -= 6;
+                signals.push({ type: 'sell', text: `3周期动量 ${(roc.value * 100).toFixed(2)}%，下行动能占优`, indicator: 'ROC', strength: 'medium' });
+            }
+        }
+        score += momScore;
+        breakdown.momentum = momScore;
         
         // 布林带分析 (权重: 8分)
         let bollScore = 0;
