@@ -449,6 +449,49 @@
                 </div>
             </section>
 
+            <!-- 预测准确率 -->
+            <section class="bg-white px-4 py-3 mt-2">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-semibold">预测准确率</h3>
+                    <span id="accuracyScope" class="text-xs text-text-tertiary">--</span>
+                </div>
+                <div class="flex items-center gap-4 mb-3">
+                    <div class="relative w-20 h-20 flex-shrink-0">
+                        <svg class="w-20 h-20 transform -rotate-90">
+                            <circle cx="40" cy="40" r="34" stroke="#f0f3f8" stroke-width="6" fill="none"/>
+                            <circle id="accuracyRing" cx="40" cy="40" r="34" stroke="#f0b90b" stroke-width="6" fill="none"
+                                stroke-dasharray="213.6" stroke-dashoffset="213.6" stroke-linecap="round"
+                                class="transition-all duration-700"/>
+                        </svg>
+                        <div class="absolute inset-0 flex flex-col items-center justify-center">
+                            <span id="accuracyValue" class="text-lg font-bold tabular-nums">--</span>
+                            <span class="text-[10px] text-text-tertiary">总准确率</span>
+                        </div>
+                    </div>
+                    <div class="flex-1 grid grid-cols-2 gap-2">
+                        <div class="bg-gray-50 rounded-xl p-2.5">
+                            <p class="text-xs text-text-secondary mb-0.5">方向准确率</p>
+                            <p id="dirAccuracyValue" class="text-base font-bold tabular-nums">--</p>
+                        </div>
+                        <div class="bg-gray-50 rounded-xl p-2.5">
+                            <p class="text-xs text-text-secondary mb-0.5">已复盘次数</p>
+                            <p id="resolvedCount" class="text-base font-bold tabular-nums">--</p>
+                        </div>
+                        <div class="bg-gray-50 rounded-xl p-2.5">
+                            <p class="text-xs text-text-secondary mb-0.5">看多命中</p>
+                            <p id="bullAccuracy" class="text-base font-bold tabular-nums">--</p>
+                        </div>
+                        <div class="bg-gray-50 rounded-xl p-2.5">
+                            <p class="text-xs text-text-secondary mb-0.5">看空命中</p>
+                            <p id="bearAccuracy" class="text-base font-bold tabular-nums">--</p>
+                        </div>
+                    </div>
+                </div>
+                <p class="text-xs text-text-tertiary leading-relaxed">
+                    复盘窗口为当前周期 5 根 K 线。看多需上涨超 0.3%、看空需下跌超 0.3% 记为命中；观望需波动在 ±2% 以内。
+                </p>
+            </section>
+
             <!-- 操作建议 -->
             <section class="bg-white px-4 py-3 mt-2">
                 <h3 class="text-sm font-semibold mb-3">操作建议</h3>
@@ -488,6 +531,20 @@
                 <div id="volPriceVolumeState" class="p-3 rounded-xl bg-gray-50 text-sm text-text-secondary mb-2.5">--</div>
                 <div id="volumeSignalsList" class="space-y-1.5">
                     <!-- 量能明细动态生成 -->
+                </div>
+            </section>
+
+            <!-- 历史预测记录 -->
+            <section class="bg-white px-4 py-3 mt-2">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-semibold">历史预测记录</h3>
+                    <div class="flex items-center gap-2.5">
+                        <span id="historyCount" class="text-xs text-text-tertiary">--</span>
+                        <button id="clearHistoryBtn" class="text-xs text-text-secondary hover:text-fall-red transition-colors">清空</button>
+                    </div>
+                </div>
+                <div id="predictionHistoryList" class="space-y-2">
+                    <p class="text-sm text-text-secondary">暂无预测记录</p>
                 </div>
             </section>
 
@@ -738,10 +795,11 @@
     <!-- 轻提示 -->
     <div id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-24 z-[60] px-4 py-2.5 rounded-xl bg-gray-900/90 text-white text-sm shadow-lg opacity-0 pointer-events-none transition-opacity duration-200 hidden"></div>
 
-    <script src="js/technical.js?v=18"></script>
-    <script src="js/news.js?v=18"></script>
-    <script src="js/signals.js?v=18"></script>
-    <script src="js/chart.js?v=18"></script>
-    <script src="js/app.js?v=18"></script>
+    <script src="js/technical.js?v=21"></script>
+    <script src="js/news.js?v=21"></script>
+    <script src="js/signals.js?v=21"></script>
+    <script src="js/prediction.js?v=21"></script>
+    <script src="js/chart.js?v=21"></script>
+    <script src="js/app.js?v=21"></script>
 </body>
 </html>

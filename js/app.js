@@ -460,6 +460,21 @@ const CryptoPulseApp = {
             }
         });
 
+        // 清空当前币种+周期的预测历史
+        const clearHistoryBtn = document.getElementById('clearHistoryBtn');
+        if (clearHistoryBtn) {
+            clearHistoryBtn.addEventListener('click', () => {
+                const coin = this.getCoinInfo(this.state.currentCoin);
+                const tfLabel = this.getTimeframeConfig(this.state.currentTimeframe).label;
+                if (!confirm(`确定清空 ${coin.symbol} ${tfLabel} 的预测历史记录？`)) return;
+
+                PredictionTracker.clear(this.state.currentCoin, this.state.currentTimeframe);
+                this.renderAccuracyStats();
+                this.renderPredictionHistory();
+                this.showToast('已清空预测历史');
+            });
+        }
+
         // 底部栏自选按钮 -> 打开币种选择器
         const watchlistToggleBtn = document.getElementById('watchlistToggleBtn');
         if (watchlistToggleBtn) {
@@ -1365,6 +1380,7 @@ const CryptoPulseApp = {
             }));
 
             this.state.candleData = candleData;
+            this.evaluatePredictions();
             this.calculateIndicators();
             this.updateChart();
             this.updateSignal();
@@ -1395,6 +1411,9 @@ const CryptoPulseApp = {
         } catch (error) {
             console.warn('获取恐惧贪婪指数失败:', error);
             this.useMockFearGreedIndex();
+        } finally {
+            // 无论成功或降级，标记情绪数据已就绪
+            this._fngReady = true;
         }
     },
 
@@ -1528,6 +1547,7 @@ const CryptoPulseApp = {
         }
         
         this.state.candleData = candleData;
+        this.evaluatePredictions();
         this.calculateIndicators();
         this.updateChart();
         this.updateSignal();
@@ -2305,6 +2325,9 @@ const CryptoPulseApp = {
             this.updateSignal();
         } catch (error) {
             console.error('获取新闻失败:', error);
+        } finally {
+            // 无论成功或降级，标记新闻已就绪，此后才允许记录预测
+            this._newsReady = true;
         }
     },
 
@@ -2584,8 +2607,52 @@ const CryptoPulseApp = {
 
         this.state.signal = signal;
         this.state.signal.totalScore = totalScore;
+
+        // 记录本次预测（仅在方向变化或上一轮已复盘时才会新增）
+        this.trackPrediction(signal);
+
         this.renderSignal();
         this.renderPredictTab();
+    },
+
+    /**
+     * 记录本次预测，用于后续统计准确率
+     */
+    trackPrediction(signal) {
+        if (!signal || !this.state.coinInfo) return;
+        const price = this.state.coinInfo.current_price;
+        if (!price) return;
+
+        // 新闻与恐慌指数尚未就绪时评分不完整，此时记录会得到失真的方向，
+        // 等这两个数据源加载完（成功或降级）后再开始记录
+        if (!this._newsReady || !this._fngReady) return;
+
+        const coin = this.getCoinInfo(this.state.currentCoin);
+        const added = PredictionTracker.record({
+            coinId: this.state.currentCoin,
+            coinSymbol: coin.symbol,
+            timeframe: this.state.currentTimeframe,
+            signalType: signal.type,
+            signalText: signal.text,
+            score: signal.totalScore,
+            price,
+            intervalSeconds: this.getTimeframeConfig(this.state.currentTimeframe).seconds,
+        });
+
+        if (added) {
+            console.log('[预测] 已记录:', signal.text, '@', price);
+        }
+    },
+
+    /**
+     * 用最新K线复盘到期的预测
+     */
+    evaluatePredictions() {
+        if (!this.state.candleData || this.state.candleData.length === 0) return;
+        const updated = PredictionTracker.evaluate(this.state.candleData);
+        if (updated) {
+            console.log('[预测] 有预测完成复盘');
+        }
     },
 
     calculateSentimentScore() {
@@ -2828,6 +2895,10 @@ const CryptoPulseApp = {
         // 量能分析
         this.renderVolumeAnalysis();
 
+        // 预测准确率与历史记录
+        this.renderAccuracyStats();
+        this.renderPredictionHistory();
+
         // 信号明细列表
         const detailsEl = document.getElementById('signalDetailsList');
         if (detailsEl) {
@@ -2971,6 +3042,161 @@ const CryptoPulseApp = {
                 }).join('');
             }
         }
+    },
+
+    // 渲染预测准确率
+    renderAccuracyStats() {
+        const coinId = this.state.currentCoin;
+        const tf = this.state.currentTimeframe;
+        const stats = PredictionTracker.getStats(coinId, tf);
+        const coin = this.getCoinInfo(coinId);
+        const tfLabel = this.getTimeframeConfig(tf).label;
+
+        const CIRC = 213.6; // 2πr, r = 34
+
+        const scopeEl = document.getElementById('accuracyScope');
+        if (scopeEl) {
+            scopeEl.textContent = `${coin.symbol} · ${tfLabel} · 累计 ${stats.total} 次`;
+        }
+
+        // 准确率圆环
+        const ring = document.getElementById('accuracyRing');
+        const pct = stats.accuracy;
+        if (ring) {
+            if (pct === null) {
+                // 还没有完成复盘的预测，用中性灰而不是红色，避免误读为「准确率差」
+                ring.setAttribute('stroke-dashoffset', String(CIRC));
+                ring.setAttribute('stroke', '#e0e3e8');
+            } else {
+                const bounded = Math.max(0, Math.min(100, pct));
+                ring.setAttribute('stroke-dashoffset', String(CIRC * (1 - bounded / 100)));
+                ring.setAttribute('stroke', bounded >= 60 ? '#089981' : (bounded >= 45 ? '#f0b90b' : '#f23645'));
+            }
+        }
+
+        const valEl = document.getElementById('accuracyValue');
+        if (valEl) {
+            if (pct === null) {
+                valEl.textContent = '--';
+                valEl.className = 'text-lg font-bold tabular-nums text-text-tertiary';
+            } else {
+                valEl.textContent = pct.toFixed(0) + '%';
+                valEl.className = `text-lg font-bold tabular-nums ${pct >= 60 ? 'text-rise-green' : (pct >= 45 ? 'text-golden' : 'text-fall-red')}`;
+            }
+        }
+
+        // 方向准确率（只看多空，排除观望）
+        const dirEl = document.getElementById('dirAccuracyValue');
+        if (dirEl) {
+            if (stats.directionalAccuracy === null) {
+                dirEl.textContent = '--';
+                dirEl.className = 'text-base font-bold tabular-nums text-text-tertiary';
+            } else {
+                const a = stats.directionalAccuracy;
+                dirEl.textContent = `${a.toFixed(0)}%`;
+                dirEl.className = `text-base font-bold tabular-nums ${a >= 60 ? 'text-rise-green' : (a >= 45 ? 'text-golden' : 'text-fall-red')}`;
+            }
+        }
+
+        const resolvedEl = document.getElementById('resolvedCount');
+        if (resolvedEl) {
+            resolvedEl.textContent = stats.pending > 0
+                ? `${stats.resolved} / ${stats.total}`
+                : String(stats.resolved);
+            resolvedEl.className = 'text-base font-bold tabular-nums text-text-primary';
+        }
+
+        const pctText = (c, t) => (t === 0 ? '--' : `${Math.round(c / t * 100)}%`);
+        const bullEl = document.getElementById('bullAccuracy');
+        if (bullEl) {
+            const t = pctText(stats.bullCorrect, stats.bullTotal);
+            bullEl.textContent = t === '--' ? '--' : `${t} (${stats.bullCorrect}/${stats.bullTotal})`;
+            bullEl.className = 'text-base font-bold tabular-nums text-rise-green';
+        }
+
+        const bearEl = document.getElementById('bearAccuracy');
+        if (bearEl) {
+            const t = pctText(stats.bearCorrect, stats.bearTotal);
+            bearEl.textContent = t === '--' ? '--' : `${t} (${stats.bearCorrect}/${stats.bearTotal})`;
+            bearEl.className = 'text-base font-bold tabular-nums text-fall-red';
+        }
+    },
+
+    // 渲染历史预测记录
+    renderPredictionHistory() {
+        const listEl = document.getElementById('predictionHistoryList');
+        if (!listEl) return;
+
+        const records = PredictionTracker.getHistory(this.state.currentCoin, this.state.currentTimeframe, 20);
+
+        const countEl = document.getElementById('historyCount');
+        if (countEl) {
+            countEl.textContent = records.length ? `最近 ${records.length} 条` : '';
+        }
+
+        if (records.length === 0) {
+            listEl.innerHTML = '<p class="text-sm text-text-secondary leading-relaxed">暂无预测记录。产生方向性预测后会自动记录，等复盘窗口结束再回来核对结果。</p>';
+            return;
+        }
+
+        listEl.innerHTML = records.map(r => {
+            const isHold = r.signalType === 'hold';
+            const isBuy = r.signalType === 'buy' || r.signalType === 'strong_buy';
+            const dirCls = isHold ? 'text-golden' : (isBuy ? 'text-rise-green' : 'text-fall-red');
+            const dirBg = isHold ? 'bg-golden/10' : (isBuy ? 'bg-rise-green/10' : 'bg-fall-red/10');
+
+            // 复盘结果标签
+            let resultHtml;
+            if (r.correct === null) {
+                const left = Math.max(0, r.resolveAt - Date.now());
+                resultHtml = `<span class="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 text-text-tertiary whitespace-nowrap">待复盘 · ${this.formatCountdown(left)}</span>`;
+            } else {
+                resultHtml = `<span class="text-[11px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${r.correct ? 'bg-rise-green/10 text-rise-green' : 'bg-fall-red/10 text-fall-red'}">${r.correct ? '判断正确' : '判断错误'}</span>`;
+            }
+
+            const chg = r.changePct === null
+                ? '--'
+                : `${r.changePct >= 0 ? '+' : ''}${(r.changePct * 100).toFixed(2)}%`;
+            const chgCls = r.changePct === null ? 'text-text-tertiary' : (r.changePct >= 0 ? 'text-rise-green' : 'text-fall-red');
+
+            return `
+                <div class="p-3 rounded-xl bg-gray-50">
+                    <div class="flex items-center justify-between gap-2 mb-2">
+                        <div class="flex items-center gap-2 min-w-0">
+                            <span class="text-xs px-1.5 py-0.5 rounded ${dirBg} ${dirCls} flex-shrink-0">${isBuy ? '看多' : (isHold ? '观望' : '看空')}</span>
+                            <span class="text-sm font-semibold ${dirCls} truncate">${r.signalText}</span>
+                            <span class="text-xs text-text-tertiary whitespace-nowrap">评分 ${r.score ?? '--'}</span>
+                        </div>
+                        ${resultHtml}
+                    </div>
+                    <div class="flex items-center justify-between text-xs gap-2">
+                        <span class="text-text-tertiary whitespace-nowrap">${this.formatPredictionTime(r.predictedAt)}</span>
+                        <span class="text-text-secondary tabular-nums whitespace-nowrap">
+                            $${TechnicalAnalysis.formatPrice(r.price)}
+                            <span class="text-text-tertiary mx-0.5">→</span>
+                            ${r.evalPrice ? '$' + TechnicalAnalysis.formatPrice(r.evalPrice) : '--'}
+                            <span class="${chgCls} font-medium ml-1">${chg}</span>
+                        </span>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    },
+
+    // 复盘倒计时文案
+    formatCountdown(ms) {
+        const min = Math.floor(ms / 60000);
+        if (min < 60) return `${Math.max(1, min)} 分钟后`;
+        const h = Math.floor(min / 60);
+        if (h < 24) return `${h} 小时后`;
+        return `${Math.floor(h / 24)} 天后`;
+    },
+
+    // 预测记录时间格式化
+    formatPredictionTime(ts) {
+        const d = new Date(ts);
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
     },
 
     // 获取已触发的信号列表（基于最近的K线）
