@@ -66,6 +66,38 @@ const CryptoPulseApp = {
 
     // 信号详细解释字典
     signalInfoMap: {
+        '强烈买入': {
+            type: 'buy',
+            strength: 'strong',
+            strengthText: '强',
+            desc: '多因子综合评分达到 70 分以上，技术面、量能与情绪面形成共振，是力度最强的看多结论。',
+            condition: '综合评分 ≥ 70：MACD 处于多头、均线多头排列、价格站上 MA25、KDJ 金叉、RSI 未超买、量价配合良好等多项条件同时成立。',
+            advice: '可考虑分批建仓，仓位相应提高。若后续出现量能萎缩或价格跌破 MA25，需及时减仓。'
+        },
+        '买入': {
+            type: 'buy',
+            strength: 'medium',
+            strengthText: '中等',
+            desc: '多因子综合评分在 58 至 70 分之间，多头因素占优，趋势偏多但力度中等。',
+            condition: '综合评分 ≥ 58 且 < 70：多数技术指标偏多，量能或情绪面提供配合。',
+            advice: '可轻仓试探性建仓，逢回调分批加仓；同时设好止损，避免在压力位附近追高。'
+        },
+        '卖出': {
+            type: 'sell',
+            strength: 'medium',
+            strengthText: '中等',
+            desc: '多因子综合评分在 30 至 42 分之间，空头因素占优，需要控制仓位。',
+            condition: '综合评分 ≤ 42 且 > 30：多数技术指标转空，或出现放量下跌、跌破关键支撑。',
+            advice: '建议降低仓位，跌破关键支撑位需果断止损；等指标修复后再重新评估。'
+        },
+        '强烈卖出': {
+            type: 'sell',
+            strength: 'strong',
+            strengthText: '强',
+            desc: '多因子综合评分跌破 30 分，空头因素集中，属于力度最强的看空结论。',
+            condition: '综合评分 ≤ 30：MACD 空头、均线空头排列、价格跌破 MA25、KDJ 死叉、RSI 超买回落、放量下跌等多项条件共振。',
+            advice: '建议大幅减仓或离场观望，等待缩量企稳、指标出现修复信号后再评估重新介入。'
+        },
         'MACD金叉': {
             type: 'buy',
             strength: 'medium',
@@ -1630,281 +1662,152 @@ const CryptoPulseApp = {
             ChartManager.drawSupportResistance(this.state.indicators.supportResistance);
         }
         
-        this.addSwingMarkers();
+        this.addSignalMarkers();
     },
 
 
-    // 添加高低点标记
-    addSwingMarkers() {
-        if (!this.state.candleData || this.state.candleData.length < 10) return;
-        if (!this.state.showSignalMarkers) return;
-
-        const markers = [];
-        const data = this.state.candleData;
-        const ind = this.state.indicators;
-
-        for (let i = 5; i < data.length - 5; i++) {
-            if (data[i].high >= data[i-1].high && data[i].high >= data[i-2].high &&
-                data[i].high >= data[i-3].high && data[i].high >= data[i+1].high &&
-                data[i].high >= data[i+2].high && data[i].high >= data[i+3].high) {
-                markers.push({
-                    time: data[i].time,
-                    position: 'aboveBar',
-                    color: '#f23645',
-                    shape: 'arrowDown',
-                    text: '高点'
-                });
-            }
-
-            if (data[i].low <= data[i-1].low && data[i].low <= data[i-2].low &&
-                data[i].low <= data[i-3].low && data[i].low <= data[i+1].low &&
-                data[i].low <= data[i+2].low && data[i].low <= data[i+3].low) {
-                markers.push({
-                    time: data[i].time,
-                    position: 'belowBar',
-                    color: '#089981',
-                    shape: 'arrowUp',
-                    text: '低点'
-                });
-            }
+    /**
+     * 在K线上标注买卖点
+     *
+     * 只标注方向性结论（买入 / 强烈买入 / 卖出 / 强烈卖出），
+     * 不再绘制高低点、MACD金叉、KDJ死叉等单项指标点，避免图形杂乱。
+     */
+    addSignalMarkers() {
+        if (!this.state.candleData || this.state.candleData.length < 30) return;
+        if (!this.state.showSignalMarkers) {
+            ChartManager.clearMarkers();
+            return;
         }
 
-        const signalMarkers = this.generateSignalMarkers(data, ind);
-        markers.push(...signalMarkers);
-
-        markers.sort((a, b) => a.time - b.time);
-
+        const markers = this.generateSignalMarkers(this.state.candleData, this.state.indicators);
         ChartManager.addMarkers(markers);
     },
 
-    // 生成技术指标买卖信号标记
+    /**
+     * 生成买卖点标记
+     *
+     * 逐根K线用已算好的指标序列合成综合分，再按与实时信号一致的阈值
+     * 归类为 强烈买入(≥70) / 买入(≥58) / 强烈卖出(≤30) / 卖出(≤42)，
+     * 其余一律不标注。只在结论发生变化时落一个点。
+     *
+     * @param {Array} data - K线数据
+     * @param {Object} ind - 技术指标
+     * @returns {Array} 标记点数组
+     */
     generateSignalMarkers(data, ind) {
         const markers = [];
-        if (!data || data.length < 30) return markers;
+        if (!data || data.length < 30 || !ind) return markers;
 
+        const len = data.length;
         const closes = data.map(d => d.close);
-        const len = closes.length;
+        const volumes = data.map(d => d.volume);
 
-        // MACD 金叉死叉
-        if (ind.macd && ind.macd.macd && ind.macd.signal) {
-            const macdLine = ind.macd.macd;
-            const signalLine = ind.macd.signal;
-
-            for (let i = 1; i < Math.min(macdLine.length, len); i++) {
-                if (macdLine[i] === null || signalLine[i] === null) continue;
-                if (macdLine[i-1] === null || signalLine[i-1] === null) continue;
-
-                if (macdLine[i-1] <= signalLine[i-1] && macdLine[i] > signalLine[i]) {
-                    markers.push({
-                        time: data[i].time,
-                        position: 'belowBar',
-                        color: '#089981',
-                        shape: 'arrowUp',
-                        text: 'MACD金叉'
-                    });
-                }
-
-                if (macdLine[i-1] >= signalLine[i-1] && macdLine[i] < signalLine[i]) {
-                    markers.push({
-                        time: data[i].time,
-                        position: 'aboveBar',
-                        color: '#f23645',
-                        shape: 'arrowDown',
-                        text: 'MACD死叉'
-                    });
-                }
-            }
-        }
-
-        // KDJ 金叉死叉
-        if (ind.kdj && ind.kdj.k && ind.kdj.d) {
-            const kLine = ind.kdj.k;
-            const dLine = ind.kdj.d;
-
-            for (let i = 1; i < Math.min(kLine.length, len); i++) {
-                if (kLine[i] === null || dLine[i] === null) continue;
-                if (kLine[i-1] === null || dLine[i-1] === null) continue;
-
-                if (kLine[i] < 30 && dLine[i] < 30 &&
-                    kLine[i-1] <= dLine[i-1] && kLine[i] > dLine[i]) {
-                    markers.push({
-                        time: data[i].time,
-                        position: 'belowBar',
-                        color: '#089981',
-                        shape: 'arrowUp',
-                        text: 'KDJ超卖金叉'
-                    });
-                }
-                else if (kLine[i-1] <= dLine[i-1] && kLine[i] > dLine[i]) {
-                    markers.push({
-                        time: data[i].time,
-                        position: 'belowBar',
-                        color: '#089981',
-                        shape: 'arrowUp',
-                        text: 'KDJ金叉'
-                    });
-                }
-
-                if (kLine[i] > 70 && dLine[i] > 70 &&
-                    kLine[i-1] >= dLine[i-1] && kLine[i] < dLine[i]) {
-                    markers.push({
-                        time: data[i].time,
-                        position: 'aboveBar',
-                        color: '#f23645',
-                        shape: 'arrowDown',
-                        text: 'KDJ超买死叉'
-                    });
-                }
-                else if (kLine[i-1] >= dLine[i-1] && kLine[i] < dLine[i]) {
-                    markers.push({
-                        time: data[i].time,
-                        position: 'aboveBar',
-                        color: '#f23645',
-                        shape: 'arrowDown',
-                        text: 'KDJ死叉'
-                    });
-                }
-            }
-        }
-
-        // RSI 超买超卖
+        const macdLine = (ind.macd && ind.macd.macd) || [];
+        const signalLine = (ind.macd && ind.macd.signal) || [];
+        const histLine = (ind.macd && ind.macd.histogram) || [];
+        const kLine = (ind.kdj && ind.kdj.k) || [];
+        const dLine = (ind.kdj && ind.kdj.d) || [];
+        const ma7 = ind.ma7 || [];
+        const ma25 = ind.ma25 || [];
+        const upper = (ind.bollingerBands && ind.bollingerBands.upper) || [];
+        const lower = (ind.bollingerBands && ind.bollingerBands.lower) || [];
         const rsiLine = TechnicalAnalysis.calculateRSI(closes, 14);
-        for (let i = 1; i < Math.min(rsiLine.length, len); i++) {
-            if (rsiLine[i] === null) continue;
 
-            if (rsiLine[i-1] !== null && rsiLine[i-1] < 30 && rsiLine[i] >= 30) {
-                markers.push({
-                    time: data[i].time,
-                    position: 'belowBar',
-                    color: '#089981',
-                    shape: 'arrowUp',
-                    text: 'RSI超卖回升'
-                });
+        const classify = (v) => {
+            if (v >= 70) return '强烈买入';
+            if (v >= 58) return '买入';
+            if (v <= 30) return '强烈卖出';
+            if (v <= 42) return '卖出';
+            return null;
+        };
+
+        const sideOf = (label) => {
+            if (!label) return null;
+            return label.indexOf('买入') > -1 ? 'buy' : 'sell';
+        };
+
+        let prevSide = null; // 'buy' | 'sell' | null
+        let lastIdx = -99;   // 两次标注之间的最小间隔
+
+        for (let i = 1; i < len; i++) {
+            // MACD 尚未就绪的K线无法合成评分
+            if (macdLine[i] == null || signalLine[i] == null) {
+                prevSide = null;
+                continue;
             }
 
-            if (rsiLine[i-1] !== null && rsiLine[i-1] > 70 && rsiLine[i] <= 70) {
-                markers.push({
-                    time: data[i].time,
-                    position: 'aboveBar',
-                    color: '#f23645',
-                    shape: 'arrowDown',
-                    text: 'RSI超买回落'
-                });
+            let score = 50;
+
+            // MACD 位置与柱体动能
+            score += macdLine[i] > signalLine[i] ? 8 : -8;
+            if (histLine[i] != null && histLine[i - 1] != null) {
+                score += histLine[i] > histLine[i - 1] ? 4 : -4;
             }
+
+            // 均线排列与价格相对位置
+            if (ma7[i] != null && ma25[i] != null) {
+                score += ma7[i] > ma25[i] ? 8 : -8;
+            }
+            if (ma25[i] != null) {
+                score += closes[i] > ma25[i] ? 6 : -6;
+            }
+
+            // KDJ 动能方向
+            if (kLine[i] != null && dLine[i] != null) {
+                score += kLine[i] > dLine[i] ? 6 : -6;
+            }
+
+            // RSI 超买超卖
+            const r = rsiLine[i];
+            if (r != null) {
+                if (r < 30) score += 10;
+                else if (r < 45) score += 3;
+                else if (r > 70) score -= 10;
+                else if (r > 55) score -= 3;
+            }
+
+            // 布林带位置
+            if (upper[i] != null && lower[i] != null) {
+                if (closes[i] < lower[i]) score += 6;
+                else if (closes[i] > upper[i]) score -= 6;
+            }
+
+            // 量价配合
+            const priceUp = closes[i] > closes[i - 1];
+            const volUp = volumes[i] > volumes[i - 1];
+            if (priceUp && volUp) score += 6;
+            else if (!priceUp && volUp) score -= 6;
+
+            score = Math.max(0, Math.min(100, score));
+
+            const label = classify(score);
+            const side = sideOf(label);
+
+            // 中性区间既不标注也不改变已有方向，避免评分在阈值附近抖动时反复重置
+            if (!side) continue;
+            // 只在多空方向真正切换时落点；同一方向内的强弱变化（买入↔强烈买入）不重复标注
+            if (side === prevSide) continue;
+            if (i - lastIdx < 5) continue; // 间隔过近的翻转忽略，方向也不更新
+
+            prevSide = side;
+
+            const isBuy = side === 'buy';
+            const isStrong = label.indexOf('强烈') === 0;
+
+            markers.push({
+                time: data[i].time,
+                position: isBuy ? 'belowBar' : 'aboveBar',
+                color: isBuy ? '#089981' : '#f23645',
+                shape: isBuy ? 'arrowUp' : 'arrowDown',
+                text: label,
+                size: isStrong ? 2 : 1,
+            });
+
+            lastIdx = i;
         }
 
-        // MA 均线交叉
-        if (ind.ma7 && ind.ma25) {
-            const ma7 = ind.ma7;
-            const ma25 = ind.ma25;
-
-            for (let i = 1; i < Math.min(ma7.length, len); i++) {
-                if (ma7[i] === null || ma25[i] === null) continue;
-                if (ma7[i-1] === null || ma25[i-1] === null) continue;
-
-                if (ma7[i-1] <= ma25[i-1] && ma7[i] > ma25[i]) {
-                    markers.push({
-                        time: data[i].time,
-                        position: 'belowBar',
-                        color: '#089981',
-                        shape: 'arrowUp',
-                        text: '均线金叉'
-                    });
-                }
-
-                if (ma7[i-1] >= ma25[i-1] && ma7[i] < ma25[i]) {
-                    markers.push({
-                        time: data[i].time,
-                        position: 'aboveBar',
-                        color: '#f23645',
-                        shape: 'arrowDown',
-                        text: '均线死叉'
-                    });
-                }
-            }
-        }
-
-        // 布林带突破
-        if (ind.bollingerBands && ind.bollingerBands.upper && ind.bollingerBands.lower) {
-            const upper = ind.bollingerBands.upper;
-            const lower = ind.bollingerBands.lower;
-            for (let i = 1; i < Math.min(upper.length, len); i++) {
-                if (upper[i] === null || lower[i] === null) continue;
-
-                if (data[i-1].low <= lower[i-1] && data[i].close > lower[i]) {
-                    markers.push({
-                        time: data[i].time,
-                        position: 'belowBar',
-                        color: '#089981',
-                        shape: 'arrowUp',
-                        text: '布林下轨反弹'
-                    });
-                }
-
-                if (data[i-1].high >= upper[i-1] && data[i].close < upper[i]) {
-                    markers.push({
-                        time: data[i].time,
-                        position: 'aboveBar',
-                        color: '#f23645',
-                        shape: 'arrowDown',
-                        text: '布林上轨回落'
-                    });
-                }
-            }
-        }
-
-        // StochRSI 信号
-        if (ind.stochRSI && ind.stochRSI.k && ind.stochRSI.d) {
-            const stochK = ind.stochRSI.k;
-            const stochD = ind.stochRSI.d;
-
-            for (let i = 1; i < Math.min(stochK.length, len); i++) {
-                if (stochK[i] === null || stochD[i] === null) continue;
-                if (stochK[i-1] === null || stochD[i-1] === null) continue;
-
-                if (stochK[i] < 20 && stochD[i] < 20 &&
-                    stochK[i-1] <= stochD[i-1] && stochK[i] > stochD[i]) {
-                    markers.push({
-                        time: data[i].time,
-                        position: 'belowBar',
-                        color: '#089981',
-                        shape: 'arrowUp',
-                        text: 'StochRSI超卖金叉'
-                    });
-                }
-
-                if (stochK[i] > 80 && stochD[i] > 80 &&
-                    stochK[i-1] >= stochD[i-1] && stochK[i] < stochD[i]) {
-                    markers.push({
-                        time: data[i].time,
-                        position: 'aboveBar',
-                        color: '#f23645',
-                        shape: 'arrowDown',
-                        text: 'StochRSI超买死叉'
-                    });
-                }
-            }
-        }
-
-        // 去重
-        const uniqueMarkers = new Map();
-        for (const marker of markers) {
-            const key = `${marker.time}_${marker.position}`;
-            if (!uniqueMarkers.has(key)) {
-                uniqueMarkers.set(key, marker);
-            } else {
-                const existing = uniqueMarkers.get(key);
-                if (marker.text.length > existing.text.length) {
-                    uniqueMarkers.set(key, marker);
-                }
-            }
-        }
-        const dedupedMarkers = Array.from(uniqueMarkers.values());
-
-        const buySignals = dedupedMarkers.filter(m => m.position === 'belowBar').slice(-5);
-        const sellSignals = dedupedMarkers.filter(m => m.position === 'aboveBar').slice(-5);
-
-        return [...buySignals, ...sellSignals];
+        // 只保留最近的标记，小屏不至于糊成一片
+        return markers.slice(-30);
     },
 
     // 更新价格UI
