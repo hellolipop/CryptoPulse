@@ -8,7 +8,7 @@
     <title>CryptoPulse - 虚拟货币实时分析</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="css/style.css?v=28">
+    <link rel="stylesheet" href="css/style.css?v=30">
     <script>
         tailwind.config = {
             theme: {
@@ -249,6 +249,8 @@
                         <button data-sensitivity="sensitive" class="sens-btn py-1.5 rounded-md text-xs font-medium transition-all">灵敏</button>
                     </div>
                     <p id="sensitivityDesc" class="text-[10px] text-text-tertiary mt-1.5 leading-relaxed"></p>
+                    <!-- 三档实测对比（由JS渲染） -->
+                    <div id="sensitivityStats" class="mt-2.5"></div>
                 </div>
             </section>
 
@@ -809,11 +811,11 @@
     <!-- 轻提示 -->
     <div id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-24 z-[60] px-4 py-2.5 rounded-xl bg-gray-900/90 text-white text-sm shadow-lg opacity-0 pointer-events-none transition-opacity duration-200 hidden"></div>
 
-    <script src="js/technical.js?v=28"></script>
-    <script src="js/news.js?v=28"></script>
-    <script src="js/signals.js?v=28"></script>
-    <script src="js/prediction.js?v=28"></script>
-    <script src="js/chart.js?v=28"></script>
-    <script src="js/app.js?v=28"></script>
+    <script src="js/technical.js?v=30"></script>
+    <script src="js/news.js?v=30"></script>
+    <script src="js/signals.js?v=30"></script>
+    <script src="js/prediction.js?v=30"></script>
+    <script src="js/chart.js?v=30"></script>
+    <script src="js/app.js?v=30"></script>
 </body>
 </html>

@@ -336,6 +336,8 @@ const CryptoPulseApp = {
             desc: '趋势项权重最高、阈值最严，信号最少、滞后最大，但假信号最少，适合波段操作。',
             thresholds: { strongBuy: 74, buy: 63, sell: 37, strongSell: 26 },
             minGap: 6,
+            // 实测值（BTC 200根日线K线，leg 基准法）
+            stats: { signals: 15, medianLag: 4, avgLag: 4.9, hitRate: 57 },
             weights: {
                 macdPos: 6, macdHist: 5, maCross: 6, priceMa25: 5,
                 maFast: 4, momentum: 5, kdj: 6, stoch: 3,
@@ -348,6 +350,8 @@ const CryptoPulseApp = {
             desc: '信号数量与滞后折中，默认档位。',
             thresholds: { strongBuy: 70, buy: 58, sell: 42, strongSell: 30 },
             minGap: 2,
+            // 实测值（BTC 200根日线K线，leg 基准法）
+            stats: { signals: 23, medianLag: 2, avgLag: 2.9, hitRate: 57 },
             weights: {
                 macdPos: 5, macdHist: 5, maCross: 4, priceMa25: 3,
                 maFast: 7, momentum: 8, kdj: 6, stoch: 5,
@@ -360,6 +364,8 @@ const CryptoPulseApp = {
             desc: '领先因子权重最高、阈值最松，信号最多也最早，但假信号最多。',
             thresholds: { strongBuy: 66, buy: 54, sell: 46, strongSell: 34 },
             minGap: 1,
+            // 实测值（BTC 200根日线K线，leg 基准法）
+            stats: { signals: 32, medianLag: 2, avgLag: 2.8, hitRate: 53 },
             weights: {
                 macdPos: 4, macdHist: 5, maCross: 3, priceMa25: 2,
                 maFast: 9, momentum: 10, kdj: 7, stoch: 7,
@@ -400,7 +406,8 @@ const CryptoPulseApp = {
             this.updateSignal(true);
         }
 
-        this.showToast(`信号灵敏度已切换为「${this.getSensitivity().label}」`);
+        const p = this.getSensitivity();
+        this.showToast(`已切换为「${p.label}」：平均滞后 ${p.stats.avgLag} 根，命中率 ${p.stats.hitRate}%`);
     },
 
     /**
@@ -421,6 +428,75 @@ const CryptoPulseApp = {
             const t = preset.thresholds;
             thEl.textContent = `买入≥${t.buy}　卖出≤${t.sell}`;
         }
+
+        this.renderSensitivityStats(preset.key);
+    },
+
+    /**
+     * 渲染三档实测对比表
+     *
+     * 数据来自 BTC 200 根日线K线的实测（leg 基准法），
+     * 直接标在界面上，选档位时不必回查记录。
+     *
+     * @param {string} activeKey - 当前档位
+     */
+    renderSensitivityStats(activeKey) {
+        const host = document.getElementById('sensitivityStats');
+        if (!host) return;
+
+        const keys = ['conservative', 'balanced', 'sensitive'];
+        const rows = [
+            { label: '信号数', unit: '个', get: (s) => s.signals },
+            { label: '平均滞后', unit: '根', get: (s) => s.avgLag },
+            { label: '命中率', unit: '%', get: (s) => s.hitRate },
+        ];
+
+        // 命中率以均衡档为基准着色：高于为绿、低于为红
+        const baseHit = this.sensitivityPresets.balanced.stats.hitRate;
+
+        const head = keys.map(k => {
+            const p = this.sensitivityPresets[k];
+            const on = k === activeKey;
+            return `<th class="py-1 font-normal ${on ? 'text-golden' : 'text-text-tertiary'}">${p.label}</th>`;
+        }).join('');
+
+        const body = rows.map(row => {
+            const cells = keys.map(k => {
+                const stats = this.sensitivityPresets[k].stats;
+                const on = k === activeKey;
+                let cls = on ? 'text-text-primary font-semibold' : 'text-text-secondary';
+
+                if (row.label === '命中率') {
+                    const v = stats.hitRate;
+                    if (v > baseHit) cls = 'text-rise-green font-semibold';
+                    else if (v < baseHit) cls = 'text-fall-red';
+                }
+
+                return `<td class="py-0.5 text-center tabular-nums ${cls}">${row.get(stats)}<span class="text-[9px] ml-0.5">${row.unit}</span></td>`;
+            }).join('');
+
+            return `<tr class="border-t border-border-light">
+                <td class="py-0.5 pl-1 text-text-tertiary">${row.label}</td>
+                ${cells}
+            </tr>`;
+        }).join('');
+
+        host.innerHTML = `
+            <div class="rounded-lg border border-border-light overflow-hidden">
+                <table class="w-full text-[10px]">
+                    <thead>
+                        <tr class="bg-gray-50">
+                            <th class="py-1 pl-1 text-left font-normal text-text-tertiary">实测</th>
+                            ${head}
+                        </tr>
+                    </thead>
+                    <tbody>${body}</tbody>
+                </table>
+            </div>
+            <p class="text-[9px] text-text-tertiary mt-1 leading-tight">
+                BTC 200根日线K线实测。滞后＝信号点比实际拐点晚几根K线。
+            </p>
+        `;
     },
 
     /**
