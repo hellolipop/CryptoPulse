@@ -502,107 +502,322 @@ const CryptoPulseApp = {
     // ==================== 模拟自动交易 ====================
 
     /**
-     * 初始化模拟交易：恢复开关状态、绑定交互、渲染
+     * 初始化模拟交易：绑定交互并渲染
      */
     initPaper() {
-        PaperTrader.enabled = PaperTrader.loadEnabled();
-
         const toggle = document.getElementById('paperToggle');
         if (toggle) {
             toggle.addEventListener('click', () => this.togglePaperTrade());
+        }
+
+        const saveTotal = document.getElementById('paperSaveTotalBtn');
+        if (saveTotal) {
+            saveTotal.addEventListener('click', () => this.savePaperTotal());
+        }
+
+        const totalInput = document.getElementById('paperTotalCapital');
+        if (totalInput) {
+            totalInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') this.savePaperTotal();
+            });
+        }
+
+        const saveAlloc = document.getElementById('paperSaveAllocBtn');
+        if (saveAlloc) {
+            saveAlloc.addEventListener('click', () => this.savePaperAllocation());
+        }
+
+        const allocInput = document.getElementById('paperAllocInput');
+        if (allocInput) {
+            allocInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') this.savePaperAllocation();
+            });
         }
 
         const resetBtn = document.getElementById('paperResetBtn');
         if (resetBtn) {
             resetBtn.addEventListener('click', () => {
                 const coin = this.getCoinInfo(this.state.currentCoin);
-                const tfLabel = this.getTimeframeConfig(this.state.currentTimeframe).label;
-                if (!confirm(`确定重置 ${coin.symbol} ${tfLabel} 的模拟账户？成交记录与持仓都会清空。`)) return;
+                if (!confirm(`确定重置 ${coin.symbol} 的模拟账户？成交记录与持仓都会清空，资金回到配额值。`)) return;
 
-                PaperTrader.reset(this.state.currentCoin, this.state.currentTimeframe);
+                PaperTrader.reset(this.state.currentCoin);
                 this.renderPaperTab();
-                this.showToast('模拟账户已重置');
+                this.showToast(`${coin.symbol} 模拟账户已重置`);
             });
         }
 
-        this.renderPaperToggle();
-        this.renderPaperTab();
-    },
+        const clearBtn = document.getElementById('paperClearBtn');
+        if (clearBtn) {
+            clearBtn.addEventListener('click', () => {
+                const coin = this.getCoinInfo(this.state.currentCoin);
+                if (!confirm(`确定取消 ${coin.symbol} 的配额？该币种的开关、成交记录与持仓都会清除。`)) return;
 
-    /**
-     * 开关自动模拟交易
-     */
-    togglePaperTrade() {
-        const on = !PaperTrader.enabled;
-        PaperTrader.saveEnabled(on);
-
-        if (on) {
-            // 记下当前信号方向：只对「开启之后发生的方向变化」下单，
-            // 不对开启前已经存在的信号补一笔成交
-            const sig = this.state.signal;
-            PaperTrader.syncSide(
-                this.state.currentCoin,
-                this.state.currentTimeframe,
-                sig ? sig.type : null
-            );
+                PaperTrader.clearAllocation(this.state.currentCoin);
+                this.renderPaperTab();
+                this.showToast(`已取消 ${coin.symbol} 的配额`);
+            });
         }
 
-        this.renderPaperToggle();
         this.renderPaperTab();
-
-        this.showToast(on
-            ? '已开启模拟自动交易，下次方向变化时自动成交'
-            : '已关闭模拟自动交易');
     },
 
     /**
-     * 渲染开关外观
+     * 切换当前币种的独立运行开关
      */
-    renderPaperToggle() {
-        const on = !!PaperTrader.enabled;
+    togglePaperTrade() {
+        const coinId = this.state.currentCoin;
+        const coin = this.getCoinInfo(coinId);
+        const on = !PaperTrader.isEnabled(coinId);
 
+        const res = PaperTrader.setEnabled(coinId, on);
+        if (!res.ok) {
+            this.showToast(res.message);
+            const input = document.getElementById('paperAllocInput');
+            if (input) input.focus();
+            return;
+        }
+
+        if (on) {
+            // 只对「开启之后发生的方向变化」下单，
+            // 不对开启前已经存在的信号补一笔成交
+            const sig = this.state.signal;
+            PaperTrader.syncSide(coinId, sig ? sig.type : null);
+        }
+
+        this.renderPaperTab();
+        this.showToast(on
+            ? `${coin.symbol} 已开始独立模拟，下次方向变化时自动成交`
+            : `${coin.symbol} 已停止模拟`);
+    },
+
+    /**
+     * 保存总资金
+     */
+    savePaperTotal() {
+        const input = document.getElementById('paperTotalCapital');
+        if (!input) return;
+
+        const raw = input.value;
+        if (raw === '') {
+            this.showToast('请填写总资金');
+            return;
+        }
+
+        const res = PaperTrader.setTotalCapital(raw);
+        if (!res.ok) {
+            this.showToast(res.message);
+            input.value = PaperTrader.getTotalCapital();
+            return;
+        }
+
+        this.renderPaperTab();
+        this.showToast(`总资金已设为 ${PaperTrader.formatAmount(raw)} USDT`);
+    },
+
+    /**
+     * 保存当前币种的配额
+     *
+     * 配额变化会重置该币种账户，已有成交记录时先确认再执行。
+     */
+    savePaperAllocation() {
+        const input = document.getElementById('paperAllocInput');
+        if (!input) return;
+
+        const coinId = this.state.currentCoin;
+        const coin = this.getCoinInfo(coinId);
+        const raw = input.value;
+
+        if (raw === '') {
+            this.showToast('请填写配额金额');
+            return;
+        }
+
+        const existing = PaperTrader.getAccount(coinId).trades.length;
+        const changed = PaperTrader.getAllocation(coinId) !== Number(raw);
+        if (existing > 0 && changed) {
+            const ok = confirm(`修改配额会重置 ${coin.symbol} 的模拟账户，现有 ${existing} 笔成交记录将被清空。确定继续？`);
+            if (!ok) {
+                input.value = PaperTrader.getAllocation(coinId) || '';
+                return;
+            }
+        }
+
+        const res = PaperTrader.setAllocation(coinId, raw);
+        if (!res.ok) {
+            this.showToast(res.message);
+            return;
+        }
+
+        this.renderPaperTab();
+        this.showToast(res.reset
+            ? `${coin.symbol} 配额已设为 ${PaperTrader.formatAmount(raw)} USDT，账户已重置`
+            : `${coin.symbol} 配额未变化`);
+    },
+
+    /**
+     * 解析某币种的最新价，用于计算持仓市值
+     * 拿不到价格时返回 0，由 PaperTrader 退化为该账户最后一笔成交价。
+     *
+     * 注意：必须校验行情归属的币种。行情是异步写入的，切币瞬间
+     * state.coinInfo 可能仍是上一个币种的数据，若不校验就会用错价格，
+     * 导致收益率算出天文数字。
+     *
+     * @param {string} coinId
+     * @returns {number}
+     */
+    resolvePaperPrice(coinId) {
+        if (!coinId) return 0;
+
+        // 当前正在查看的币种用实时价（需确认该行情确实属于这个币种）
+        const info = this.state.coinInfo;
+        if (coinId === this.state.currentCoin && info && info.id === coinId) {
+            const p = Number(info.current_price);
+            if (isFinite(p) && p > 0) return p;
+        }
+
+        // 自选行情缓存（同样校验币种，避免串价）
+        const q = this.state.watchlistQuotes && this.state.watchlistQuotes[coinId];
+        if (q && q.coinId === coinId) {
+            const p = Number(q.price);
+            if (isFinite(p) && p > 0) return p;
+        }
+
+        return 0;
+    },
+
+    /**
+     * 渲染模拟交易页：总资金账户 + 当前币种账户 + 币种概览 + 成交记录
+     */
+    renderPaperTab() {
+        const coinId = this.state.currentCoin;
+        const price = this.resolvePaperPrice(coinId);
+
+        const portfolio = PaperTrader.getPortfolio(id => this.resolvePaperPrice(id));
+        const m = PaperTrader.getMetrics(coinId, price);
+
+        this.renderPaperPortfolio(portfolio);
+        this.renderPaperCoinAccount(m);
+        this.renderPaperCoinList(portfolio);
+        this.renderPaperTrades(m.trades);
+    },
+
+    /**
+     * 渲染总资金账户
+     */
+    renderPaperPortfolio(p) {
+        const runningEl = document.getElementById('paperRunningCount');
+        if (runningEl) {
+            const on = p.runningCount > 0;
+            runningEl.textContent = on ? `运行中 ${p.runningCount} 个` : '全部停止';
+            runningEl.className = on
+                ? 'text-[10px] px-1.5 py-0.5 rounded-full bg-rise-green/10 text-rise-green font-medium'
+                : 'text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-text-secondary';
+        }
+
+        const eqEl = document.getElementById('paperPortfolioEquity');
+        if (eqEl) {
+            eqEl.textContent = p.equity.toLocaleString('en-US', { maximumFractionDigits: 2 });
+        }
+
+        const retEl = document.getElementById('paperPortfolioReturn');
+        if (retEl) {
+            if (p.allocated > 0) {
+                retEl.textContent = this.formatSignedPct(p.totalReturn);
+                retEl.className = `text-sm font-semibold tabular-nums ${this.pnlClass(p.totalReturn)}`;
+            } else {
+                retEl.textContent = '--';
+                retEl.className = 'text-sm font-semibold tabular-nums text-text-tertiary';
+            }
+        }
+
+        this.setText('paperPortfolioHint', p.allocated > 0
+            ? `已配额 ${PaperTrader.formatAmount(p.allocated)} USDT 的合计盈亏 · 占 ${(p.usedRatio * 100).toFixed(1)}%`
+            : '尚未给任何币种分配配额');
+
+        this.setText('paperAllocated', PaperTrader.formatAmount(p.allocated));
+        this.setText('paperIdle', PaperTrader.formatAmount(p.idle));
+        this.setText('paperCoinCount', `${p.coinCount} 个`);
+
+        // 总资金输入框：正在输入时不同步，避免打断
+        const input = document.getElementById('paperTotalCapital');
+        if (input && document.activeElement !== input) {
+            input.value = p.totalCapital;
+        }
+    },
+
+    /**
+     * 渲染当前币种的独立账户
+     */
+    renderPaperCoinAccount(m) {
+        const coinId = this.state.currentCoin;
+        const coin = this.getCoinInfo(coinId);
+        const allocation = PaperTrader.getAllocation(coinId);
+        const enabled = PaperTrader.isEnabled(coinId);
+
+        this.setText('paperScope', `${coin.symbol}/USDT`);
+
+        // 状态标签：未配额 / 运行中 / 已停止
+        const tag = document.getElementById('paperStatusTag');
+        if (tag) {
+            if (!allocation) {
+                tag.textContent = '未配额';
+                tag.className = 'text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-text-secondary';
+            } else if (enabled) {
+                tag.textContent = '运行中';
+                tag.className = 'text-[10px] px-1.5 py-0.5 rounded-full bg-rise-green/10 text-rise-green font-medium';
+            } else {
+                tag.textContent = '已停止';
+                tag.className = 'text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-text-secondary';
+            }
+        }
+
+        // 开关外观
         const toggle = document.getElementById('paperToggle');
         if (toggle) {
-            toggle.classList.toggle('bg-rise-green', on);
-            toggle.classList.toggle('bg-gray-200', !on);
-            toggle.setAttribute('aria-checked', on ? 'true' : 'false');
+            toggle.classList.toggle('bg-rise-green', enabled);
+            toggle.classList.toggle('bg-gray-200', !enabled);
+            toggle.setAttribute('aria-checked', enabled ? 'true' : 'false');
         }
 
         const knob = document.getElementById('paperToggleKnob');
         if (knob) {
-            knob.style.transform = on ? 'translateX(20px)' : 'translateX(0)';
+            knob.style.transform = enabled ? 'translateX(20px)' : 'translateX(0)';
         }
 
-        const tag = document.getElementById('paperStatusTag');
-        if (tag) {
-            tag.textContent = on ? '运行中' : '已关闭';
-            tag.className = on
-                ? 'text-[10px] px-1.5 py-0.5 rounded-full bg-rise-green/10 text-rise-green font-medium'
-                : 'text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-text-secondary';
+        // 配额输入框
+        // 同一币种刷新时不动输入框，避免打断正在输入的内容；
+        // 但切换币种必须强制同步，否则上一个币种填的数字会留在框里，
+        // 用户一点「应用」就会把金额配到错误的币种上。
+        const coinChanged = this._paperRenderedCoin !== coinId;
+        this._paperRenderedCoin = coinId;
+
+        const allocInput = document.getElementById('paperAllocInput');
+        if (allocInput && (coinChanged || document.activeElement !== allocInput)) {
+            allocInput.value = allocation > 0 ? allocation : '';
+            if (coinChanged) allocInput.blur();
         }
-    },
 
-    /**
-     * 渲染模拟账户概览与成交记录
-     */
-    renderPaperTab() {
-        const coinId = this.state.currentCoin;
-        const tf = this.state.currentTimeframe;
-        const tfLabel = this.getTimeframeConfig(tf).label;
-        const coin = this.getCoinInfo(coinId);
-        const price = (this.state.coinInfo && this.state.coinInfo.current_price) || 0;
+        const available = Math.max(
+            0,
+            PaperTrader.getTotalCapital() - PaperTrader.getAllocatedTotal(coinId)
+        );
+        this.setText('paperAllocHint', allocation > 0
+            ? `当前配额 ${PaperTrader.formatAmount(allocation)} USDT · 还可调配 ${PaperTrader.formatAmount(available)} USDT`
+            : `本币尚未配额 · 最多可分配 ${PaperTrader.formatAmount(available)} USDT`);
 
-        const m = PaperTrader.getMetrics(coinId, tf, price);
-
-        this.setText('paperScope', `${coin.symbol}/USDT · ${tfLabel} · 初始 ${m.initialCapital.toLocaleString('en-US')} USDT`);
+        // 资产与收益
         this.setText('paperEquity', m.equity.toLocaleString('en-US', { maximumFractionDigits: 2 }));
         this.setText('paperCash', m.cash.toLocaleString('en-US', { maximumFractionDigits: 2 }));
 
-        // 总收益率
         const retEl = document.getElementById('paperTotalReturn');
         if (retEl) {
-            retEl.textContent = this.formatSignedPct(m.totalReturn);
-            retEl.className = `text-sm font-semibold tabular-nums ${this.pnlClass(m.totalReturn)}`;
+            if (m.initialCapital > 0) {
+                retEl.textContent = this.formatSignedPct(m.totalReturn);
+                retEl.className = `text-sm font-semibold tabular-nums ${this.pnlClass(m.totalReturn)}`;
+            } else {
+                retEl.textContent = '--';
+                retEl.className = 'text-sm font-semibold tabular-nums text-text-tertiary';
+            }
         }
 
         // 持仓状态
@@ -662,8 +877,57 @@ const CryptoPulseApp = {
             ddEl.textContent = m.trades.length ? `${(m.maxDrawdown * 100).toFixed(1)}%` : '--';
             ddEl.className = 'text-sm font-semibold mt-0.5 text-text-primary';
         }
+    },
 
-        this.renderPaperTrades(m.trades);
+    /**
+     * 渲染已配额币种列表（点击可切换币种）
+     */
+    renderPaperCoinList(portfolio) {
+        const host = document.getElementById('paperCoinList');
+        if (!host) return;
+
+        if (!portfolio.items.length) {
+            host.innerHTML = `<p class="py-6 text-center text-xs text-text-tertiary leading-relaxed">
+                还没有为任何币种分配配额。<br>在上方填写金额并应用，即可开始独立模拟。
+            </p>`;
+            return;
+        }
+
+        host.innerHTML = portfolio.items.map(it => {
+            const coin = this.getCoinInfo(it.coinId);
+            const active = it.coinId === this.state.currentCoin;
+            const dot = it.enabled
+                ? '<span class="w-1.5 h-1.5 rounded-full bg-rise-green flex-shrink-0"></span>'
+                : '<span class="w-1.5 h-1.5 rounded-full bg-gray-300 flex-shrink-0"></span>';
+
+            const meta = [`配额 ${PaperTrader.formatAmount(it.allocation)}`];
+            if (it.holding) meta.push('持仓中');
+            if (it.roundTrips) meta.push(`${it.roundTrips} 轮`);
+
+            return `
+                <button data-paper-coin="${it.coinId}" class="w-full py-2.5 flex items-center justify-between gap-3 text-left ${active ? 'bg-golden/5' : ''}">
+                    <div class="flex items-center gap-2 min-w-0">
+                        ${dot}
+                        <div class="min-w-0">
+                            <p class="text-xs font-medium truncate ${active ? 'text-golden' : ''}">${coin.symbol}/USDT</p>
+                            <p class="text-[10px] text-text-tertiary mt-0.5 tabular-nums truncate">${meta.join(' · ')}</p>
+                        </div>
+                    </div>
+                    <div class="text-right flex-shrink-0">
+                        <p class="text-xs tabular-nums font-medium">${it.equity.toLocaleString('en-US', { maximumFractionDigits: 0 })}</p>
+                        <p class="text-[10px] tabular-nums mt-0.5 ${this.pnlClass(it.totalReturn)}">${this.formatSignedPct(it.totalReturn)}</p>
+                    </div>
+                </button>
+            `;
+        }).join('');
+
+        host.querySelectorAll('[data-paper-coin]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const id = btn.dataset.paperCoin;
+                if (id === this.state.currentCoin) return;
+                this.switchCoin(id);
+            });
+        });
     },
 
     /**
@@ -677,11 +941,20 @@ const CryptoPulseApp = {
         if (countEl) countEl.textContent = trades.length ? `共 ${trades.length} 笔` : '';
 
         if (!trades.length) {
-            host.innerHTML = `<p class="py-6 text-center text-xs text-text-tertiary leading-relaxed">
-                ${PaperTrader.enabled
-                    ? '已开启，等待下一次信号方向变化'
-                    : '暂无记录，开启自动交易后开始记录'}
-            </p>`;
+            const coinId = this.state.currentCoin;
+            const enabled = PaperTrader.isEnabled(coinId);
+            const allocation = PaperTrader.getAllocation(coinId);
+
+            let emptyText;
+            if (!allocation) {
+                emptyText = '本币尚未配额，先在上方填写金额并应用';
+            } else if (enabled) {
+                emptyText = '已开启，等待下一次信号方向变化';
+            } else {
+                emptyText = '本币已停止运行，打开开关后开始记录';
+            }
+
+            host.innerHTML = `<p class="py-6 text-center text-xs text-text-tertiary leading-relaxed">${emptyText}</p>`;
             return;
         }
 
@@ -692,6 +965,16 @@ const CryptoPulseApp = {
                 : 'text-fall-red bg-fall-red/10';
 
             const amount = t.amount.toLocaleString('en-US', { maximumFractionDigits: 2 });
+
+            // 账户按币种记账，同一币种可能被不同周期的信号触发，标注出来便于分辨
+            const tfLabel = (t.timeframe !== undefined && t.timeframe !== null)
+                ? this.getTimeframeConfig(t.timeframe).label
+                : '';
+            const meta = [
+                this.formatPredictionTime(t.time),
+                tfLabel,
+                t.signalText || '--'
+            ].filter(Boolean).join(' · ');
 
             // 卖出才有已实现盈亏
             const pnlHtml = (!isBuy && typeof t.pnl === 'number')
@@ -704,9 +987,7 @@ const CryptoPulseApp = {
                         <span class="text-[10px] px-1.5 py-0.5 rounded ${sideCls} flex-shrink-0 mt-0.5">${isBuy ? '买入' : '卖出'}</span>
                         <div class="min-w-0">
                             <p class="text-xs font-medium tabular-nums">$${TechnicalAnalysis.formatPrice(t.price)}</p>
-                            <p class="text-[10px] text-text-tertiary mt-0.5 truncate">
-                                ${this.formatPredictionTime(t.time)} · ${t.signalText || '--'}
-                            </p>
+                            <p class="text-[10px] text-text-tertiary mt-0.5 truncate">${meta}</p>
                         </div>
                     </div>
                     <div class="text-right flex-shrink-0">
@@ -860,6 +1141,7 @@ const CryptoPulseApp = {
                 const coinId = this.state.watchlist.find(id => this.getBinanceSymbol(id) === t.symbol);
                 if (coinId) {
                     quotes[coinId] = {
+                        coinId,
                         price: parseFloat(t.lastPrice),
                         changePercent: parseFloat(t.priceChangePercent)
                     };
@@ -3096,13 +3378,17 @@ const CryptoPulseApp = {
      * @param {number} totalScore - 综合评分
      */
     runPaperTrade(signal, totalScore) {
-        if (typeof PaperTrader === 'undefined' || !PaperTrader.enabled) return;
+        if (typeof PaperTrader === 'undefined') return;
 
-        const price = (this.state.coinInfo && this.state.coinInfo.current_price) || 0;
+        // 只有当前币种自己开了独立开关，才会按它的信号成交
+        const coinId = this.state.currentCoin;
+        if (!PaperTrader.isEnabled(coinId)) return;
+
+        const price = this.resolvePaperPrice(coinId);
         if (!price) return;
 
         const trade = PaperTrader.onSignal({
-            coinId: this.state.currentCoin,
+            coinId,
             timeframe: this.state.currentTimeframe,
             signalType: signal.type,
             signalText: signal.text,
@@ -3114,9 +3400,9 @@ const CryptoPulseApp = {
 
         if (!trade) return;
 
-        this.renderPaperTab();
+        const coin = this.getCoinInfo(coinId);
         this.showToast(
-            `模拟${trade.side === 'buy' ? '买入' : '卖出'} @ $${TechnicalAnalysis.formatPrice(trade.price)}`
+            `${coin.symbol} 模拟${trade.side === 'buy' ? '买入' : '卖出'} @ $${TechnicalAnalysis.formatPrice(trade.price)}`
         );
     },
 

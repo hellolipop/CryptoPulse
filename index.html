@@ -8,7 +8,7 @@
     <title>CryptoPulse - 虚拟货币实时分析</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="css/style.css?v=31">
+    <link rel="stylesheet" href="css/style.css?v=34">
     <script>
         tailwind.config = {
             theme: {
@@ -615,16 +615,60 @@
 
         <!-- ====== 模拟 Tab ====== -->
         <div id="tab-paper" class="tab-panel hidden">
-            <!-- 开关 -->
+            <!-- 总资金账户 -->
             <section class="mt-2 bg-white px-4 py-3">
-                <div class="flex items-start justify-between gap-3">
-                    <div class="flex-1">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-sm font-semibold">总资金账户</h3>
+                    <span id="paperRunningCount" class="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-text-secondary">--</span>
+                </div>
+
+                <div class="rounded-xl bg-gray-50 p-3">
+                    <p class="text-[11px] text-text-secondary">账户总值</p>
+                    <div class="flex items-baseline gap-1.5 mt-0.5">
+                        <span id="paperPortfolioEquity" class="text-2xl font-bold tabular-nums">--</span>
+                        <span class="text-xs text-text-tertiary">USDT</span>
+                        <span id="paperPortfolioReturn" class="text-sm font-semibold tabular-nums">--</span>
+                    </div>
+                    <p id="paperPortfolioHint" class="text-[10px] text-text-tertiary mt-1">已配额部分的合计盈亏</p>
+                </div>
+
+                <div class="grid grid-cols-3 gap-2 mt-2">
+                    <div class="rounded-lg border border-border-light p-2.5">
+                        <p class="text-[10px] text-text-tertiary">已配额</p>
+                        <p id="paperAllocated" class="text-sm font-semibold tabular-nums mt-0.5">--</p>
+                    </div>
+                    <div class="rounded-lg border border-border-light p-2.5">
+                        <p class="text-[10px] text-text-tertiary">未配额</p>
+                        <p id="paperIdle" class="text-sm font-semibold tabular-nums mt-0.5">--</p>
+                    </div>
+                    <div class="rounded-lg border border-border-light p-2.5">
+                        <p class="text-[10px] text-text-tertiary">配额币种</p>
+                        <p id="paperCoinCount" class="text-sm font-semibold tabular-nums mt-0.5">--</p>
+                    </div>
+                </div>
+
+                <div class="flex items-center gap-2 mt-3">
+                    <label class="text-[11px] text-text-secondary flex-shrink-0">总资金</label>
+                    <input id="paperTotalCapital" type="number" min="1" step="1000" inputmode="decimal"
+                        class="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-gray-50 border border-border-light text-sm tabular-nums focus:outline-none focus:border-golden/60 transition-colors">
+                    <button id="paperSaveTotalBtn"
+                        class="flex-shrink-0 px-3 py-1.5 rounded-lg bg-golden text-white text-xs font-medium hover:opacity-90 transition-opacity">
+                        保存
+                    </button>
+                </div>
+                <p id="paperTotalHint" class="text-[10px] text-text-tertiary mt-1">总资金不能小于已配额之和</p>
+            </section>
+
+            <!-- 当前币种账户 -->
+            <section class="mt-2 bg-white px-4 py-3">
+                <div class="flex items-start justify-between gap-3 mb-3">
+                    <div>
                         <div class="flex items-center gap-2">
-                            <h3 class="text-sm font-semibold">模拟自动交易</h3>
-                            <span id="paperStatusTag" class="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-text-secondary">已关闭</span>
+                            <h3 id="paperScope" class="text-sm font-semibold">--</h3>
+                            <span id="paperStatusTag" class="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-text-secondary">未开启</span>
                         </div>
                         <p class="text-[11px] text-text-tertiary mt-1 leading-relaxed">
-                            开启后，系统每次给出买入/卖出信号时自动模拟成交：买入信号全仓买入，卖出信号清仓卖出，不计手续费。
+                            每个币种独立运行：只有打开本币种的开关，才会按它自己的信号自动成交。
                         </p>
                     </div>
                     <button id="paperToggle" role="switch" aria-checked="false"
@@ -632,20 +676,21 @@
                         <span id="paperToggleKnob" class="absolute top-0.5 left-0.5 w-6 h-6 rounded-full bg-white shadow transition-transform duration-200"></span>
                     </button>
                 </div>
-            </section>
 
-            <!-- 账户概览 -->
-            <section class="mt-2 bg-white px-4 py-3">
-                <div class="flex items-center justify-between mb-3">
-                    <div>
-                        <h3 class="text-sm font-semibold">账户概览</h3>
-                        <p id="paperScope" class="text-[10px] text-text-tertiary mt-0.5">--</p>
-                    </div>
-                    <button id="paperResetBtn" class="text-[11px] text-text-tertiary hover:text-fall-red transition-colors">重置账户</button>
+                <!-- 配额输入 -->
+                <div class="flex items-center gap-2">
+                    <label class="text-[11px] text-text-secondary flex-shrink-0">本币配额</label>
+                    <input id="paperAllocInput" type="number" min="1" step="1000" inputmode="decimal" placeholder="手动填写金额"
+                        class="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-gray-50 border border-border-light text-sm tabular-nums placeholder-gray-400 focus:outline-none focus:border-golden/60 transition-colors">
+                    <button id="paperSaveAllocBtn"
+                        class="flex-shrink-0 px-3 py-1.5 rounded-lg bg-golden text-white text-xs font-medium hover:opacity-90 transition-opacity">
+                        应用
+                    </button>
                 </div>
+                <p id="paperAllocHint" class="text-[10px] text-text-tertiary mt-1">--</p>
 
-                <div class="rounded-xl bg-gray-50 p-3">
-                    <p class="text-[11px] text-text-secondary">总资产</p>
+                <div class="rounded-xl bg-gray-50 p-3 mt-3">
+                    <p class="text-[11px] text-text-secondary">本币总资产</p>
                     <div class="flex items-baseline gap-1.5 mt-0.5">
                         <span id="paperEquity" class="text-2xl font-bold tabular-nums">--</span>
                         <span class="text-xs text-text-tertiary">USDT</span>
@@ -686,6 +731,22 @@
                         <p id="paperMaxDd" class="text-sm font-semibold mt-0.5">--</p>
                     </div>
                 </div>
+
+                <div class="flex items-center justify-end gap-3 mt-3 pt-3 border-t border-border-light">
+                    <button id="paperResetBtn" class="text-[11px] text-text-tertiary hover:text-golden transition-colors">重置本币账户</button>
+                    <button id="paperClearBtn" class="text-[11px] text-text-tertiary hover:text-fall-red transition-colors">取消本币配额</button>
+                </div>
+            </section>
+
+            <!-- 各币种概览 -->
+            <section class="mt-2 bg-white px-4 py-3">
+                <div class="flex items-center justify-between mb-2">
+                    <h3 class="text-sm font-semibold">已配额币种</h3>
+                    <span class="text-[10px] text-text-tertiary">点击切换</span>
+                </div>
+                <div id="paperCoinList" class="divide-y divide-border-light">
+                    <!-- 由JS生成 -->
+                </div>
             </section>
 
             <!-- 买卖记录 -->
@@ -703,11 +764,12 @@
             <section class="mt-2 bg-white px-4 py-3">
                 <h3 class="text-sm font-semibold mb-1.5">统计口径</h3>
                 <ul class="text-[11px] text-text-tertiary leading-relaxed space-y-1">
-                    <li>· 账户按「币种 + 周期」独立记账，切换币种或周期会看到对应的另一个账户。</li>
+                    <li>· 总资金是整个模拟盘的盘子，各币种从里面分配配额，未配额的部分不参与交易。</li>
+                    <li>· 每个币种有独立开关与独立账户，切换币种看到的是该币种自己的数据。</li>
+                    <li>· 修改本币配额会重置该币种账户，因为本金变了收益率不再可比。</li>
                     <li>· 仅在信号方向发生变化时成交，同一方向的信号不会重复下单。</li>
-                    <li>· 买入用全部可用资金，卖出清空全部持仓；不计手续费与滑点。</li>
-                    <li>· 「完成轮次」按卖出笔数计算，每笔卖出即一轮交易结束。</li>
-                    <li>· 「同期买入持有」以首次买入价为基准，衡量不做择时的收益。</li>
+                    <li>· 买入用本币账户全部可用资金，卖出清空全部持仓；不计手续费与滑点。</li>
+                    <li>· 「完成轮次」按卖出笔数计算；「同期买入持有」以首次买入价为基准。</li>
                 </ul>
             </section>
         </div>
@@ -911,12 +973,12 @@
     <!-- 轻提示 -->
     <div id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-24 z-[60] px-4 py-2.5 rounded-xl bg-gray-900/90 text-white text-sm shadow-lg opacity-0 pointer-events-none transition-opacity duration-200 hidden"></div>
 
-    <script src="js/technical.js?v=31"></script>
-    <script src="js/news.js?v=31"></script>
-    <script src="js/signals.js?v=31"></script>
-    <script src="js/prediction.js?v=31"></script>
-    <script src="js/paper.js?v=31"></script>
-    <script src="js/chart.js?v=31"></script>
-    <script src="js/app.js?v=31"></script>
+    <script src="js/technical.js?v=34"></script>
+    <script src="js/news.js?v=34"></script>
+    <script src="js/signals.js?v=34"></script>
+    <script src="js/prediction.js?v=34"></script>
+    <script src="js/paper.js?v=34"></script>
+    <script src="js/chart.js?v=34"></script>
+    <script src="js/app.js?v=34"></script>
 </body>
 </html>
