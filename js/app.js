@@ -21,6 +21,7 @@ const CryptoPulseApp = {
         showSignalMarkers: true,
         showMA: true,
         showVolume: true,
+        sensitivity: 'balanced', // 信号灵敏度档位：conservative | balanced | sensitive
         coinCatalog: [],        // 联网获取的币安全量交易对
         catalogLoaded: false,
         catalogLoading: false,
@@ -70,32 +71,32 @@ const CryptoPulseApp = {
             type: 'buy',
             strength: 'strong',
             strengthText: '强',
-            desc: '多因子综合评分达到 70 分以上，技术面、量能与情绪面形成共振，是力度最强的看多结论。',
-            condition: '综合评分 ≥ 70：MACD 处于多头、均线多头排列、价格站上 MA25、KDJ 金叉、RSI 未超买、量价配合良好等多项条件同时成立。',
+            desc: '多因子综合评分达到当前档位的强烈买入阈值，技术面、量能与情绪面形成共振，是力度最强的看多结论。',
+            condition: '综合评分 ≥ 强烈买入阈值：MACD 处于多头、均线多头排列、价格站上 MA25、KDJ 金叉、RSI 未超买、量价配合良好等多项条件同时成立。',
             advice: '可考虑分批建仓，仓位相应提高。若后续出现量能萎缩或价格跌破 MA25，需及时减仓。'
         },
         '买入': {
             type: 'buy',
             strength: 'medium',
             strengthText: '中等',
-            desc: '多因子综合评分在 58 至 70 分之间，多头因素占优，趋势偏多但力度中等。',
-            condition: '综合评分 ≥ 58 且 < 70：多数技术指标偏多，量能或情绪面提供配合。',
+            desc: '多因子综合评分达到买入阈值但未到强烈买入，多头因素占优，趋势偏多但力度中等。',
+            condition: '综合评分 ≥ 买入阈值且 < 强烈买入阈值：多数技术指标偏多，量能或情绪面提供配合。',
             advice: '可轻仓试探性建仓，逢回调分批加仓；同时设好止损，避免在压力位附近追高。'
         },
         '卖出': {
             type: 'sell',
             strength: 'medium',
             strengthText: '中等',
-            desc: '多因子综合评分在 30 至 42 分之间，空头因素占优，需要控制仓位。',
-            condition: '综合评分 ≤ 42 且 > 30：多数技术指标转空，或出现放量下跌、跌破关键支撑。',
+            desc: '多因子综合评分跌破卖出阈值但未到强烈卖出，空头因素占优，需要控制仓位。',
+            condition: '综合评分 ≤ 卖出阈值且 > 强烈卖出阈值：多数技术指标转空，或出现放量下跌、跌破关键支撑。',
             advice: '建议降低仓位，跌破关键支撑位需果断止损；等指标修复后再重新评估。'
         },
         '强烈卖出': {
             type: 'sell',
             strength: 'strong',
             strengthText: '强',
-            desc: '多因子综合评分跌破 30 分，空头因素集中，属于力度最强的看空结论。',
-            condition: '综合评分 ≤ 30：MACD 空头、均线空头排列、价格跌破 MA25、KDJ 死叉、RSI 超买回落、放量下跌等多项条件共振。',
+            desc: '多因子综合评分跌破当前档位的强烈卖出阈值，空头因素集中，属于力度最强的看空结论。',
+            condition: '综合评分 ≤ 强烈卖出阈值：MACD 空头、均线空头排列、价格跌破 MA25、KDJ 死叉、RSI 超买回落、放量下跌等多项条件共振。',
             advice: '建议大幅减仓或离场观望，等待缩量企稳、指标出现修复信号后再评估重新介入。'
         },
         'MA3/MA7短期金叉': {
@@ -319,6 +320,110 @@ const CryptoPulseApp = {
     },
 
     /**
+     * 信号灵敏度档位
+     *
+     * 档位同时作用于两处，保证 K 线标注与实时信号口径一致：
+     *   1) K线买卖点标注的因子权重与最小间隔
+     *   2) 实时综合信号的分类阈值
+     *
+     * 档位越低（保守）→ 阈值越高、趋势项权重越大 → 信号少、滞后大、假信号少；
+     * 档位越高（灵敏）→ 阈值越低、领先项权重越大 → 信号多、滞后小、假信号多。
+     */
+    sensitivityPresets: {
+        conservative: {
+            key: 'conservative',
+            label: '保守',
+            desc: '趋势项权重最高、阈值最严，信号最少、滞后最大，但假信号最少，适合波段操作。',
+            thresholds: { strongBuy: 74, buy: 63, sell: 37, strongSell: 26 },
+            minGap: 6,
+            weights: {
+                macdPos: 6, macdHist: 5, maCross: 6, priceMa25: 5,
+                maFast: 4, momentum: 5, kdj: 6, stoch: 3,
+                rsiScale: 0.9, boll: 5, volume: 6,
+            },
+        },
+        balanced: {
+            key: 'balanced',
+            label: '均衡',
+            desc: '信号数量与滞后折中，默认档位。',
+            thresholds: { strongBuy: 70, buy: 58, sell: 42, strongSell: 30 },
+            minGap: 2,
+            weights: {
+                macdPos: 5, macdHist: 5, maCross: 4, priceMa25: 3,
+                maFast: 7, momentum: 8, kdj: 6, stoch: 5,
+                rsiScale: 0.8, boll: 4, volume: 6,
+            },
+        },
+        sensitive: {
+            key: 'sensitive',
+            label: '灵敏',
+            desc: '领先因子权重最高、阈值最松，信号最多也最早，但假信号最多。',
+            thresholds: { strongBuy: 66, buy: 54, sell: 46, strongSell: 34 },
+            minGap: 1,
+            weights: {
+                macdPos: 4, macdHist: 5, maCross: 3, priceMa25: 2,
+                maFast: 9, momentum: 10, kdj: 7, stoch: 7,
+                rsiScale: 0.7, boll: 3, volume: 6,
+            },
+        },
+    },
+
+    /**
+     * 取当前灵敏度档位配置
+     * @returns {Object} 档位配置对象
+     */
+    getSensitivity() {
+        return this.sensitivityPresets[this.state.sensitivity] || this.sensitivityPresets.balanced;
+    },
+
+    /**
+     * 切换灵敏度档位
+     *
+     * 会同时重算 K 线买卖点标注与实时综合信号，保证两处口径一致。
+     * 切换不写入预测记录，避免来回切换污染准确率统计。
+     *
+     * @param {string} key - conservative | balanced | sensitive
+     */
+    applySensitivity(key) {
+        if (!this.sensitivityPresets[key]) return;
+        if (this.state.sensitivity === key) return;
+
+        this.state.sensitivity = key;
+        this.renderSensitivity();
+        this.saveUIState();
+
+        // 重算K线买卖点标注（权重与最小间隔随档位变化）
+        this.addSignalMarkers();
+
+        // 重算实时信号（分类阈值随档位变化）
+        if (this.state.indicators && this.state.indicators.macd) {
+            this.updateSignal(true);
+        }
+
+        this.showToast(`信号灵敏度已切换为「${this.getSensitivity().label}」`);
+    },
+
+    /**
+     * 渲染灵敏度档位的选中态、说明文案与当前生效阈值
+     */
+    renderSensitivity() {
+        const preset = this.getSensitivity();
+
+        document.querySelectorAll('#sensitivityControl .sens-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.sensitivity === preset.key);
+        });
+
+        const descEl = document.getElementById('sensitivityDesc');
+        if (descEl) descEl.textContent = preset.desc;
+
+        const thEl = document.getElementById('sensitivityThresholds');
+        if (thEl) {
+            const t = preset.thresholds;
+            thEl.textContent = `买入≥${t.buy}　卖出≤${t.sell}`;
+        }
+    },
+
+    /**
      * 联网加载币安全量交易对目录
      */
     async loadCoinCatalog(force = false) {
@@ -459,6 +564,8 @@ const CryptoPulseApp = {
         this.initChart();
         this.initTabs();
         this.applyUIState();
+        // 无存档时也要渲染一次，保证灵敏度控件有选中态
+        this.renderSensitivity();
         // 后台联网拉取币种目录与自选行情
         this.loadCoinCatalog();
         this.loadWatchlistQuotes();
@@ -614,6 +721,13 @@ const CryptoPulseApp = {
                 }
             });
         }
+
+        // 信号灵敏度档位切换
+        document.querySelectorAll('#sensitivityControl .sens-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.applySensitivity(btn.dataset.sensitivity);
+            });
+        });
 
         // 顶部币种标题点击 -> 打开币种选择器
         const coinPairTitle = document.getElementById('coinPairTitle');
@@ -887,6 +1001,7 @@ const CryptoPulseApp = {
             showMA: this.state.showMA,
             showVolume: this.state.showVolume,
             showSignals: this.state.showSignalMarkers,
+            sensitivity: this.state.sensitivity,
         };
         try {
             localStorage.setItem(this.uiStateKey, JSON.stringify(state));
@@ -950,6 +1065,13 @@ const CryptoPulseApp = {
             if (saved.showSignals !== undefined) {
                 this.state.showSignalMarkers = saved.showSignals;
             }
+
+            // 信号灵敏度档位（只恢复状态并渲染，不触发重算，
+            // 此时指标尚未加载，重算会在加载完成后自然生效）
+            if (saved.sensitivity && this.sensitivityPresets[saved.sensitivity]) {
+                this.state.sensitivity = saved.sensitivity;
+            }
+            this.renderSensitivity();
 
             // Tab 切换
             if (saved.currentTab) {
@@ -1766,9 +1888,9 @@ const CryptoPulseApp = {
      * 归类为 强烈买入(≥70) / 买入(≥58) / 强烈卖出(≤30) / 卖出(≤42)，
      * 其余一律不标注。只在多空方向真正切换时落一个点。
      *
-     * 权重经过实测调优：把滞后较大的趋势项（MA7/MA25、价格vsMA25）降权，
-     * 让出的空间给低滞后的领先型因子（MA3/MA7、3周期动量、StochRSI）。
-     * 实测（BTC 200根K线）日线中位滞后 4→2 根、4小时 5→3 根，
+     * 权重与阈值由灵敏度档位提供，档位越低越偏重趋势项（滞后大但稳），
+     * 档位越高越偏重领先项（滞后小但假信号多）。
+     * 均衡档实测（BTC 200根K线）日线中位滞后 4→2 根、4小时 5→3 根，
      * 同时后续5根的方向命中率不降反升。
      *
      * @param {Array} data - K线数据
@@ -1779,20 +1901,10 @@ const CryptoPulseApp = {
         const markers = [];
         if (!data || data.length < 30 || !ind) return markers;
 
-        // 各因子权重（分）
-        const W = {
-            macdPos: 5,     // MACD 线与信号线的相对位置
-            macdHist: 5,    // MACD 柱体变化（比交叉更早）
-            maCross: 4,     // MA7/MA25 排列（滞后大，已降权）
-            priceMa25: 3,   // 价格相对 MA25（滞后大，已降权）
-            maFast: 7,      // MA3/MA7 交叉（领先）
-            momentum: 8,    // 3周期动量（领先）
-            kdj: 6,         // KDJ 方向
-            stoch: 5,       // StochRSI 方向（领先）
-            rsiScale: 0.8,  // RSI 超买超卖倍率
-            boll: 4,        // 布林带位置
-            volume: 6,      // 量价配合
-        };
+        const preset = this.getSensitivity();
+        const W = preset.weights;
+        const TH = preset.thresholds;
+        const MIN_GAP = preset.minGap;
 
         const len = data.length;
         const closes = data.map(d => d.close);
@@ -1815,10 +1927,10 @@ const CryptoPulseApp = {
         const rsiLine = TechnicalAnalysis.calculateRSI(closes, 14);
 
         const classify = (v) => {
-            if (v >= 70) return '强烈买入';
-            if (v >= 58) return '买入';
-            if (v <= 30) return '强烈卖出';
-            if (v <= 42) return '卖出';
+            if (v >= TH.strongBuy) return '强烈买入';
+            if (v >= TH.buy) return '买入';
+            if (v <= TH.strongSell) return '强烈卖出';
+            if (v <= TH.sell) return '卖出';
             return null;
         };
 
@@ -1826,10 +1938,6 @@ const CryptoPulseApp = {
             if (!label) return null;
             return label.indexOf('买入') > -1 ? 'buy' : 'sell';
         };
-
-        // 标注的最小间隔（根）。实测从5降到2只增加少量信号，
-        // 却能把中位滞后缩短约1根K线。
-        const MIN_GAP = 2;
 
         let prevSide = null; // 'buy' | 'sell' | null
         let lastIdx = -99;
@@ -1869,14 +1977,14 @@ const CryptoPulseApp = {
                 else if (roc < -rocScale) score -= W.momentum;
             }
 
-            // KDJ 动能方向
-            if (kLine[i] != null && dLine[i] != null) {
-                score += kLine[i] > dLine[i] ? W.kdj : -W.kdj;
-            }
-
             // 领先因子：StochRSI 方向
             if (stochK[i] != null && stochD[i] != null) {
                 score += stochK[i] > stochD[i] ? W.stoch : -W.stoch;
+            }
+
+            // KDJ 动能方向
+            if (kLine[i] != null && dLine[i] != null) {
+                score += kLine[i] > dLine[i] ? W.kdj : -W.kdj;
             }
 
             // RSI 超买超卖
@@ -1929,7 +2037,8 @@ const CryptoPulseApp = {
         }
 
         // 只保留最近的标记，小屏不至于糊成一片
-        return markers.slice(-30);
+        // 上限设为40：灵敏档信号较多（约30个），过低会把它裁到和均衡档一样多
+        return markers.slice(-40);
     },
 
     // 更新价格UI
@@ -2570,7 +2679,7 @@ const CryptoPulseApp = {
 
 
     // 更新信号
-    updateSignal() {
+    updateSignal(skipTrack = false) {
         const ind = this.state.indicators;
 
         const techScoreResult = TechnicalAnalysis.calculateTechnicalScore({
@@ -2622,6 +2731,7 @@ const CryptoPulseApp = {
                 volumeMetrics: volumeResult.metrics,
                 volumeSignals: volumeResult.signals,
                 totalScore,
+                thresholds: this.getSensitivity().thresholds,
                 breakdown: {
                     technical: techScoreResult.score,
                     volume: volumeResult.score,
@@ -2636,7 +2746,10 @@ const CryptoPulseApp = {
         this.state.signal.totalScore = totalScore;
 
         // 记录本次预测（仅在方向变化或上一轮已复盘时才会新增）
-        this.trackPrediction(signal);
+        // 切换灵敏度档位时跳过记录，避免频繁切换污染准确率统计
+        if (!skipTrack) {
+            this.trackPrediction(signal);
+        }
 
         this.renderSignal();
         this.renderPredictTab();

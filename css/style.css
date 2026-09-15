@@ -183,6 +183,19 @@ button {
     font-weight: 600;
 }
 
+/* 信号灵敏度档位按钮
+   未选中为浅灰文字，选中为白底 + 轻投影，形成分段控件的浮起感 */
+.sens-btn {
+    color: #707a8a;
+}
+
+.sens-btn.active {
+    background: #ffffff;
+    color: #1e2329;
+    font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
 /* 图表全屏模式
    使用固定定位而非 Fullscreen API，移动端浏览器同样可用 */
 .chart-fullscreen {

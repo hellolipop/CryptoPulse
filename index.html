@@ -8,7 +8,7 @@
     <title>CryptoPulse - 虚拟货币实时分析</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="css/style.css?v=18">
+    <link rel="stylesheet" href="css/style.css?v=28">
     <script>
         tailwind.config = {
             theme: {
@@ -235,6 +235,20 @@
                         <p class="text-[11px] text-text-tertiary whitespace-nowrap">衍生品</p>
                         <p id="derivScoreMini" class="text-sm font-semibold mt-0.5">--</p>
                     </div>
+                </div>
+
+                <!-- 信号灵敏度档位 -->
+                <div class="mt-3 pt-3 border-t border-border-light">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-xs text-text-secondary">信号灵敏度</span>
+                        <span id="sensitivityThresholds" class="text-[10px] text-text-tertiary tabular-nums"></span>
+                    </div>
+                    <div id="sensitivityControl" class="grid grid-cols-3 gap-1 p-0.5 bg-gray-100 rounded-lg">
+                        <button data-sensitivity="conservative" class="sens-btn py-1.5 rounded-md text-xs font-medium transition-all">保守</button>
+                        <button data-sensitivity="balanced" class="sens-btn py-1.5 rounded-md text-xs font-medium transition-all">均衡</button>
+                        <button data-sensitivity="sensitive" class="sens-btn py-1.5 rounded-md text-xs font-medium transition-all">灵敏</button>
+                    </div>
+                    <p id="sensitivityDesc" class="text-[10px] text-text-tertiary mt-1.5 leading-relaxed"></p>
                 </div>
             </section>
 
@@ -795,11 +809,11 @@
     <!-- 轻提示 -->
     <div id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-24 z-[60] px-4 py-2.5 rounded-xl bg-gray-900/90 text-white text-sm shadow-lg opacity-0 pointer-events-none transition-opacity duration-200 hidden"></div>
 
-    <script src="js/technical.js?v=25"></script>
-    <script src="js/news.js?v=25"></script>
-    <script src="js/signals.js?v=25"></script>
-    <script src="js/prediction.js?v=25"></script>
-    <script src="js/chart.js?v=25"></script>
-    <script src="js/app.js?v=25"></script>
+    <script src="js/technical.js?v=28"></script>
+    <script src="js/news.js?v=28"></script>
+    <script src="js/signals.js?v=28"></script>
+    <script src="js/prediction.js?v=28"></script>
+    <script src="js/chart.js?v=28"></script>
+    <script src="js/app.js?v=28"></script>
 </body>
 </html>

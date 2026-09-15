@@ -17,6 +17,15 @@ const SignalGenerator = {
 
         // 如果 priceData 中提供了 totalScore，使用它（多因子综合评分）
         const totalScore = priceData.totalScore !== undefined ? priceData.totalScore : Math.round(techScore * 0.6 + newsScore * 0.4);
+
+        // 分类阈值可由灵敏度档位覆盖，缺省为均衡档
+        const th = (priceData && priceData.thresholds) || {};
+        const TH = {
+            strongBuy: th.strongBuy !== undefined ? th.strongBuy : 70,
+            buy: th.buy !== undefined ? th.buy : 58,
+            sell: th.sell !== undefined ? th.sell : 42,
+            strongSell: th.strongSell !== undefined ? th.strongSell : 30,
+        };
         
         // 判断信号类型
         let signalType = 'hold';
@@ -24,22 +33,22 @@ const SignalGenerator = {
         let signalDesc = '建议观望，等待明确信号';
         let signalColor = 'golden';
         
-        if (totalScore >= 70) {
+        if (totalScore >= TH.strongBuy) {
             signalType = 'strong_buy';
             signalText = '强烈买入';
             signalDesc = '技术面与消息面均向好，可考虑建仓';
             signalColor = 'rise-green';
-        } else if (totalScore >= 58) {
+        } else if (totalScore >= TH.buy) {
             signalType = 'buy';
             signalText = '买入';
             signalDesc = '整体趋势偏多，可逢低布局';
             signalColor = 'rise-green';
-        } else if (totalScore <= 30) {
+        } else if (totalScore <= TH.strongSell) {
             signalType = 'strong_sell';
             signalText = '强烈卖出';
             signalDesc = '风险较高，建议减仓或离场观望';
             signalColor = 'fall-red';
-        } else if (totalScore <= 42) {
+        } else if (totalScore <= TH.sell) {
             signalType = 'sell';
             signalText = '卖出';
             signalDesc = '整体趋势偏空，注意控制仓位';
