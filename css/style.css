@@ -182,3 +182,26 @@ button {
 .coin-cat-btn.text-golden {
     font-weight: 600;
 }
+
+/* 图表全屏模式
+   使用固定定位而非 Fullscreen API，移动端浏览器同样可用 */
+.chart-fullscreen {
+    position: fixed;
+    inset: 0;
+    z-index: 70;
+    background: #ffffff;
+    display: flex;
+    flex-direction: column;
+}
+
+/* 全屏时图表撑满剩余高度 */
+.chart-fullscreen #chartContainer {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+}
+
+/* 全屏时禁止页面滚动 */
+body.chart-locked {
+    overflow: hidden;
+}

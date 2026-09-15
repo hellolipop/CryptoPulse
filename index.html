@@ -8,7 +8,7 @@
     <title>CryptoPulse - 虚拟货币实时分析</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/style.css?v=16">
     <script>
         tailwind.config = {
             theme: {
@@ -141,31 +141,37 @@
             </section>
 
             <!-- K线图表区 -->
-            <section class="bg-white">
+            <section id="chartSection" class="bg-white">
                 <!-- 时间周期选择 -->
-                <div class="px-3 py-2 flex items-center justify-between border-t border-border-light">
-                    <div id="timeframeBtns" class="flex gap-0.5">
-                        <button data-tf="0.25" class="tf-btn px-2.5 py-1 text-xs rounded-md transition-colors">分时</button>
-                        <button data-tf="0.5" class="tf-btn px-2.5 py-1 text-xs rounded-md transition-colors">15分</button>
-                        <button data-tf="1" class="tf-btn px-2.5 py-1 text-xs rounded-md transition-colors">1小时</button>
-                        <button data-tf="4" class="tf-btn px-2.5 py-1 text-xs rounded-md transition-colors">4小时</button>
-                        <button data-tf="24" class="tf-btn px-2.5 py-1 text-xs rounded-md transition-colors active">日线</button>
-                        <button data-tf="more" class="tf-btn px-2.5 py-1 text-xs rounded-md transition-colors flex items-center gap-0.5">
-                            更多
-                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                            </svg>
-                        </button>
+                <div class="px-3 py-2 flex items-center justify-between gap-2 border-t border-border-light">
+                    <div class="flex-1 min-w-0 overflow-x-auto scrollbar-hide">
+                        <div id="timeframeBtns" class="flex gap-1 w-max">
+                            <button data-tf="0.25" class="tf-btn flex-shrink-0 whitespace-nowrap px-2.5 py-1 text-xs rounded-md transition-colors">分时</button>
+                            <button data-tf="0.5" class="tf-btn flex-shrink-0 whitespace-nowrap px-2.5 py-1 text-xs rounded-md transition-colors">15分</button>
+                            <button data-tf="1" class="tf-btn flex-shrink-0 whitespace-nowrap px-2.5 py-1 text-xs rounded-md transition-colors">1小时</button>
+                            <button data-tf="4" class="tf-btn flex-shrink-0 whitespace-nowrap px-2.5 py-1 text-xs rounded-md transition-colors">4小时</button>
+                            <button data-tf="24" class="tf-btn flex-shrink-0 whitespace-nowrap px-2.5 py-1 text-xs rounded-md transition-colors active">日线</button>
+                            <button data-tf="168" class="tf-btn flex-shrink-0 whitespace-nowrap px-2.5 py-1 text-xs rounded-md transition-colors">周线</button>
+                            <button data-tf="more" class="tf-btn flex-shrink-0 whitespace-nowrap px-2.5 py-1 text-xs rounded-md transition-colors flex items-center gap-0.5">
+                                更多
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                </svg>
+                            </button>
+                        </div>
                     </div>
-                    <div class="flex items-center gap-1.5">
-                        <button id="chartSettingsBtn" class="p-1.5 rounded hover:bg-gray-100 transition-colors">
+                    <div class="flex items-center gap-0.5 flex-shrink-0">
+                        <button id="chartSettingsBtn" class="p-1.5 rounded hover:bg-gray-100 transition-colors" title="均线显示开关">
                             <svg class="w-4 h-4 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"></path>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"></path>
                             </svg>
                         </button>
-                        <button id="chartFullscreenBtn" class="p-1.5 rounded hover:bg-gray-100 transition-colors">
-                            <svg class="w-4 h-4 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <button id="chartFullscreenBtn" class="p-1.5 rounded hover:bg-gray-100 transition-colors" title="全屏查看">
+                            <svg id="fsExpandIcon" class="w-4 h-4 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"></path>
+                            </svg>
+                            <svg id="fsExitIcon" class="w-4 h-4 text-text-secondary hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 9V4m0 5H4m5 0L3 3m12 6V4m0 5h5m-5 0l6-6M9 15v5m0-5H4m5 0l-6 6m12-6v5m0-5h5m-5 0l6 6"></path>
                             </svg>
                         </button>
                     </div>
@@ -698,10 +704,10 @@
     <!-- 轻提示 -->
     <div id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-24 z-[60] px-4 py-2.5 rounded-xl bg-gray-900/90 text-white text-sm shadow-lg opacity-0 pointer-events-none transition-opacity duration-200 hidden"></div>
 
-    <script src="js/technical.js?v=15"></script>
-    <script src="js/news.js?v=15"></script>
-    <script src="js/signals.js?v=15"></script>
-    <script src="js/chart.js?v=15"></script>
-    <script src="js/app.js?v=15"></script>
+    <script src="js/technical.js?v=16"></script>
+    <script src="js/news.js?v=16"></script>
+    <script src="js/signals.js?v=16"></script>
+    <script src="js/chart.js?v=16"></script>
+    <script src="js/app.js?v=16"></script>
 </body>
 </html>

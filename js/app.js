@@ -235,14 +235,23 @@ const CryptoPulseApp = {
         return meta ? meta.binanceSymbol : null;
     },
 
-    // 将 data-tf 值转换为小时数（用于K线间隔计算）
-    tfToHours(tfVal) {
-        // data-tf: 0.25=分时(1m), 0.5=15分, 1=1小时, 4=4小时, 24=日线
-        if (tfVal === 'more') return 24;
-        const val = parseFloat(tfVal);
-        if (val <= 0.25) return 1;    // 分时 -> 1小时跨度
-        if (val <= 0.5) return 6;     // 15分 -> 6小时跨度
-        return val;                   // 1, 4, 24 直接对应
+    // 时间周期配置：data-tf 值 -> 币安K线间隔 / 单根K线秒数
+    timeframeConfig: {
+        '0.25': { interval: '1m',  seconds: 60,     label: '分时' },
+        '0.5':  { interval: '15m', seconds: 900,    label: '15分' },
+        '1':    { interval: '1h',  seconds: 3600,   label: '1小时' },
+        '4':    { interval: '4h',  seconds: 14400,  label: '4小时' },
+        '24':   { interval: '1d',  seconds: 86400,  label: '日线' },
+        '168':  { interval: '1w',  seconds: 604800, label: '周线' },
+    },
+
+    /**
+     * 取时间周期配置
+     * @param {number|string} tf - data-tf 值（0.25 / 0.5 / 1 / 4 / 24 / 168）
+     * @returns {{interval: string, seconds: number, label: string}}
+     */
+    getTimeframeConfig(tf) {
+        return this.timeframeConfig[String(tf)] || this.timeframeConfig['24'];
     },
 
     /**
@@ -417,22 +426,39 @@ const CryptoPulseApp = {
                 if (tf === 'more') return; // "更多"按钮暂不展开
                 document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
                 e.currentTarget.classList.add('active');
-                this.state.currentTimeframe = this.tfToHours(tf);
+                // 直接保存 data-tf 值，K线间隔由 getTimeframeConfig 映射
+                this.state.currentTimeframe = parseFloat(tf);
                 this.saveUIState();
+                ChartManager.changeTimeframe(this.state.currentTimeframe);
                 this.loadCandleData(this.state.currentCoin);
             });
         });
 
-        // 图表设置按钮（保留接口，点击无操作或展开设置面板）
+        // 图表设置按钮：切换均线显示
         const chartSettingsBtn = document.getElementById('chartSettingsBtn');
         if (chartSettingsBtn) {
             chartSettingsBtn.addEventListener('click', () => {
-                // 切换MA显示作为简单设置
                 this.state.showMA = !this.state.showMA;
                 ChartManager.toggleMA(this.state.showMA);
                 this.saveUIState();
+                this.showToast(this.state.showMA ? '已显示均线' : '已隐藏均线');
             });
         }
+
+        // 全屏按钮：图表全屏查看
+        const chartFullscreenBtn = document.getElementById('chartFullscreenBtn');
+        if (chartFullscreenBtn) {
+            chartFullscreenBtn.addEventListener('click', () => {
+                this.toggleChartFullscreen();
+            });
+        }
+
+        // ESC 退出全屏
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && document.body.classList.contains('chart-locked')) {
+                this.exitChartFullscreen();
+            }
+        });
 
         // 底部栏自选按钮 -> 打开币种选择器
         const watchlistToggleBtn = document.getElementById('watchlistToggleBtn');
@@ -628,6 +654,52 @@ const CryptoPulseApp = {
         }, 1600);
     },
 
+    /**
+     * 切换图表全屏
+     */
+    toggleChartFullscreen() {
+        if (document.body.classList.contains('chart-locked')) {
+            this.exitChartFullscreen();
+        } else {
+            this.enterChartFullscreen();
+        }
+    },
+
+    /**
+     * 进入图表全屏
+     */
+    enterChartFullscreen() {
+        const section = document.getElementById('chartSection');
+        if (!section) return;
+
+        section.classList.add('chart-fullscreen');
+        document.body.classList.add('chart-locked');
+
+        document.getElementById('fsExpandIcon')?.classList.add('hidden');
+        document.getElementById('fsExitIcon')?.classList.remove('hidden');
+        document.getElementById('chartFullscreenBtn')?.setAttribute('title', '退出全屏');
+
+        // 布局生效后再让图表适配新尺寸
+        requestAnimationFrame(() => ChartManager.handleResize());
+        setTimeout(() => ChartManager.handleResize(), 120);
+    },
+
+    /**
+     * 退出图表全屏
+     */
+    exitChartFullscreen() {
+        const section = document.getElementById('chartSection');
+        if (section) section.classList.remove('chart-fullscreen');
+        document.body.classList.remove('chart-locked');
+
+        document.getElementById('fsExpandIcon')?.classList.remove('hidden');
+        document.getElementById('fsExitIcon')?.classList.add('hidden');
+        document.getElementById('chartFullscreenBtn')?.setAttribute('title', '全屏查看');
+
+        requestAnimationFrame(() => ChartManager.handleResize());
+        setTimeout(() => ChartManager.handleResize(), 120);
+    },
+
     // 初始化图表
     initChart() {
         ChartManager.init('chartContainer');
@@ -763,34 +835,27 @@ const CryptoPulseApp = {
         if (saved) {
             // 时间周期按钮（tf-btn）
             if (saved.timeframe) {
-                this.state.currentTimeframe = saved.timeframe;
-                // 找到最接近的 tf-btn 并激活
-                const tfMap = { 1: '1', 4: '4', 24: '24' };
-                let targetTf = '24';
-                if (saved.timeframe <= 1) targetTf = '0.25';
-                else if (saved.timeframe <= 6) targetTf = '0.5';
-                else if (saved.timeframe <= 4) targetTf = '4';
-                // 简化：根据小时数匹配 data-tf
+                // 兼容旧版本以「小时数」存储的取值
+                const legacyMap = { 1: '0.25', 6: '0.5', 4: '4', 24: '24', 168: '168' };
+                let savedTf = String(saved.timeframe);
+                if (!this.timeframeConfig[savedTf] && legacyMap[saved.timeframe]) {
+                    savedTf = legacyMap[saved.timeframe];
+                }
+                if (!this.timeframeConfig[savedTf]) savedTf = '24';
+
+                this.state.currentTimeframe = parseFloat(savedTf);
+
+                let matched = false;
                 document.querySelectorAll('.tf-btn').forEach(b => {
-                    const tf = b.dataset.tf;
-                    if (tf === 'more') return;
-                    const hours = this.tfToHours(tf);
-                    const diff = Math.abs(hours - saved.timeframe);
-                    const currentActive = document.querySelector('.tf-btn.active');
-                    if (currentActive) {
-                        const currentHours = this.tfToHours(currentActive.dataset.tf);
-                        if (diff < Math.abs(currentHours - saved.timeframe)) {
-                            currentActive.classList.remove('active');
-                            b.classList.add('active');
-                        }
-                    } else if (hours === saved.timeframe || (saved.timeframe >= 20 && tf === '24')) {
-                        b.classList.add('active');
-                    }
+                    if (b.dataset.tf === 'more') return;
+                    const isTarget = b.dataset.tf === savedTf;
+                    b.classList.toggle('active', isTarget);
+                    if (isTarget) matched = true;
                 });
-                // 如果没有 active 的，默认选中日线
-                if (!document.querySelector('.tf-btn.active')) {
+                if (!matched) {
                     const dailyBtn = document.querySelector('.tf-btn[data-tf="24"]');
                     if (dailyBtn) dailyBtn.classList.add('active');
+                    this.state.currentTimeframe = 24;
                 }
             }
 
@@ -1267,12 +1332,9 @@ const CryptoPulseApp = {
     },
 
     // 获取币安K线间隔参数
-    getBinanceInterval(hours) {
-        if (hours <= 1) return { interval: '1m', limit: 200 };
-        if (hours <= 6) return { interval: '15m', limit: 200 };
-        if (hours <= 24) return { interval: '1h', limit: 200 };
-        if (hours <= 168) return { interval: '4h', limit: 200 };
-        return { interval: '1d', limit: 200 };
+    getBinanceInterval(tf) {
+        const { interval } = this.getTimeframeConfig(tf);
+        return { interval, limit: 200 };
     },
 
     // 加载K线数据（币安 API）
@@ -1433,13 +1495,13 @@ const CryptoPulseApp = {
         };
         
         const basePrice = basePrices[coinId] || 100;
-        const candleCount = Math.max(100, this.state.currentTimeframe);
+        const candleCount = 200;
         const candleData = [];
         let price = basePrice;
         
         const now = Math.floor(Date.now() / 1000);
-        const totalSeconds = this.state.currentTimeframe * 3600;
-        const interval = totalSeconds / candleCount;
+        // 用所选周期的真实K线间隔生成模拟数据，避免周期切换后时间轴错乱
+        const interval = this.getTimeframeConfig(this.state.currentTimeframe).seconds;
         
         for (let i = candleCount - 1; i >= 0; i--) {
             const time = now - i * interval;
