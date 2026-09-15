@@ -499,6 +499,251 @@ const CryptoPulseApp = {
         `;
     },
 
+    // ==================== 模拟自动交易 ====================
+
+    /**
+     * 初始化模拟交易：恢复开关状态、绑定交互、渲染
+     */
+    initPaper() {
+        PaperTrader.enabled = PaperTrader.loadEnabled();
+
+        const toggle = document.getElementById('paperToggle');
+        if (toggle) {
+            toggle.addEventListener('click', () => this.togglePaperTrade());
+        }
+
+        const resetBtn = document.getElementById('paperResetBtn');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', () => {
+                const coin = this.getCoinInfo(this.state.currentCoin);
+                const tfLabel = this.getTimeframeConfig(this.state.currentTimeframe).label;
+                if (!confirm(`确定重置 ${coin.symbol} ${tfLabel} 的模拟账户？成交记录与持仓都会清空。`)) return;
+
+                PaperTrader.reset(this.state.currentCoin, this.state.currentTimeframe);
+                this.renderPaperTab();
+                this.showToast('模拟账户已重置');
+            });
+        }
+
+        this.renderPaperToggle();
+        this.renderPaperTab();
+    },
+
+    /**
+     * 开关自动模拟交易
+     */
+    togglePaperTrade() {
+        const on = !PaperTrader.enabled;
+        PaperTrader.saveEnabled(on);
+
+        if (on) {
+            // 记下当前信号方向：只对「开启之后发生的方向变化」下单，
+            // 不对开启前已经存在的信号补一笔成交
+            const sig = this.state.signal;
+            PaperTrader.syncSide(
+                this.state.currentCoin,
+                this.state.currentTimeframe,
+                sig ? sig.type : null
+            );
+        }
+
+        this.renderPaperToggle();
+        this.renderPaperTab();
+
+        this.showToast(on
+            ? '已开启模拟自动交易，下次方向变化时自动成交'
+            : '已关闭模拟自动交易');
+    },
+
+    /**
+     * 渲染开关外观
+     */
+    renderPaperToggle() {
+        const on = !!PaperTrader.enabled;
+
+        const toggle = document.getElementById('paperToggle');
+        if (toggle) {
+            toggle.classList.toggle('bg-rise-green', on);
+            toggle.classList.toggle('bg-gray-200', !on);
+            toggle.setAttribute('aria-checked', on ? 'true' : 'false');
+        }
+
+        const knob = document.getElementById('paperToggleKnob');
+        if (knob) {
+            knob.style.transform = on ? 'translateX(20px)' : 'translateX(0)';
+        }
+
+        const tag = document.getElementById('paperStatusTag');
+        if (tag) {
+            tag.textContent = on ? '运行中' : '已关闭';
+            tag.className = on
+                ? 'text-[10px] px-1.5 py-0.5 rounded-full bg-rise-green/10 text-rise-green font-medium'
+                : 'text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-text-secondary';
+        }
+    },
+
+    /**
+     * 渲染模拟账户概览与成交记录
+     */
+    renderPaperTab() {
+        const coinId = this.state.currentCoin;
+        const tf = this.state.currentTimeframe;
+        const tfLabel = this.getTimeframeConfig(tf).label;
+        const coin = this.getCoinInfo(coinId);
+        const price = (this.state.coinInfo && this.state.coinInfo.current_price) || 0;
+
+        const m = PaperTrader.getMetrics(coinId, tf, price);
+
+        this.setText('paperScope', `${coin.symbol}/USDT · ${tfLabel} · 初始 ${m.initialCapital.toLocaleString('en-US')} USDT`);
+        this.setText('paperEquity', m.equity.toLocaleString('en-US', { maximumFractionDigits: 2 }));
+        this.setText('paperCash', m.cash.toLocaleString('en-US', { maximumFractionDigits: 2 }));
+
+        // 总收益率
+        const retEl = document.getElementById('paperTotalReturn');
+        if (retEl) {
+            retEl.textContent = this.formatSignedPct(m.totalReturn);
+            retEl.className = `text-sm font-semibold tabular-nums ${this.pnlClass(m.totalReturn)}`;
+        }
+
+        // 持仓状态
+        const posEl = document.getElementById('paperPositionText');
+        if (posEl) {
+            posEl.textContent = m.holding
+                ? `持仓 ${m.holdings.toFixed(6)} · 浮盈 ${this.formatSignedPct(m.unrealizedPct)}`
+                : '空仓';
+        }
+
+        // 同期买入持有
+        const holdEl = document.getElementById('paperHoldReturn');
+        if (holdEl) {
+            if (m.holdReturn === null) {
+                holdEl.textContent = '--';
+                holdEl.className = 'text-sm font-semibold tabular-nums mt-0.5 text-text-tertiary';
+            } else {
+                holdEl.textContent = this.formatSignedPct(m.holdReturn);
+                holdEl.className = `text-sm font-semibold tabular-nums mt-0.5 ${this.pnlClass(m.holdReturn)}`;
+            }
+        }
+
+        // 相对超额
+        const exEl = document.getElementById('paperExcess');
+        if (exEl) {
+            if (m.excessReturn === null) {
+                exEl.textContent = '--';
+                exEl.className = 'text-sm font-semibold tabular-nums mt-0.5 text-text-tertiary';
+            } else {
+                exEl.textContent = this.formatSignedPct(m.excessReturn);
+                exEl.className = `text-sm font-semibold tabular-nums mt-0.5 ${this.pnlClass(m.excessReturn)}`;
+            }
+        }
+
+        // 四格统计
+        this.setText('paperRoundTrips', String(m.roundTrips));
+
+        const winEl = document.getElementById('paperWinRate');
+        if (winEl) {
+            if (m.winRate === null) {
+                winEl.textContent = '--';
+                winEl.className = 'text-sm font-semibold mt-0.5 text-text-tertiary';
+            } else {
+                winEl.textContent = `${(m.winRate * 100).toFixed(0)}%`;
+                winEl.className = `text-sm font-semibold mt-0.5 ${m.winRate >= 0.5 ? 'text-rise-green' : 'text-fall-red'}`;
+            }
+        }
+
+        const reEl = document.getElementById('paperRealized');
+        if (reEl) {
+            reEl.textContent = m.roundTrips ? this.formatSignedUsd(m.realized) : '--';
+            reEl.className = `text-sm font-semibold mt-0.5 ${m.roundTrips ? this.pnlClass(m.realized) : 'text-text-tertiary'}`;
+        }
+
+        const ddEl = document.getElementById('paperMaxDd');
+        if (ddEl) {
+            ddEl.textContent = m.trades.length ? `${(m.maxDrawdown * 100).toFixed(1)}%` : '--';
+            ddEl.className = 'text-sm font-semibold mt-0.5 text-text-primary';
+        }
+
+        this.renderPaperTrades(m.trades);
+    },
+
+    /**
+     * 渲染买卖记录列表
+     */
+    renderPaperTrades(trades) {
+        const host = document.getElementById('paperTradeList');
+        if (!host) return;
+
+        const countEl = document.getElementById('paperTradeCount');
+        if (countEl) countEl.textContent = trades.length ? `共 ${trades.length} 笔` : '';
+
+        if (!trades.length) {
+            host.innerHTML = `<p class="py-6 text-center text-xs text-text-tertiary leading-relaxed">
+                ${PaperTrader.enabled
+                    ? '已开启，等待下一次信号方向变化'
+                    : '暂无记录，开启自动交易后开始记录'}
+            </p>`;
+            return;
+        }
+
+        host.innerHTML = trades.slice().reverse().map(t => {
+            const isBuy = t.side === 'buy';
+            const sideCls = isBuy
+                ? 'text-rise-green bg-rise-green/10'
+                : 'text-fall-red bg-fall-red/10';
+
+            const amount = t.amount.toLocaleString('en-US', { maximumFractionDigits: 2 });
+
+            // 卖出才有已实现盈亏
+            const pnlHtml = (!isBuy && typeof t.pnl === 'number')
+                ? `<p class="text-[10px] mt-0.5 ${this.pnlClass(t.pnl)}">${this.formatSignedUsd(t.pnl)}</p>`
+                : '';
+
+            return `
+                <div class="py-2.5 flex items-start justify-between gap-3">
+                    <div class="flex items-start gap-2 min-w-0">
+                        <span class="text-[10px] px-1.5 py-0.5 rounded ${sideCls} flex-shrink-0 mt-0.5">${isBuy ? '买入' : '卖出'}</span>
+                        <div class="min-w-0">
+                            <p class="text-xs font-medium tabular-nums">$${TechnicalAnalysis.formatPrice(t.price)}</p>
+                            <p class="text-[10px] text-text-tertiary mt-0.5 truncate">
+                                ${this.formatPredictionTime(t.time)} · ${t.signalText || '--'}
+                            </p>
+                        </div>
+                    </div>
+                    <div class="text-right flex-shrink-0">
+                        <p class="text-xs tabular-nums">${amount}</p>
+                        ${pnlHtml}
+                    </div>
+                </div>
+            `;
+        }).join('');
+    },
+
+    /**
+     * 盈亏配色：正绿负红
+     */
+    pnlClass(v) {
+        if (v > 0) return 'text-rise-green';
+        if (v < 0) return 'text-fall-red';
+        return 'text-text-secondary';
+    },
+
+    /**
+     * 带符号百分比
+     */
+    formatSignedPct(v) {
+        if (v === null || v === undefined || !isFinite(v)) return '--';
+        return `${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%`;
+    },
+
+    /**
+     * 带符号金额
+     */
+    formatSignedUsd(v) {
+        if (v === null || v === undefined || !isFinite(v)) return '--';
+        const abs = Math.abs(v).toLocaleString('en-US', { maximumFractionDigits: 2 });
+        return `${v >= 0 ? '+' : '-'}$${abs}`;
+    },
+
     /**
      * 联网加载币安全量交易对目录
      */
@@ -642,6 +887,8 @@ const CryptoPulseApp = {
         this.applyUIState();
         // 无存档时也要渲染一次，保证灵敏度控件有选中态
         this.renderSensitivity();
+        // 模拟交易：恢复开关与账户展示
+        this.initPaper();
         // 后台联网拉取币种目录与自选行情
         this.loadCoinCatalog();
         this.loadWatchlistQuotes();
@@ -1015,6 +1262,11 @@ const CryptoPulseApp = {
         // 如果切换到图表tab，触发图表尺寸适配
         if (tabName === 'quote') {
             setTimeout(() => ChartManager.handleResize?.(), 50);
+        }
+
+        // 模拟页需要按最新价格重算持仓市值
+        if (tabName === 'paper') {
+            this.renderPaperTab();
         }
     },
 
@@ -2825,10 +3077,47 @@ const CryptoPulseApp = {
         // 切换灵敏度档位时跳过记录，避免频繁切换污染准确率统计
         if (!skipTrack) {
             this.trackPrediction(signal);
+            this.runPaperTrade(signal, totalScore);
         }
 
         this.renderSignal();
         this.renderPredictTab();
+        // 持仓市值随价格变动，每次信号刷新时同步模拟账户
+        this.renderPaperTab();
+    },
+
+    /**
+     * 按信号执行一次模拟成交
+     *
+     * 只在方向发生变化时真正下单，同一方向的信号不会重复买入/卖出。
+     * 成交后刷新模拟页并给出轻提示。
+     *
+     * @param {Object} signal - 综合信号
+     * @param {number} totalScore - 综合评分
+     */
+    runPaperTrade(signal, totalScore) {
+        if (typeof PaperTrader === 'undefined' || !PaperTrader.enabled) return;
+
+        const price = (this.state.coinInfo && this.state.coinInfo.current_price) || 0;
+        if (!price) return;
+
+        const trade = PaperTrader.onSignal({
+            coinId: this.state.currentCoin,
+            timeframe: this.state.currentTimeframe,
+            signalType: signal.type,
+            signalText: signal.text,
+            price,
+            score: signal.techScore,
+            totalScore,
+            sensitivity: this.state.sensitivity,
+        });
+
+        if (!trade) return;
+
+        this.renderPaperTab();
+        this.showToast(
+            `模拟${trade.side === 'buy' ? '买入' : '卖出'} @ $${TechnicalAnalysis.formatPrice(trade.price)}`
+        );
     },
 
     /**
