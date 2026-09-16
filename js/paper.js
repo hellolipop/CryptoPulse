@@ -211,13 +211,12 @@ const PaperTrader = {
      * 设置某币种的运行开关
      * 未配置配额时不允许开启，否则账户没有本金可交易。
      *
-     * 开启时记录两件事：
-     *   enabledAt        —— 从这一刻起算，只回放此后的K线买卖点
-     *   strategyTimeframe —— 跟随开启时选中的周期，之后不随看盘周期变化
+     * 开启时记下 enabledAt，作为回放的起点：
+     * 只回放这一刻之后的K线买卖点，开启前的历史不补记。
      *
      * @param {string} coinId
      * @param {boolean} on
-     * @param {string|number} [timeframe] - 开启时选中的周期
+     * @param {string|number} [timeframe] - 开启时选中的周期，仅作初始展示
      * @returns {{ok: boolean, message?: string}}
      */
     setEnabled(coinId, on, timeframe) {
@@ -319,7 +318,7 @@ const PaperTrader = {
      * @param {string} coinId
      * @param {Array} series - 买卖点序列（按时间升序）
      *        [{ time(秒), price, side:'buy'|'sell', label, score }]
-     * @param {string|number} [timeframe] - 当前看盘周期，仅在没有既定策略周期时采用
+     * @param {string|number} [timeframe] - 本次回放所用的K线周期，仅用于展示
      * @returns {Object|null} 重建后的账户，未配额返回 null
      */
     replay(coinId, series, timeframe) {
@@ -347,7 +346,9 @@ const PaperTrader = {
             firstBuyPrice: null,
             lastTimeframe: hasTf ? timeframe : (prevTf !== undefined ? prevTf : null),
             enabledAt: enabledAt || null,
-            strategyTimeframe: (prevTf !== undefined && prevTf !== null) ? prevTf : (hasTf ? timeframe : null),
+            // 记录本次实际采用的周期：模拟始终跟随图上正在看的周期，
+            // 所以切周期后这里会同步更新，不留旧值以免说明与记录对不上
+            strategyTimeframe: hasTf ? timeframe : (prevTf !== undefined ? prevTf : null),
             createdAt: prev.createdAt || Date.now(),
         };
 

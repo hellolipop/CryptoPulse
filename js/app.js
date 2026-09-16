@@ -770,13 +770,12 @@ const CryptoPulseApp = {
             }
         }
 
-        // 策略周期：开启时锁定，此后成交都按这个周期的买卖点回放，
-        // 不会因为看盘时切换周期而改写已有记录
+        // 成交依据就是图上当前周期标注的买卖点，切周期会按新周期重算
         const stratTf = PaperTrader.getAccount(coinId).strategyTimeframe;
         const hasTf = stratTf !== undefined && stratTf !== null;
         this.setText('paperStrategyTf', (enabled && hasTf)
-            ? `策略周期 ${this.getTimeframeConfig(stratTf).label}（开启时锁定）`
-            : '策略周期在开启模拟时锁定为当时选中的周期');
+            ? `按 ${this.getTimeframeConfig(stratTf).label} 的K线买卖点成交，与图上标注一致`
+            : '开启后按当前所选周期的K线买卖点成交');
 
         // 开关外观
         const toggle = document.getElementById('paperToggle');
