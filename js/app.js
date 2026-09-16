@@ -32,6 +32,7 @@ const CryptoPulseApp = {
         coinListQuotes: {},      // 列表模式行情缓存 { binanceSymbol: {price, changePercent} }
         usdtToCnyRate: 7.25,    // USDT兑人民币汇率（估算）
         paperGate: 'funding',   // 模拟盘闸门：off 不过滤 | funding 费率闸门
+        tradeMode: 'paper',     // 交易页模式：paper 模拟盘 | live 币安测试网
         fundingHistory: null,   // 资金费率历史缓存 { coinId, fetchedAt, list }
         fundingPercentile: null,// 逐根K线的资金费率滚动分位
     },
@@ -1392,17 +1393,30 @@ const CryptoPulseApp = {
 
     // 初始化
     async init() {
-        this.loadCoinMeta();
-        this.loadWatchlist();
-        this.loadUIState();
-        this.bindEvents();
-        this.initChart();
-        this.initTabs();
-        this.applyUIState();
+        // 任一子系统出错都不应拖垮整个应用：逐个隔离，出错的记下来继续往下走
+        const step = (name, fn) => {
+            try { fn(); }
+            catch (e) {
+                this._initErrors = this._initErrors || [];
+                this._initErrors.push(name + ': ' + e.message);
+                console.error(`[初始化] ${name} 失败:`, e);
+            }
+        };
+
+        step('loadCoinMeta', () => this.loadCoinMeta());
+        step('loadWatchlist', () => this.loadWatchlist());
+        step('loadUIState', () => this.loadUIState());
+        step('bindEvents', () => this.bindEvents());
+        step('initChart', () => this.initChart());
+        step('initTabs', () => this.initTabs());
+        step('applyUIState', () => this.applyUIState());
         // 无存档时也要渲染一次，保证灵敏度控件有选中态
-        this.renderSensitivity();
+        step('renderSensitivity', () => this.renderSensitivity());
         // 模拟交易：恢复开关与账户展示
-        this.initPaper();
+        step('initPaper', () => this.initPaper());
+        // 币安测试网交易：绑定交互（密钥不落地，刷新即失效）
+        step('initBinance', () => this.initBinance());
+
         // 后台联网拉取币种目录与自选行情
         this.loadCoinCatalog();
         this.loadWatchlistQuotes();
@@ -1742,48 +1756,96 @@ const CryptoPulseApp = {
 
     // ===== Tab 切换 =====
     initTabs() {
-        document.querySelectorAll('.sub-tab').forEach(btn => {
-            btn.addEventListener('click', () => {
-                this.switchTab(btn.dataset.tab);
-            });
+        // 底部主导航
+        document.querySelectorAll('.nav-btn').forEach(btn => {
+            btn.addEventListener('click', () => this.switchTab(btn.dataset.tab));
         });
+
+        // 交易页的两种模式
+        const modeCtrl = document.getElementById('tradeModeControl');
+        if (modeCtrl) {
+            modeCtrl.addEventListener('click', (e) => {
+                const btn = e.target.closest('.trade-mode-btn');
+                if (btn && btn.dataset.mode) this.setTradeMode(btn.dataset.mode);
+            });
+        }
+
+        // 初始高亮（switchTab 在同值时提前返回，所以要手动点亮一次）
+        document.querySelectorAll('.nav-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.tab === this.state.currentTab);
+        });
+        const actionBar = document.getElementById('quoteActionBar');
+        if (actionBar) actionBar.classList.toggle('hidden', this.state.currentTab !== 'quote');
+        this.renderTradePane();
     },
 
     switchTab(tabName) {
-        if (!tabName || tabName === this.state.currentTab) return;
+        // 兼容旧的 'paper' 取值：模拟盘现在是「交易」里的一个模式
+        if (tabName === 'paper') tabName = 'trade';
+        if (!tabName) return;
+        if (tabName === this.state.currentTab) {
+            // 同标签再点一次：滚回顶部（主流交互习惯）
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            return;
+        }
         this.state.currentTab = tabName;
         this.saveUIState();
 
-        // 更新 tab 按钮样式
-        document.querySelectorAll('.sub-tab').forEach(btn => {
-            const active = btn.dataset.tab === tabName;
-            if (active) {
-                btn.classList.add('border-golden', 'text-golden');
-                btn.classList.remove('border-transparent', 'text-text-secondary');
-            } else {
-                btn.classList.remove('border-golden', 'text-golden');
-                btn.classList.add('border-transparent', 'text-text-secondary');
-            }
+        // 底部主导航高亮
+        document.querySelectorAll('.nav-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.tab === tabName);
         });
 
-        // 切换面板显示
+        // 面板显示：「交易」复用 tab-paper 容器
+        const panelId = tabName === 'trade' ? 'tab-paper' : 'tab-' + tabName;
         document.querySelectorAll('.tab-panel').forEach(panel => {
             panel.classList.add('hidden');
         });
-        const targetPanel = document.getElementById('tab-' + tabName);
-        if (targetPanel) {
-            targetPanel.classList.remove('hidden');
-        }
+        const targetPanel = document.getElementById(panelId);
+        if (targetPanel) targetPanel.classList.remove('hidden');
 
-        // 如果切换到图表tab，触发图表尺寸适配
+        // 买入/卖出操作条只在行情页出现，避免与主导航抢空间
+        const actionBar = document.getElementById('quoteActionBar');
+        if (actionBar) actionBar.classList.toggle('hidden', tabName !== 'quote');
+
         if (tabName === 'quote') {
             setTimeout(() => ChartManager.handleResize?.(), 50);
         }
-
-        // 模拟页需要按最新价格重算持仓市值
-        if (tabName === 'paper') {
+        if (tabName === 'trade') {
+            this.renderTradePane();
             this.renderPaperTab();
         }
+    },
+
+    /**
+     * 渲染交易页的两种模式：模拟盘 / 币安测试网
+     */
+    renderTradePane() {
+        const mode = this.state.tradeMode || 'paper';
+        const paper = document.getElementById('tradePanePaper');
+        const live = document.getElementById('tradePaneBinance');
+        if (paper) paper.classList.toggle('hidden', mode !== 'paper');
+        if (live) live.classList.toggle('hidden', mode !== 'live');
+
+        document.querySelectorAll('#tradeModeControl .trade-mode-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.mode === mode);
+        });
+
+        const hint = document.getElementById('tradeModeHint');
+        if (hint) {
+            hint.textContent = mode === 'live'
+                ? '币安测试网：真实下单接口、真实撮合，但全部是虚拟资金，不涉及真实资产。'
+                : '模拟盘：按历史K线回放信号，不下任何真实订单。';
+        }
+
+        if (mode === 'live') this.renderBinancePanel();
+    },
+
+    setTradeMode(mode) {
+        if (mode !== 'paper' && mode !== 'live') return;
+        this.state.tradeMode = mode;
+        this.saveUIState();
+        this.renderTradePane();
     },
 
     // 加载自选列表
@@ -1847,6 +1909,7 @@ const CryptoPulseApp = {
             showSignals: this.state.showSignalMarkers,
             sensitivity: this.state.sensitivity,
             paperGate: this.state.paperGate,
+            tradeMode: this.state.tradeMode,
         };
         try {
             localStorage.setItem(this.uiStateKey, JSON.stringify(state));
@@ -1923,6 +1986,11 @@ const CryptoPulseApp = {
                 this.state.paperGate = saved.paperGate;
             }
             this.renderPaperGate();
+
+            // 交易页模式（模拟盘 / 币安测试网）
+            if (saved.tradeMode === 'paper' || saved.tradeMode === 'live') {
+                this.state.tradeMode = saved.tradeMode;
+            }
 
             // Tab 切换
             if (saved.currentTab) {
@@ -3677,6 +3745,557 @@ const CryptoPulseApp = {
         );
     },
 
+    // ==================== 币安测试网交易 ====================
+
+    /**
+     * 把任意文本转义后再插入 DOM。
+     * 交易所返回的数据、用户输入都可能含特殊字符，直接拼进 innerHTML 就是 XSS 入口。
+     */
+    esc(v) {
+        return String(v === undefined || v === null ? '' : v)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    },
+
+    initBinance() {
+        this._bnSide = 'BUY';
+        this._bnPending = null;
+        this._bnBalances = {};
+        this._bnOpenOrders = [];
+
+        const on = (id, ev, fn) => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener(ev, fn);
+        };
+
+        on('bnConnectBtn', 'click', () => this.bnConnect());
+        on('bnClearKeyBtn', 'click', () => this.bnClearKeys());
+        on('bnDisconnectBtn', 'click', () => this.bnDisconnect());
+        on('bnRefreshBtn', 'click', () => this.bnRefreshAccount());
+        on('bnPreviewBtn', 'click', () => this.bnPreview());
+        on('bnConfirmCancelBtn', 'click', () => this.bnCloseConfirm());
+        on('bnConfirmBtn', 'click', () => this.bnSubmit());
+        on('bnCancelAllBtn', 'click', () => this.bnCancelAll());
+        on('bnKillBtn', 'click', () => this.bnKill());
+
+        // 买卖方向
+        document.querySelectorAll('.bn-side-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this._bnSide = btn.dataset.side;
+                document.querySelectorAll('.bn-side-btn').forEach(b => {
+                    b.classList.toggle('active', b.dataset.side === this._bnSide);
+                });
+                this.bnUpdatePreview();
+            });
+        });
+
+        // 输入变化即时重算
+        ['bnPrice', 'bnQty', 'bnType', 'bnSymbol'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('input', () => this.bnUpdatePreview());
+        });
+
+        document.querySelectorAll('.bn-side-btn').forEach(b => {
+            b.classList.toggle('active', b.dataset.side === 'BUY');
+        });
+
+        // 回填已保存的代理地址（代理地址不是机密，可以持久化）
+        const proxyEl = document.getElementById('bnProxyInput');
+        if (proxyEl && BinanceTestnet.getProxy()) proxyEl.value = BinanceTestnet.getProxy();
+        if (BinanceTestnet.isProxyMode()) {
+            BinanceTestnet.checkProxy().then(() => this.renderBinancePanel());
+        }
+
+        // 行情页的买入/卖出：切到交易页并预选方向，不直接下单
+        const quick = (id, side) => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('click', () => {
+                this.setTradeMode('live');
+                this.state.currentTab = null;   // 置空以强制走一次完整切换
+                this.switchTab('trade');
+                this._bnSide = side;
+                document.querySelectorAll('.bn-side-btn').forEach(b => {
+                    b.classList.toggle('active', b.dataset.side === side);
+                });
+                this.bnUpdatePreview();
+            });
+        };
+        quick('quickBuyBtn', 'BUY');
+        quick('quickSellBtn', 'SELL');
+    },
+
+    bnRenderSymbols() {
+        const sel = document.getElementById('bnSymbol');
+        if (!sel) return;
+        const list = (this.state.watchlist || []).map(id => ({
+            id, sym: this.getBinanceSymbol(id), name: this.getCoinInfo(id).symbol,
+        })).filter(x => x.sym);
+
+        const cur = this.getBinanceSymbol(this.state.currentCoin);
+        const keep = sel.value;
+        sel.innerHTML = list.map(x =>
+            `<option value="${this.esc(x.sym)}">${this.esc(x.name)}/${this.esc(x.sym.replace(x.name, ''))}</option>`
+        ).join('');
+        if (keep && list.some(x => x.sym === keep)) sel.value = keep;
+        else if (cur && list.some(x => x.sym === cur)) sel.value = cur;
+        else if (list.length) sel.value = list[0].sym;
+    },
+
+    renderBinancePanel() {
+        const connected = BinanceTestnet.isConnected();
+        const form = document.getElementById('bnConnectForm');
+        const box = document.getElementById('bnConnectedBox');
+        if (form) form.classList.toggle('hidden', connected);
+        if (box) box.classList.toggle('hidden', !connected);
+
+        ['bnOrderSection', 'bnOpenSection', 'bnHistorySection', 'bnKillSection'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.classList.toggle('hidden', !connected);
+        });
+
+        const status = document.getElementById('bnStatus');
+        if (status) {
+            if (BinanceTestnet.isHalted()) {
+                status.textContent = '已停止';
+                status.className = 'text-[10px] px-1.5 py-0.5 rounded-full bg-fall-red/10 text-fall-red font-medium';
+            } else if (connected) {
+                status.textContent = '已连接';
+                status.className = 'text-[10px] px-1.5 py-0.5 rounded-full bg-rise-green/10 text-rise-green font-medium';
+            } else {
+                status.textContent = '未连接';
+                status.className = 'text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-text-secondary';
+            }
+        }
+
+        if (connected) {
+            this.bnRenderSymbols();
+            this.bnUpdatePreview();
+            this.bnRenderHistory();
+        }
+    },
+
+    bnSetMessage(msg, kind) {
+        const el = document.getElementById('bnMessage');
+        if (!el) return;
+        el.textContent = msg;
+        el.className = 'text-[10px] mt-2 leading-tight ' +
+            (kind === 'error' ? 'text-fall-red'
+                : kind === 'ok' ? 'text-rise-green' : 'text-text-tertiary');
+    },
+
+    async bnConnect() {
+        const el = document.getElementById('bnProxyInput');
+        if (el) {
+            const r = BinanceTestnet.setProxy(el.value);
+            if (!r.ok) { this.bnSetMessage(r.message, 'error'); return; }
+        }
+        if (!BinanceTestnet.getProxy()) {
+            this.bnSetMessage('请填写本地签名代理地址，例如 http://127.0.0.1:8787', 'error');
+            return;
+        }
+
+        this.bnSetMessage('正在检查代理…');
+        const h = await BinanceTestnet.checkProxy();
+
+        if (!h.ok) {
+            this.bnSetMessage(h.message || '代理不可用', 'error');
+            this.renderBinancePanel();
+            return;
+        }
+        if (!h.hasKeys) {
+            this.bnSetMessage('代理已启动，但还没有配置测试网密钥。请用 BINANCE_KEY / BINANCE_SECRET 环境变量启动代理。', 'error');
+            this.renderBinancePanel();
+            return;
+        }
+
+        this.bnSetMessage(`已连接本地代理${h.host ? '（' + h.host + '）' : ''}。密钥保存在代理进程，浏览器未接触。`, 'ok');
+        this.renderBinancePanel();
+        await this.bnRefreshAccount();
+        await this.bnLoadOrders();
+    },
+
+    bnClearKeys() {
+        BinanceTestnet.setProxy('');
+        const el = document.getElementById('bnProxyInput');
+        if (el) el.value = '';
+        this.bnSetMessage('已清除代理地址。');
+        this.renderBinancePanel();
+    },
+
+    bnDisconnect() {
+        BinanceTestnet.setProxy('');
+        BinanceTestnet.clearCredentials();
+        this._bnBalances = {};
+        this._bnOpenOrders = [];
+        const el = document.getElementById('bnProxyInput');
+        if (el) el.value = '';
+        this.bnSetMessage('已断开连接。', 'ok');
+        this.renderBinancePanel();
+    },
+
+    /** 取余额表，返回 { USDT: free, BTC: free, ... } */
+    bnExtractBalances(account) {
+        const map = {};
+        (account.balances || []).forEach(b => {
+            const free = parseFloat(b.free || 0);
+            if (free > 0) map[b.asset] = free;
+        });
+        return map;
+    },
+
+    async bnRefreshAccount() {
+        if (!BinanceTestnet.isConnected()) return;
+        try {
+            const acc = await BinanceTestnet.getAccount();
+            this._bnBalances = this.bnExtractBalances(acc);
+            this.bnRenderAccount();
+            this.bnUpdatePreview();
+        } catch (e) {
+            this.bnSetMessage('读取账户失败：' + e.message, 'error');
+        }
+    },
+
+    bnRenderAccount() {
+        const totalEl = document.getElementById('bnBalanceTotal');
+        const detailEl = document.getElementById('bnBalanceDetail');
+        if (!totalEl) return;
+
+        const entries = Object.entries(this._bnBalances).sort((a, b) => b[1] - a[1]);
+        const usdt = this._bnBalances.USDT || 0;
+        totalEl.textContent = usdt.toLocaleString('en-US', { maximumFractionDigits: 2 }) + ' USDT';
+        const others = entries.filter(([k]) => k !== 'USDT').slice(0, 4)
+            .map(([k, v]) => `${k} ${v}`).join('　');
+        detailEl.textContent = others ? '其他资产：' + others : '其他资产：无';
+    },
+
+    bnCurrentOrder() {
+        const sel = document.getElementById('bnSymbol');
+        const type = document.getElementById('bnType');
+        const priceEl = document.getElementById('bnPrice');
+        const qtyEl = document.getElementById('bnQty');
+        return {
+            symbol: sel ? sel.value : '',
+            side: this._bnSide || 'BUY',
+            type: type ? type.value : 'LIMIT',
+            price: priceEl ? parseFloat(priceEl.value) : NaN,
+            quantity: qtyEl ? parseFloat(qtyEl.value) : NaN,
+        };
+    },
+
+    /** 市价单隐藏价格输入，限价单显示 */
+    bnSyncTypeUI() {
+        const type = document.getElementById('bnType');
+        const priceEl = document.getElementById('bnPrice');
+        const label = priceEl ? priceEl.closest('div') : null;
+        if (!type || !label) return;
+        const isMarket = type.value === 'MARKET';
+        label.style.opacity = isMarket ? '0.45' : '1';
+        if (priceEl) priceEl.disabled = isMarket;
+    },
+
+    bnUpdatePreview() {
+        this.bnSyncTypeUI();
+        const o = this.bnCurrentOrder();
+        const notionalEl = document.getElementById('bnNotional');
+        const feeEl = document.getElementById('bnFee');
+        const availEl = document.getElementById('bnAvail');
+        const hintEl = document.getElementById('bnRiskHint');
+
+        const base = o.symbol ? o.symbol.replace('USDT', '') : '';
+        const refPrice = this.state.coinInfo && this.state.coinInfo.current_price
+            ? this.state.coinInfo.current_price : 0;
+        const effPrice = o.type === 'LIMIT' ? o.price : refPrice;
+        const notional = (o.quantity > 0 && effPrice > 0) ? o.quantity * effPrice : 0;
+
+        if (notionalEl) notionalEl.textContent = notional > 0 ? notional.toFixed(2) + ' USDT' : '--';
+        if (feeEl) feeEl.textContent = notional > 0 ? (notional * 0.001).toFixed(4) + ' USDT' : '--';
+
+        if (availEl) {
+            const v = o.side === 'BUY' ? (this._bnBalances.USDT || 0) : (this._bnBalances[base] || 0);
+            availEl.textContent = `${v} ${o.side === 'BUY' ? 'USDT' : base}`;
+        }
+
+        if (hintEl) {
+            const msgs = [];
+            if (o.type === 'LIMIT' && refPrice > 0 && o.price > 0) {
+                const dev = Math.abs(o.price / refPrice - 1);
+                if (dev > 0.05) msgs.push(`限价偏离现价 ${(dev * 100).toFixed(1)}%`);
+            }
+            if (notional > BinanceTestnet.LIMITS.warnNotionalUSDT) {
+                msgs.push(`单笔金额较大（${notional.toFixed(2)} USDT）`);
+            }
+            hintEl.textContent = msgs.length
+                ? '注意：' + msgs.join('；') + '，确认时会要求再次核对。'
+                : `单笔上限 ${BinanceTestnet.LIMITS.maxNotionalUSDT} USDT；限价偏差超 5% 会要求二次核对。`;
+            hintEl.className = 'text-[10px] mt-2 leading-tight ' +
+                (msgs.length ? 'text-amber-600' : 'text-text-tertiary');
+        }
+    },
+
+    async bnPreview() {
+        const o = this.bnCurrentOrder();
+        if (!o.symbol) { this.showToast('请选择交易对'); return; }
+
+        const base = o.symbol.replace('USDT', '');
+        const refPrice = this.state.coinInfo && this.state.coinInfo.current_price
+            ? this.state.coinInfo.current_price : 0;
+
+        let v;
+        try {
+            v = await BinanceTestnet.validateOrder({
+                symbol: o.symbol, side: o.side, type: o.type,
+                price: o.price, quantity: o.quantity, refPrice,
+                availableQuote: this._bnBalances.USDT || 0,
+                availableBase: this._bnBalances[base] || 0,
+            });
+        } catch (e) {
+            this.showToast('校验失败：' + e.message);
+            return;
+        }
+
+        if (v.blocked || !v.ok) {
+            this.showToast(v.errors[0] || '订单校验未通过');
+            this.bnSetMessage(v.errors.join('；'), 'error');
+            return;
+        }
+
+        this._bnPending = Object.assign({}, o, {
+            quantity: v.normalizedQty, notional: v.notional, fee: v.fee,
+            base, warnings: v.warnings, rules: v.rules,
+        });
+        this.bnShowConfirm();
+    },
+
+    bnShowConfirm() {
+        const p = this._bnPending;
+        const body = document.getElementById('bnConfirmBody');
+        const modal = document.getElementById('bnConfirmModal');
+        if (!p || !body || !modal) return;
+
+        const row = (k, v, cls) =>
+            `<div class="flex items-center justify-between text-xs">
+                <span class="text-text-secondary">${this.esc(k)}</span>
+                <span class="tabular-nums font-medium ${cls || ''}">${this.esc(v)}</span>
+            </div>`;
+
+        body.innerHTML = [
+            row('交易对', p.symbol),
+            row('方向', p.side === 'BUY' ? '买入' : '卖出',
+                p.side === 'BUY' ? 'text-rise-green' : 'text-fall-red'),
+            row('类型', p.type === 'LIMIT' ? '限价单 GTC' : '市价单'),
+            p.type === 'LIMIT' ? row('价格', p.price + ' USDT') : '',
+            row('数量', `${p.quantity} ${p.base}`),
+            p.type === 'LIMIT' ? row('名义金额', p.notional.toFixed(2) + ' USDT') : '',
+            row('预估手续费', p.fee.toFixed(4) + ' USDT'),
+            p.warnings && p.warnings.length
+                ? `<div class="rounded-lg bg-amber-50 px-3 py-2 mt-1">
+                     <p class="text-[10px] text-amber-700 leading-tight">${this.esc(p.warnings.join('；'))}</p>
+                   </div>` : '',
+            `<p class="text-[10px] text-text-tertiary mt-1 leading-tight">
+                这是币安<strong>测试网</strong>订单，使用虚拟资金，不影响真实资产。
+             </p>`,
+        ].join('');
+
+        modal.classList.remove('hidden');
+    },
+
+    bnCloseConfirm() {
+        const modal = document.getElementById('bnConfirmModal');
+        if (modal) modal.classList.add('hidden');
+        this._bnPending = null;
+    },
+
+    async bnSubmit() {
+        const p = this._bnPending;
+        if (!p) return;
+        const btn = document.getElementById('bnConfirmBtn');
+        if (btn) { btn.disabled = true; btn.textContent = '提交中…'; }
+
+        try {
+            const res = await BinanceTestnet.placeOrder({
+                symbol: p.symbol, side: p.side, type: p.type,
+                price: p.price, quantity: p.quantity,
+            });
+            this.bnCloseConfirm();
+            this.showToast(`已提交：${p.side === 'BUY' ? '买入' : '卖出'} ${p.quantity} ${p.base}`);
+            await this.bnLoadOrders();
+            await this.bnRefreshAccount();
+        } catch (e) {
+            if (e.unknownState) {
+                this.bnSetMessage('订单状态未知：' + e.message, 'error');
+                this.bnCloseConfirm();
+            } else {
+                this.bnSetMessage('下单失败：' + e.message, 'error');
+            }
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = '确认下单'; }
+        }
+    },
+
+    async bnLoadOrders() {
+        if (!BinanceTestnet.isConnected()) return;
+        const symEl = document.getElementById('bnSymbol');
+        const symbol = symEl ? symEl.value : null;
+        try {
+            this._bnOpenOrders = await BinanceTestnet.getOpenOrders(symbol);
+            this.bnRenderOpenOrders();
+        } catch (e) {
+            this.bnSetMessage('读取委托失败：' + e.message, 'error');
+        }
+        this.bnRenderHistory();
+    },
+
+    bnRenderOpenOrders() {
+        const host = document.getElementById('bnOpenOrders');
+        if (!host) return;
+        const list = this._bnOpenOrders || [];
+        if (!list.length) {
+            host.innerHTML = `<p class="py-4 text-center text-[11px] text-text-tertiary">
+                当前没有挂单。挂单会显示在这里，并可从这一处撤销。</p>`;
+            return;
+        }
+        host.innerHTML = list.map(o => `
+            <div class="py-2.5 flex items-center justify-between gap-3">
+                <div class="min-w-0">
+                    <div class="flex items-center gap-1.5">
+                        <span class="text-[11px] font-medium ${o.side === 'BUY' ? 'text-rise-green' : 'text-fall-red'}">
+                            ${o.side === 'BUY' ? '买入' : '卖出'}</span>
+                        <span class="text-[11px] text-text-primary">${this.esc(o.symbol)}</span>
+                        <span class="text-[10px] text-text-tertiary">${this.esc(o.type)}</span>
+                    </div>
+                    <p class="text-[10px] text-text-tertiary mt-0.5 tabular-nums">
+                        价格 ${this.esc(o.price)}　数量 ${this.esc(o.origQty)}　已成交 ${this.esc(o.executedQty)}
+                    </p>
+                </div>
+                <button class="bn-cancel-btn flex-shrink-0 px-3 py-2 rounded-lg bg-gray-100 text-[11px] text-text-secondary"
+                    data-symbol="${this.esc(o.symbol)}" data-id="${this.esc(o.orderId)}">撤单</button>
+            </div>`).join('');
+
+        host.querySelectorAll('.bn-cancel-btn').forEach(btn => {
+            btn.addEventListener('click', () => this.bnCancel(btn.dataset.symbol, btn.dataset.id));
+        });
+    },
+
+    async bnCancel(symbol, orderId) {
+        try {
+            await BinanceTestnet.cancelOrder(symbol, orderId);
+            this.showToast('已撤单');
+            await this.bnLoadOrders();
+        } catch (e) {
+            this.bnSetMessage('撤单失败：' + e.message, 'error');
+        }
+    },
+
+    async bnCancelAll() {
+        const sel = document.getElementById('bnSymbol');
+        const symbol = sel ? sel.value : null;
+        if (!symbol) return;
+        try {
+            const res = await BinanceTestnet.cancelAllOrders(symbol);
+            this.showToast(`已撤销 ${Array.isArray(res) ? res.length : 0} 笔挂单`);
+            await this.bnLoadOrders();
+        } catch (e) {
+            this.bnSetMessage('批量撤单失败：' + e.message, 'error');
+        }
+    },
+
+    async bnKill() {
+        const sel = document.getElementById('bnSymbol');
+        const symbol = sel ? sel.value : null;
+        const r = await BinanceTestnet.killSwitch(symbol);
+        this.bnSetMessage(
+            r.error ? `已置为停止状态，但撤单失败：${r.error}`
+                : `已紧急停止，撤销 ${r.cancelled} 笔挂单。请到币安 API 管理页撤销该密钥以彻底止血。`,
+            r.error ? 'error' : 'ok');
+        this.renderBinancePanel();
+        await this.bnLoadOrders();
+    },
+
+    bnRenderHistory() {
+        const host = document.getElementById('bnHistory');
+        const countEl = document.getElementById('bnHistoryCount');
+        if (!host) return;
+        const list = BinanceTestnet.getJournal();
+        if (countEl) countEl.textContent = list.length ? `共 ${list.length} 笔` : '';
+
+        if (!list.length) {
+            host.innerHTML = `<p class="py-4 text-center text-[11px] text-text-tertiary">
+                还没有下单记录。每次真实下单都会记在这里，便于查历史。</p>`;
+            return;
+        }
+        host.innerHTML = list.slice(0, 50).map(o => {
+            const t = new Date(o.time);
+            const time = t.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+            return `<div class="py-2.5">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-1.5">
+                        <span class="text-[11px] font-medium ${o.side === 'BUY' ? 'text-rise-green' : 'text-fall-red'}">
+                            ${o.side === 'BUY' ? '买入' : '卖出'}</span>
+                        <span class="text-[11px]">${this.esc(o.symbol)}</span>
+                        <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-text-secondary">${this.esc(o.status)}</span>
+                    </div>
+                    <span class="text-[10px] text-text-tertiary tabular-nums">${this.esc(time)}</span>
+                </div>
+                <p class="text-[10px] text-text-tertiary mt-0.5 tabular-nums">
+                    ${this.esc(o.type)}　价格 ${this.esc(o.price)}　数量 ${this.esc(o.origQty)}　已成交 ${this.esc(o.executedQty)}
+                </p>
+            </div>`;
+        }).join('');
+    },
+
+    /**
+     * 展示「信号强度」与「历史实测命中率」。
+     *
+     * 为什么要把两个数并排：评分是 0~100 的相对强弱，非常容易被当成胜率。
+     * 而多轮回测的结论是这套买卖点在统计上与抛硬币无法区分，
+     * 所以必须把区间和样本量一起摊开，让人看到「强度高」并不等于「赢面大」。
+     */
+    renderSignalBenchmark(totalScore) {
+        const scoreEl = document.getElementById('sigScorePct');
+        const rateEl = document.getElementById('sigHitRate');
+        const sampleEl = document.getElementById('sigHitSample');
+        const noteEl = document.getElementById('sigHitNote');
+        if (scoreEl) {
+            scoreEl.textContent = isFinite(totalScore) ? Math.round(totalScore) + ' / 100' : '--';
+        }
+
+        let st = null;
+        try {
+            st = PredictionTracker.getStats(this.state.currentCoin, this.state.currentTimeframe);
+        } catch (e) { st = null; }
+
+        const n = st ? (st.directionalTotal || 0) : 0;
+        if (!n) {
+            if (rateEl) {
+                rateEl.textContent = '样本不足';
+                rateEl.className = 'text-sm font-bold tabular-nums text-text-tertiary';
+            }
+            if (sampleEl) sampleEl.textContent = '尚无已结算的方向性记录';
+            if (noteEl) noteEl.textContent = '当前币种与周期还没有足够的已结算记录，积累后会自动显示。';
+            return;
+        }
+
+        const p = st.directionalAccuracy / 100;
+        const se = Math.sqrt(p * (1 - p) / n);
+        const lo = Math.max(0, (p - 1.96 * se) * 100);
+        const hi = Math.min(100, (p + 1.96 * se) * 100);
+
+        if (rateEl) {
+            rateEl.textContent = (p * 100).toFixed(1) + '%';
+            // 只有区间完全落在 50% 之上或之下才上色，否则保持中性
+            rateEl.className = 'text-sm font-bold tabular-nums ' +
+                (lo > 50 ? 'text-rise-green' : hi < 50 ? 'text-fall-red' : 'text-text-primary');
+        }
+        if (sampleEl) {
+            sampleEl.textContent = `N=${n}　95% 区间 ${lo.toFixed(1)}%~${hi.toFixed(1)}%`;
+        }
+        if (noteEl) {
+            noteEl.textContent = (lo <= 50 && hi >= 50)
+                ? '评分是信号强度，不等于胜率。当前命中率的 95% 区间跨过 50%，还无法与抛硬币区分。'
+                : '评分是信号强度，不等于胜率。当前命中率区间未跨过 50%，但样本仍有限，需继续观察。';
+        }
+    },
+
     /**
      * 记录本次预测，用于后续统计准确率
      */
@@ -3820,6 +4439,8 @@ const CryptoPulseApp = {
         if (scoreBarEl) {
             scoreBarEl.style.width = `${totalScore}%`;
         }
+
+        this.renderSignalBenchmark(totalScore);
 
         // 五维评分 Mini
         const scoreColorOf = (v) => SignalGenerator.getScoreColor(v)

@@ -8,7 +8,7 @@
     <title>CryptoPulse - 虚拟货币实时分析</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="css/style.css?v=39">
+    <link rel="stylesheet" href="css/style.css?v=43">
     <script>
         tailwind.config = {
             theme: {
@@ -72,14 +72,7 @@
             </div>
         </div>
 
-        <!-- 子标签导航 -->
-        <div class="max-w-4xl mx-auto px-3 flex items-center gap-5 border-t border-border-light">
-            <button data-tab="quote" class="sub-tab py-2.5 text-sm font-medium border-b-2 border-golden text-golden">报价</button>
-            <button data-tab="info" class="sub-tab py-2.5 text-sm font-medium border-b-2 border-transparent text-text-secondary hover:text-text-primary transition-colors">信息</button>
-            <button data-tab="signals" class="sub-tab py-2.5 text-sm font-medium border-b-2 border-transparent text-text-secondary hover:text-text-primary transition-colors">预测</button>
-            <button data-tab="paper" class="sub-tab py-2.5 text-sm font-medium border-b-2 border-transparent text-text-secondary hover:text-text-primary transition-colors">模拟</button>
-            <button data-tab="news" class="sub-tab py-2.5 text-sm font-medium border-b-2 border-transparent text-text-secondary hover:text-text-primary transition-colors">资讯</button>
-        </div>
+        <!-- 子标签导航已移至底部主导航（对齐主流：底部常驻、图标+文字） -->
     </header>
 
     <main class="max-w-4xl mx-auto">
@@ -213,6 +206,26 @@
                             <div id="signalScoreBar" class="h-full rounded-full transition-all duration-700 bg-gradient-to-r from-fall-red via-golden to-rise-green" style="width: 50%"></div>
                         </div>
                     </div>
+                </div>
+                <!-- 信号强度 vs 实测命中率
+                     把「强度评分」和「实际结果」并排放在一起，
+                     避免把 0~100 的评分误读成胜率 -->
+                <div class="mt-3 rounded-xl bg-gray-50 px-3 py-2.5">
+                    <div class="flex items-center justify-between">
+                        <span class="text-[11px] text-text-secondary">综合评分（信号强度）</span>
+                        <span id="sigScorePct" class="text-sm font-bold tabular-nums">--</span>
+                    </div>
+                    <div class="flex items-center justify-between mt-1">
+                        <span class="text-[11px] text-text-secondary">历史同向信号命中率</span>
+                        <span id="sigHitRate" class="text-sm font-bold tabular-nums">--</span>
+                    </div>
+                    <div class="flex items-center justify-between mt-1">
+                        <span class="text-[10px] text-text-tertiary">样本量与 95% 区间</span>
+                        <span id="sigHitSample" class="text-[10px] text-text-tertiary tabular-nums">--</span>
+                    </div>
+                    <p id="sigHitNote" class="text-[10px] text-text-tertiary mt-1.5 leading-tight">
+                        评分是信号强度，不等于胜率。历史命中率来自本机实际记录，随样本累积变化。
+                    </p>
                 </div>
                 <!-- 五维小指标 -->
                 <div class="grid grid-cols-5 gap-1.5 mt-3 pt-3 border-t border-border-light">
@@ -613,8 +626,19 @@
             </section>
         </div>
 
-        <!-- ====== 模拟 Tab ====== -->
+        <!-- ====== 交易 Tab（含模拟盘 / 币安测试网两个模式）====== -->
         <div id="tab-paper" class="tab-panel hidden">
+            <!-- 模式切换：同一处承载「模拟」与「真实下单」，降低认知负担 -->
+            <section class="mt-2 bg-white px-4 pt-3 pb-2">
+                <div id="tradeModeControl" class="flex gap-1 p-1 rounded-lg bg-gray-100">
+                    <button class="trade-mode-btn flex-1 py-2 rounded-md text-xs" data-mode="paper">模拟盘</button>
+                    <button class="trade-mode-btn flex-1 py-2 rounded-md text-xs" data-mode="live">币安测试网</button>
+                </div>
+                <p id="tradeModeHint" class="text-[10px] text-text-tertiary mt-1.5 leading-tight">模拟盘：按历史K线回放信号，不下任何真实订单。</p>
+            </section>
+
+            <!-- ===== 模式一：模拟盘 ===== -->
+            <div id="tradePanePaper">
             <!-- 总资金账户 -->
             <section class="mt-2 bg-white px-4 py-3">
                 <div class="flex items-center justify-between mb-3">
@@ -790,34 +814,218 @@
                     <li>· 「完成轮次」按卖出笔数计算；「同期买入持有」以首次买入价为基准。</li>
                 </ul>
             </section>
+            </div><!-- /tradePanePaper -->
+
+            <!-- ===== 模式二：币安测试网 ===== -->
+            <div id="tradePaneBinance" class="hidden">
+
+                <!-- 安全边界说明：常驻、不可关闭 -->
+                <section class="mt-2 bg-amber-50 border-y border-amber-200 px-4 py-3">
+                    <div class="flex items-start gap-2">
+                        <svg class="w-4 h-4 mt-0.5 flex-shrink-0 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"></path>
+                        </svg>
+                        <div>
+                            <p class="text-[11px] font-semibold text-amber-800">仅支持币安测试网（虚拟资金，不涉及真实资产）</p>
+                            <p class="text-[10px] text-amber-700 mt-1 leading-relaxed">
+                                本应用是纯前端页面，且实测币安未对鉴权请求开放 CORS，所以真实下单必须经过
+                                <strong>本地签名代理</strong>：密钥留在代理进程里，浏览器从不接触。
+                                代理默认只允许指向测试网；本应用<strong>不提供实盘接入</strong>。
+                            </p>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 连接 -->
+                <section class="mt-2 bg-white px-4 py-3">
+                    <div class="flex items-center justify-between mb-2.5">
+                        <h3 class="text-sm font-semibold">连接测试网</h3>
+                        <span id="bnStatus" class="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-text-secondary">未连接</span>
+                    </div>
+
+                    <div id="bnConnectForm">
+                        <label class="block text-[11px] text-text-secondary mb-1">本地签名代理地址</label>
+                        <input id="bnProxyInput" type="text" autocomplete="off" spellcheck="false"
+                            class="w-full px-3 py-2.5 rounded-lg border border-border-light text-xs font-mono mb-2.5"
+                            placeholder="http://127.0.0.1:8787">
+
+                        <div class="flex gap-2">
+                            <button id="bnConnectBtn" class="flex-1 py-2.5 rounded-lg bg-golden text-white text-xs font-semibold">连接代理</button>
+                            <button id="bnClearKeyBtn" class="px-3 py-2.5 rounded-lg bg-gray-100 text-text-secondary text-xs">清除</button>
+                        </div>
+
+                        <div class="mt-2.5 rounded-lg bg-gray-50 px-3 py-2.5">
+                            <p class="text-[10px] text-text-secondary font-medium mb-1">为什么不直接在网页里填密钥？</p>
+                            <p class="text-[10px] text-text-tertiary leading-relaxed">
+                                实测币安未对鉴权请求开放 CORS：<code class="bg-gray-200 px-1 rounded">/api/v3/time</code>
+                                直连返回 200，但一旦带上 <code class="bg-gray-200 px-1 rounded">X-MBX-APIKEY</code>
+                                请求头，浏览器在预检阶段就会拦掉。所以纯网页根本发不出下单请求。
+                            </p>
+                            <p class="text-[10px] text-text-tertiary leading-relaxed mt-1.5">
+                                代理把密钥留在本机进程里，浏览器只知道一个地址、从不接触密钥，
+                                既绕开了 CORS，也比「把密钥贴进网页」安全得多。
+                            </p>
+                            <p class="text-[10px] text-text-tertiary leading-relaxed mt-1.5">
+                                启动方式：<code class="bg-gray-200 px-1 rounded">node server/proxy.js</code>
+                                ，密钥通过环境变量 <code class="bg-gray-200 px-1 rounded">BINANCE_KEY</code> 与
+                                <code class="bg-gray-200 px-1 rounded">BINANCE_SECRET</code> 传入。
+                            </p>
+                        </div>
+                    </div>
+
+                    <div id="bnConnectedBox" class="hidden">
+                        <div class="rounded-lg bg-gray-50 px-3 py-2.5">
+                            <p class="text-[11px] text-text-secondary">账户总值（测试网虚拟资金）</p>
+                            <p id="bnBalanceTotal" class="text-xl font-bold tabular-nums mt-0.5">--</p>
+                            <p id="bnBalanceDetail" class="text-[10px] text-text-tertiary mt-1">--</p>
+                        </div>
+                        <div class="flex gap-2 mt-2.5">
+                            <button id="bnRefreshBtn" class="flex-1 py-2 rounded-lg bg-gray-100 text-text-secondary text-xs">刷新账户</button>
+                            <button id="bnDisconnectBtn" class="flex-1 py-2 rounded-lg bg-gray-100 text-text-secondary text-xs">断开并清除密钥</button>
+                        </div>
+                    </div>
+
+                    <p id="bnMessage" class="text-[10px] text-text-tertiary mt-2 leading-tight">密钥不会进入浏览器：代理进程持有密钥并完成签名，网页只发送普通请求。</p>
+                </section>
+
+                <!-- 下单 -->
+                <section id="bnOrderSection" class="mt-2 bg-white px-4 py-3 hidden">
+                    <h3 class="text-sm font-semibold mb-2.5">下单</h3>
+
+                    <div class="grid grid-cols-2 gap-2 mb-2.5">
+                        <div>
+                            <label class="block text-[11px] text-text-secondary mb-1">交易对</label>
+                            <select id="bnSymbol" class="w-full px-3 py-2.5 rounded-lg border border-border-light text-xs bg-white"></select>
+                        </div>
+                        <div>
+                            <label class="block text-[11px] text-text-secondary mb-1">类型</label>
+                            <select id="bnType" class="w-full px-3 py-2.5 rounded-lg border border-border-light text-xs bg-white">
+                                <option value="LIMIT">限价单（推荐）</option>
+                                <option value="MARKET">市价单</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="flex gap-1 p-1 rounded-lg bg-gray-100 mb-2.5">
+                        <button class="bn-side-btn flex-1 py-2.5 rounded-md text-xs" data-side="BUY">买入</button>
+                        <button class="bn-side-btn flex-1 py-2.5 rounded-md text-xs" data-side="SELL">卖出</button>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2 mb-2.5">
+                        <div>
+                            <label class="block text-[11px] text-text-secondary mb-1">价格</label>
+                            <input id="bnPrice" type="number" step="any" inputmode="decimal"
+                                class="w-full px-3 py-2.5 rounded-lg border border-border-light text-xs tabular-nums" placeholder="0.00">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] text-text-secondary mb-1">数量</label>
+                            <input id="bnQty" type="number" step="any" inputmode="decimal"
+                                class="w-full px-3 py-2.5 rounded-lg border border-border-light text-xs tabular-nums" placeholder="0.00">
+                        </div>
+                    </div>
+
+                    <div class="rounded-lg bg-gray-50 px-3 py-2.5 space-y-1">
+                        <div class="flex items-center justify-between text-[11px]">
+                            <span class="text-text-secondary">预估金额</span>
+                            <span id="bnNotional" class="tabular-nums font-medium">--</span>
+                        </div>
+                        <div class="flex items-center justify-between text-[11px]">
+                            <span class="text-text-secondary">预估手续费（taker 0.1%）</span>
+                            <span id="bnFee" class="tabular-nums font-medium">--</span>
+                        </div>
+                        <div class="flex items-center justify-between text-[11px]">
+                            <span class="text-text-secondary">可用余额</span>
+                            <span id="bnAvail" class="tabular-nums font-medium">--</span>
+                        </div>
+                    </div>
+
+                    <p id="bnRiskHint" class="text-[10px] mt-2 leading-tight text-text-tertiary">--</p>
+
+                    <button id="bnPreviewBtn" class="w-full mt-2.5 py-3 rounded-lg bg-golden text-white text-sm font-semibold">预览订单</button>
+                </section>
+
+                <!-- 当前委托 -->
+                <section id="bnOpenSection" class="mt-2 bg-white px-4 py-3 hidden">
+                    <div class="flex items-center justify-between mb-2">
+                        <h3 class="text-sm font-semibold">当前委托</h3>
+                        <button id="bnCancelAllBtn" class="text-[11px] text-fall-red">全部撤单</button>
+                    </div>
+                    <div id="bnOpenOrders" class="divide-y divide-border-light"></div>
+                </section>
+
+                <!-- 订单历史 -->
+                <section id="bnHistorySection" class="mt-2 bg-white px-4 py-3 hidden">
+                    <div class="flex items-center justify-between mb-2">
+                        <h3 class="text-sm font-semibold">订单记录</h3>
+                        <span id="bnHistoryCount" class="text-[10px] text-text-tertiary"></span>
+                    </div>
+                    <div id="bnHistory" class="divide-y divide-border-light"></div>
+                </section>
+
+                <!-- 紧急停止 -->
+                <section id="bnKillSection" class="mt-2 bg-white px-4 py-3 hidden">
+                    <h3 class="text-sm font-semibold mb-1.5">紧急停止</h3>
+                    <p class="text-[10px] text-text-tertiary mb-2.5 leading-tight">
+                        立即撤销该交易对全部挂单并停止自动下单。这只是前端止血；
+                        <strong>最彻底的做法是去币安 API 管理页撤销这把密钥</strong>。
+                    </p>
+                    <button id="bnKillBtn" class="w-full py-3 rounded-lg bg-fall-red text-white text-sm font-semibold">紧急停止（撤单 + 停用）</button>
+                </section>
+            </div><!-- /tradePaneBinance -->
         </div>
     </main>
 
-    <!-- 底部操作栏（买入/卖出） -->
-    <div class="fixed bottom-0 left-0 right-0 bg-white border-t border-border-light z-40">
-        <div class="max-w-4xl mx-auto px-3 py-2.5 flex items-center gap-2">
-            <button class="p-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 transition-colors" title="更多">
-                <svg class="w-5 h-5 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
-                </svg>
-            </button>
-            <button class="p-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 transition-colors" title="工具">
-                <svg class="w-5 h-5 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
-                </svg>
-            </button>
-            <button id="watchlistToggleBtn" class="p-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 transition-colors" title="自选">
+    <!-- 行情页专用操作条（买入/卖出），位于主导航之上 -->
+    <div id="quoteActionBar" class="fixed left-0 right-0 bg-white border-t border-border-light z-40" style="bottom: var(--nav-h, 58px);">
+        <div class="max-w-4xl mx-auto px-3 py-2 flex items-center gap-2">
+            <button id="watchlistToggleBtn" class="nav-tool" title="自选">
                 <svg class="w-5 h-5 text-text-secondary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"></path>
                 </svg>
             </button>
-            <button class="flex-1 py-3 rounded-xl bg-btn-buy text-white font-semibold text-base hover:opacity-90 active:opacity-80 transition-opacity">
-                买入
+            <button id="quickBuyBtn" class="flex-1 py-3 rounded-xl bg-btn-buy text-white font-semibold text-base active:opacity-80 transition-opacity">买入</button>
+            <button id="quickSellBtn" class="flex-1 py-3 rounded-xl bg-btn-sell text-white font-semibold text-base active:opacity-80 transition-opacity">卖出</button>
+        </div>
+    </div>
+
+    <!-- 底部主导航：对齐主流（4~5 项、图标+文字、常驻不隐藏、不禁用） -->
+    <nav id="bottomNav" class="fixed bottom-0 left-0 right-0 bg-white border-t border-border-light z-50">
+        <div class="max-w-4xl mx-auto grid grid-cols-5 nav-safe">
+            <button class="nav-btn" data-tab="quote">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M3 17l4-6 4 3 4-7 6 5"/></svg>
+                <span>行情</span>
             </button>
-            <button class="flex-1 py-3 rounded-xl bg-btn-sell text-white font-semibold text-base hover:opacity-90 active:opacity-80 transition-opacity">
-                卖出
+            <button class="nav-btn" data-tab="info">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" d="M12 11v5M12 8h.01"/></svg>
+                <span>信息</span>
             </button>
+            <button class="nav-btn" data-tab="signals">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M4 19V5M4 19h16M8 15l3-4 3 2 5-6"/></svg>
+                <span>预测</span>
+            </button>
+            <button class="nav-btn" data-tab="trade">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M7 8h11l-3-3M17 16H6l3 3"/></svg>
+                <span>交易</span>
+            </button>
+            <button class="nav-btn" data-tab="news">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path stroke-linecap="round" stroke-linejoin="round" d="M5 5h11v14H7a2 2 0 01-2-2V5zM16 9h3v8a2 2 0 01-2 2M8 9h5M8 12h5"/></svg>
+                <span>资讯</span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- 订单二次确认（预览 → 确认，双层结构） -->
+    <div id="bnConfirmModal" class="fixed inset-0 bg-black/50 z-[60] hidden">
+        <div class="absolute inset-x-0 bottom-0 bg-white rounded-t-2xl max-w-4xl mx-auto">
+            <div class="px-4 py-3 border-b border-border-light">
+                <h3 class="text-sm font-semibold">确认下单</h3>
+                <p class="text-[10px] text-text-tertiary mt-0.5">币安测试网 · 虚拟资金 · 不会动用真实资产</p>
+            </div>
+            <div id="bnConfirmBody" class="px-4 py-3 space-y-2"></div>
+            <div class="px-4 pb-4 pt-1 flex gap-2">
+                <button id="bnConfirmCancelBtn" class="flex-1 py-3 rounded-xl bg-gray-100 text-text-primary text-sm font-medium">取消</button>
+                <button id="bnConfirmBtn" class="flex-1 py-3 rounded-xl bg-fall-red text-white text-sm font-semibold">确认下单</button>
+            </div>
         </div>
     </div>
 
@@ -991,12 +1199,13 @@
     <!-- 轻提示 -->
     <div id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-24 z-[60] px-4 py-2.5 rounded-xl bg-gray-900/90 text-white text-sm shadow-lg opacity-0 pointer-events-none transition-opacity duration-200 hidden"></div>
 
-    <script src="js/technical.js?v=39"></script>
-    <script src="js/news.js?v=39"></script>
-    <script src="js/signals.js?v=39"></script>
-    <script src="js/prediction.js?v=39"></script>
-    <script src="js/paper.js?v=39"></script>
-    <script src="js/chart.js?v=39"></script>
-    <script src="js/app.js?v=39"></script>
+    <script src="js/technical.js?v=43"></script>
+    <script src="js/news.js?v=43"></script>
+    <script src="js/signals.js?v=43"></script>
+    <script src="js/prediction.js?v=43"></script>
+    <script src="js/paper.js?v=43"></script>
+    <script src="js/binance.js?v=43"></script>
+    <script src="js/chart.js?v=43"></script>
+    <script src="js/app.js?v=43"></script>
 </body>
 </html>

@@ -218,3 +218,112 @@ button {
 body.chart-locked {
     overflow: hidden;
 }
+
+/* ==================== 底部主导航 ====================
+   对齐主流做法（Apple HIG Tab bars）：
+   4~5 项、每项都有文字标签、常驻可见、不隐藏也不禁用。 */
+:root {
+    --nav-h: 58px;
+}
+
+#bottomNav {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.nav-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    padding: 8px 0 7px;
+    min-height: 56px;           /* 触控目标 ≥44pt，参考 WCAG 2.1 SC 2.5.5 (AAA) */
+    background: none;
+    border: 0;
+    color: #707a8a;
+    font-size: 10px;
+    line-height: 1;
+    cursor: pointer;
+    transition: color .15s ease;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.nav-btn svg {
+    width: 22px;
+    height: 22px;
+}
+
+.nav-btn.active {
+    color: #f0b90b;
+}
+
+.nav-btn:active {
+    opacity: .6;
+}
+
+/* 行情页的操作条按钮 */
+.nav-tool {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: #f5f5f5;
+    border: 0;
+    cursor: pointer;
+}
+
+/* ==================== 数字排版 ====================
+   金融数字统一使用等宽数字（tabular numerals），
+   使个位/十位/小数点纵向对齐，比较大小变成形状判断而非逐个读数。
+   参考：欧盟官方数据可视化指南将 tabular numerals 列为数据可视化首选。 */
+.tabular-nums,
+[class*="tabular-nums"] {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+}
+
+/* ==================== 交易模式 / 买卖方向切换 ==================== */
+.trade-mode-btn {
+    background: transparent;
+    color: #707a8a;
+    border: 0;
+    cursor: pointer;
+    transition: all .15s ease;
+}
+
+.trade-mode-btn.active {
+    background: #ffffff;
+    color: #1e2329;
+    font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.bn-side-btn {
+    background: transparent;
+    color: #707a8a;
+    border: 0;
+    cursor: pointer;
+    transition: all .15s ease;
+}
+
+.bn-side-btn.active[data-side="BUY"] {
+    background: #089981;
+    color: #ffffff;
+    font-weight: 600;
+}
+
+.bn-side-btn.active[data-side="SELL"] {
+    background: #f23645;
+    color: #ffffff;
+    font-weight: 600;
+}
+
+/* 危险操作按钮：不用 hover 强调，避免误触 */
+.btn-danger {
+    background: #f23645;
+    color: #fff;
+    border: 0;
+    cursor: pointer;
+}
