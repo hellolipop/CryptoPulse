@@ -634,6 +634,100 @@ function filterReport(sym, tfSec, tfName) {
 }
 
 
+// ==================== 第三部分：用波动率风险溢价给买卖点做闸门 ====================
+// DVOL 由 Deribit 发布，只有 BTC 与 ETH，所以这一节只跑这两个标的，
+// 且区间受 DVOL 起点（2021-03）限制。
+//
+// 前置判断：VRP 已被验证是「波动率预测器」而非方向信号
+// （见 research/vrp.js：VRP→未来30天RV 的样本外 R² 明显提升，
+//   但 VRP→未来收益的回归 t 值约 −1.0，不显著）。
+// 所以这里不再问「VRP 能不能预测涨跌」，只问「它能不能当波动率状态的闸门」。
+
+const VRP_DVOL_DIR = process.env.VRP_DVOL_DIR || null;
+
+function loadDvolDaily(sym) {
+    if (!VRP_DVOL_DIR) return null;
+    const f = path.join(VRP_DVOL_DIR, `dvol_${sym.replace('USDT', '')}.csv`);
+    if (!fs.existsSync(f)) return null;
+    const map = new Map();
+    for (const line of fs.readFileSync(f, 'utf8').split('\n')) {
+        const p = line.split(',');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(p[0])) continue;
+        const iv = parseFloat(p[4]);
+        if (isFinite(iv)) map.set(p[0], iv / 100);
+    }
+    return map;
+}
+
+function vrpGateReport(sym, tfSec) {
+    const dvolMap = loadDvolDaily(sym);
+    if (!dvolMap) return null;
+
+    const candles = resample(loadKlines(sym, '1h'), tfSec);
+    if (candles.length < 3000) return null;
+
+    const ind = buildIndicators(candles);
+    ind.roc = buildROC(candles.map(c => c.c), 3, 50, 0.6);
+    ind.bollingerBands = ind.boll;
+
+    const markers = buildSignalSeries(
+        candles.map(c => ({ time: c.t, open: c.o, high: c.h, low: c.l, close: c.c, volume: c.v })),
+        ind, SENSITIVITY.balanced
+    ).filter(s => s.i < candles.length - 1);
+
+    const BARS_PER_DAY = 86400 / tfSec;
+
+    // 逐根K线对齐 DVOL（同日内前向填充）
+    const ivArr = candles.map(c => {
+        const d = new Date(c.t * 1000).toISOString().slice(0, 10);
+        return dvolMap.has(d) ? dvolMap.get(d) : NaN;
+    });
+    let lastIv = NaN;
+    for (let i = 0; i < ivArr.length; i++) {
+        if (isFinite(ivArr[i])) lastIv = ivArr[i];
+        else ivArr[i] = lastIv;
+    }
+
+    // 逐根K线的 trailing 30 天已实现方差（365 年化），与 DVOL 的 30 天口径对齐
+    const win = BARS_PER_DAY * 30;
+    const rvArr = new Array(candles.length).fill(NaN);
+    for (let i = win; i < candles.length; i++) {
+        let s = 0, n = 0;
+        for (let k = i - win + 1; k <= i; k++) {
+            if (candles[k - 1].c > 0 && candles[k].c > 0) {
+                const r = Math.log(candles[k].c / candles[k - 1].c);
+                s += r * r; n++;
+            }
+        }
+        if (n) rvArr[i] = 365 * (s / n);
+    }
+    const vrpArr = candles.map((_, i) =>
+        (isFinite(ivArr[i]) && isFinite(rvArr[i])) ? ivArr[i] * ivArr[i] - rvArr[i] : NaN);
+
+    const LB = Math.round(BARS_PER_DAY * 180);
+    const ivPct = candles.map((_, i) => rollingPercentile(ivArr, i, LB));
+    const vrpPct = candles.map((_, i) => rollingPercentile(vrpArr, i, LB));
+
+    const filters = {
+        '不过滤（现状）': () => true,
+        '低波动时段': m => isFinite(ivPct[m.i]) && ivPct[m.i] <= 0.33,
+        '高波动时段': m => isFinite(ivPct[m.i]) && ivPct[m.i] >= 0.67,
+        'VRP低(期权便宜)': m => isFinite(vrpPct[m.i]) && vrpPct[m.i] <= 0.33,
+        'VRP高(期权昂贵)': m => isFinite(vrpPct[m.i]) && vrpPct[m.i] >= 0.67,
+    };
+
+    const rows = {};
+    const mid = Math.floor(candles.length / 2);
+    for (const [name, allow] of Object.entries(filters)) {
+        const g = gateSignificance(candles, markers, allow, 300);
+        g.half1 = gateHalf(candles, markers, allow, 0, mid - 1);
+        g.half2 = gateHalf(candles, markers, allow, mid, candles.length - 1);
+        rows[name] = g;
+    }
+    return { rows, span: [candles[0].t, candles[candles.length - 1].t] };
+}
+
+
 function pct(x) { return isFinite(x) ? (x * 100).toFixed(2) + '%' : '--'; }
 function f3(x) { return isFinite(x) ? x.toFixed(3) : '--'; }
 function bp(x) { return isFinite(x) ? (x * 10000).toFixed(1) + 'bp' : '--'; }
@@ -891,6 +985,38 @@ function main() {
                 String(b.n).padStart(7) + '  ' + bp(b.avgRet).padStart(10) + '  ' + pct(b.winRate).padStart(9) + '   ' +
                 (same ? '是' : '否')
             );
+        }
+    }
+
+    // ============ 第三部分：DVOL / VRP 做闸门（仅 BTC/ETH）============
+    if (VRP_DVOL_DIR) {
+        console.log('\n' + '#'.repeat(104));
+        console.log('# 三、用 DVOL / VRP 给买卖点做闸门（Deribit 只发布 BTC/ETH 的 DVOL，故仅这两个标的）');
+        console.log('#    判据同第二部分：每轮往返净收益（扣双边 20bp），分位＝相对「随机保留同样多买卖点」的位置');
+        console.log('#'.repeat(104));
+        console.log('\n标的/周期      闸门规则             往返次数   胜率    单笔净收益    累计净收益   随机对照    分位   前半段    后半段');
+        console.log('-'.repeat(104));
+        for (const [tfSec, tfName] of [[3600, '1小时']]) {
+            for (const sym of syms) {
+                const fr = vrpGateReport(sym, tfSec);
+                if (!fr) continue;
+                for (const [name, g] of Object.entries(fr.rows)) {
+                    const st = g.st;
+                    if (!st.n) continue;
+                    console.log(
+                        `${sym.replace('USDT', '')}/${tfName}`.padEnd(15) +
+                        name.padEnd(22) +
+                        String(st.n).padStart(6) + '  ' +
+                        pct(st.winRate).padStart(7) + '  ' +
+                        bp(st.avgRet).padStart(11) + '  ' +
+                        pct(st.totalRet).padStart(11) + '  ' +
+                        bp(g.randomMean).padStart(9) + '  ' +
+                        pct(g.percentile).padStart(6) + '  ' +
+                        bp(g.half1 ? g.half1.avgRet : NaN).padStart(9) + '  ' +
+                        bp(g.half2 ? g.half2.avgRet : NaN).padStart(9)
+                    );
+                }
+            }
         }
     }
 
