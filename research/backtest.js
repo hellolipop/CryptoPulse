@@ -728,6 +728,258 @@ function vrpGateReport(sym, tfSec) {
 }
 
 
+// ==================== 第四部分：用 VRP 预测波动率，动态调整仓位 ====================
+// 前面已验证：VRP 预测「波动率」有效（样本外 R² 明显提升），预测「方向」无效。
+// 所以这里只做一件事：用预测出来的波动率决定仓位大小，不去猜涨跌。
+//
+// 最大的陷阱：波动率目标化会天然降低平均仓位，
+// 回撤变小、波动变小都可能只是「买得少」，而不是「择时准」。
+// 因此必须加一个「同等平均仓位」的固定仓位对照组；
+// 只有跑赢这个对照，才说明波动率信息本身有价值。
+
+/** 普通最小二乘（这里只需要系数，不报显著性；显著性见 research/vrp.js） */
+function olsPlain(y, cols) {
+    const n = y.length;
+    const k = cols.length + 1;
+    const X = y.map((_, i) => [1, ...cols.map(c => c[i])]);
+    const XtX = Array.from({ length: k }, () => new Array(k).fill(0));
+    for (let i = 0; i < n; i++) for (let a = 0; a < k; a++) for (let b = 0; b < k; b++) XtX[a][b] += X[i][a] * X[i][b];
+
+    // 高斯消元解 (X'X)β = X'y
+    const A = XtX.map((r, i) => [...r, y.reduce((s, v, j) => s + X[j][i] * v, 0)]);
+    for (let c = 0; c < k; c++) {
+        let p = c;
+        for (let r = c + 1; r < k; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+        if (Math.abs(A[p][c]) < 1e-12) return null;
+        [A[c], A[p]] = [A[p], A[c]];
+        const pv = A[c][c];
+        for (let j = c; j <= k; j++) A[c][j] /= pv;
+        for (let r = 0; r < k; r++) {
+            if (r === c) continue;
+            const f = A[r][c];
+            if (f === 0) continue;
+            for (let j = c; j <= k; j++) A[r][j] -= f * A[c][j];
+        }
+    }
+    return { beta: A.map(r => r[k]) };
+}
+
+function rollingMeanAt(arr, i, w) {
+    let s = 0, n = 0;
+    for (let k = Math.max(0, i - w + 1); k <= i; k++) {
+        if (isFinite(arr[k])) { s += arr[k]; n++; }
+    }
+    return n ? s / n : NaN;
+}
+
+/**
+ * 构造逐日面板 + 走查式波动率预测
+ *
+ * 严格无未来函数：
+ *   预测目标 fwd30(s) 用到 s 之后 30 天的数据，
+ *   所以第 t 天的模型只能用 s ≤ t−30 的样本拟合（purge）。
+ */
+function volTargetPanel(sym) {
+    const dvolMap = loadDvolDaily(sym);
+    if (!dvolMap) return null;
+
+    const daily = resample(loadKlines(sym, '1h'), 86400);
+    if (daily.length < 500) return null;
+
+    const ret = daily.map((c, i) => (i ? c.c / daily[i - 1].c - 1 : 0));
+    const rv1 = daily.map((c, i) => {
+        if (!i || daily[i - 1].c <= 0) return NaN;
+        const r = Math.log(daily[i].c / daily[i - 1].c);
+        return 365 * r * r;
+    });
+    const rv7 = daily.map((_, i) => rollingMeanAt(rv1, i, 7));
+    const rv30 = daily.map((_, i) => rollingMeanAt(rv1, i, 30));
+
+    const iv = daily.map(c => {
+        const d = new Date(c.t * 1000).toISOString().slice(0, 10);
+        return dvolMap.has(d) ? dvolMap.get(d) : NaN;
+    });
+    let lastIv = NaN;
+    for (let i = 0; i < iv.length; i++) {
+        if (isFinite(iv[i])) lastIv = iv[i];
+        else iv[i] = lastIv;
+    }
+    const vrp = daily.map((_, i) =>
+        (isFinite(iv[i]) && isFinite(rv30[i])) ? iv[i] * iv[i] - rv30[i] : NaN);
+
+    const fwd30 = daily.map((_, i) => {
+        let s = 0, n = 0;
+        for (let k = i + 1; k <= Math.min(i + 30, daily.length - 1); k++) {
+            if (isFinite(rv1[k])) { s += rv1[k]; n++; }
+        }
+        return n >= 25 ? s / n : NaN;
+    });
+
+    const REFIT = 30, PURGE = 30, MIN_TRAIN = 150;
+    const predHAR = new Array(daily.length).fill(NaN);
+    const predVRP = new Array(daily.length).fill(NaN);
+
+    for (let start = MIN_TRAIN + PURGE; start < daily.length; start += REFIT) {
+        const trainEnd = start - PURGE;
+        const ys = [], c1 = [], c7 = [], c30 = [], cv = [];
+        for (let s = 60; s <= trainEnd; s++) {
+            if (!isFinite(fwd30[s]) || fwd30[s] <= 0) continue;
+            if (!isFinite(rv1[s]) || rv1[s] <= 0) continue;
+            if (!isFinite(rv7[s]) || rv7[s] <= 0) continue;
+            if (!isFinite(rv30[s]) || rv30[s] <= 0) continue;
+            ys.push(Math.log(fwd30[s]));
+            c1.push(Math.log(rv1[s]));
+            c7.push(Math.log(rv7[s]));
+            c30.push(Math.log(rv30[s]));
+            cv.push(isFinite(vrp[s]) ? Math.log(Math.max(vrp[s], 1e-8)) : 0);
+        }
+        if (ys.length < 80) continue;
+
+        const mA = olsPlain(ys, [c1, c7, c30]);
+        const mB = olsPlain(ys, [c1, c7, c30, cv]);
+
+        const apply = (m, t, withVrp) => {
+            if (!m) return NaN;
+            if (!isFinite(rv1[t]) || rv1[t] <= 0) return NaN;
+            if (!isFinite(rv7[t]) || rv7[t] <= 0) return NaN;
+            if (!isFinite(rv30[t]) || rv30[t] <= 0) return NaN;
+            let y = m.beta[0]
+                + m.beta[1] * Math.log(rv1[t])
+                + m.beta[2] * Math.log(rv7[t])
+                + m.beta[3] * Math.log(rv30[t]);
+            if (withVrp && m.beta.length > 4) {
+                y += m.beta[4] * (isFinite(vrp[t]) ? Math.log(Math.max(vrp[t], 1e-8)) : 0);
+            }
+            const v = Math.exp(y);
+            return v > 0 && isFinite(v) ? Math.sqrt(v) : NaN;
+        };
+
+        for (let t = start; t < Math.min(start + REFIT, daily.length); t++) {
+            predHAR[t] = apply(mA, t, false);
+            predVRP[t] = apply(mB, t, true);
+        }
+    }
+
+    return { daily, ret, predHAR, predVRP, iv };
+}
+
+/** 由权益曲线算绩效 */
+function equityMetrics(eq, turnover) {
+    const n = eq.length - 1;
+    if (n < 30) return null;
+    const rets = [];
+    for (let i = 1; i < eq.length; i++) rets.push(eq[i] / eq[i - 1] - 1);
+    const m = mean(rets);
+    const s = stdev(rets);
+    const years = n / 365;
+    const total = eq[eq.length - 1] - 1;
+    const cagr = years > 0 ? Math.pow(eq[eq.length - 1], 1 / years) - 1 : NaN;
+    let peak = eq[0], mdd = 0;
+    for (const v of eq) { if (v > peak) peak = v; const dd = peak > 0 ? (peak - v) / peak : 0; if (dd > mdd) mdd = dd; }
+    return {
+        days: n,
+        totalRet: total,
+        cagr,
+        vol: s * Math.sqrt(365),
+        sharpe: s > 0 ? (m * 365) / (s * Math.sqrt(365)) : NaN,
+        maxDd: mdd,
+        calmar: mdd > 0 ? cagr / mdd : NaN,
+        turnover,
+        avgW: NaN,
+    };
+}
+
+/**
+ * 按目标权重序列跑权益曲线
+ * w 数组即「风险资产占比」，0 表示空仓
+ */
+function runWeightStrategy(ret, w, costRate, band) {
+    let equity = 1, cur = 0, turnover = 0, wSum = 0, wCnt = 0;
+    const eq = [1];
+    for (let i = 0; i < ret.length - 1; i++) {
+        const target = w[i];
+        const needOut = target === 0 && cur > 0;
+        if (needOut || Math.abs(target - cur) >= band) {
+            const dw = Math.abs(target - cur);
+            equity -= dw * equity * costRate;
+            turnover += dw;
+            cur = target;
+        }
+        equity *= (1 + cur * ret[i + 1]);
+        eq.push(equity);
+        wSum += cur; wCnt++;
+    }
+    const m = equityMetrics(eq, turnover);
+    if (m) m.avgW = wCnt ? wSum / wCnt : NaN;
+    return m;
+}
+
+function volTargetReport(sym) {
+    const panel = volTargetPanel(sym);
+    if (!panel) return null;
+    const { daily, ret, predHAR, predVRP } = panel;
+
+    // 只在波动率预测可用之后评估，保证四个变体样本一致
+    let start = 0;
+    while (start < daily.length && !(isFinite(predVRP[start]) && isFinite(predHAR[start]))) start++;
+    if (daily.length - start < 200) return null;
+
+    const candles = daily.slice(start);
+    const ind = buildIndicators(candles);
+    ind.roc = buildROC(candles.map(c => c.c), 3, 50, 0.6);
+    ind.bollingerBands = ind.boll;
+
+    const markers = buildSignalSeries(
+        candles.map(c => ({ time: c.t, open: c.o, high: c.h, low: c.l, close: c.c, volume: c.v })),
+        ind, SENSITIVITY.balanced
+    ).filter(s => s.i < candles.length - 1);
+
+    // 持仓状态数组（买信号进、卖信号出）
+    const sideAt = new Map(markers.map(m => [m.i, m.side]));
+    const inPos = new Array(candles.length).fill(false);
+    let state = false;
+    for (let i = 0; i < candles.length; i++) {
+        const sd = sideAt.get(i);
+        if (sd === 'buy') state = true;
+        else if (sd === 'sell') state = false;
+        inPos[i] = state;
+    }
+
+    const retS = ret.slice(start);
+
+    const weigh = (pred, targetVol) => inPos.map((v, i) => {
+        if (!v) return 0;
+        const pv = pred[start + i];
+        return isFinite(pv) && pv > 0 ? Math.min(1, targetVol / pv) : 0;
+    });
+
+    const COST = 0.001, BAND = 0.10;
+    const rows = [];
+
+    // 基准：满仓 + 买入持有
+    rows.push(['满仓（现状）', null, runWeightStrategy(retS, inPos.map(v => (v ? 1 : 0)), COST, BAND)]);
+    rows.push(['买入持有', null, runWeightStrategy(retS, retS.map(() => 1), COST, 1)]);
+
+    // 对每个目标波动，同时给出「波动率目标」与「同等平均仓位的固定仓位」对照
+    for (const tv of [0.25, 0.40, 0.60]) {
+        for (const [label, pred] of [['HAR', predHAR], ['HAR+VRP', predVRP]]) {
+            const w = weigh(pred, tv);
+            const avg = mean(w.filter((_, i) => inPos[i]));
+            rows.push([`波动率目标·${label}`, tv, runWeightStrategy(retS, w, COST, BAND)]);
+            // 对照：把仓位恒定在这个平均水平，不做任何波动率择时
+            rows.push([`固定仓位对照·${label}`, tv,
+                runWeightStrategy(retS, inPos.map(v => (v ? avg : 0)), COST, BAND)]);
+        }
+    }
+
+    return {
+        span: [candles[0].t, candles[candles.length - 1].t],
+        nMarkers: markers.length,
+        rows,
+    };
+}
+
+
 function pct(x) { return isFinite(x) ? (x * 100).toFixed(2) + '%' : '--'; }
 function f3(x) { return isFinite(x) ? x.toFixed(3) : '--'; }
 function bp(x) { return isFinite(x) ? (x * 10000).toFixed(1) + 'bp' : '--'; }
@@ -1018,6 +1270,53 @@ function main() {
                 }
             }
         }
+    }
+
+    // ============ 第四部分：用预测波动率动态调整仓位 ============
+    if (VRP_DVOL_DIR) {
+        console.log('\n' + '#'.repeat(104));
+        console.log('# 四、用波动率预测动态调整仓位（日线；DVOL 只有 BTC/ETH）');
+        console.log('#    目标波动扫描 25%/40%/60%，无交易带 0.10，成本 10bp/边');
+        console.log('#    关键对照＝「同等平均仓位的固定仓位」：只有跑赢它，才说明波动率择时本身有价值');
+        console.log('#'.repeat(104));
+        for (const sym of syms) {
+            const vr = volTargetReport(sym);
+            if (!vr) continue;
+            console.log(`\n${sym}  区间 ${fmtDate(vr.span[0])} ~ ${fmtDate(vr.span[1])}　信号数 ${vr.nMarkers}`);
+            console.log('  变体                      目标   天数    总收益     年化    年化波动   Sharpe   最大回撤   Calmar   平均仓位   换手');
+            for (const [name, tv, m] of vr.rows) {
+                if (!m) continue;
+                console.log(
+                    '  ' + name.padEnd(24) +
+                    (tv ? pct(tv, 0) : '--').padStart(5) + '  ' +
+                    String(m.days).padStart(5) + '  ' +
+                    pct(m.totalRet).padStart(9) + '  ' +
+                    pct(m.cagr).padStart(8) + '  ' +
+                    pct(m.vol).padStart(9) + '  ' +
+                    f3(m.sharpe).padStart(7) + '  ' +
+                    pct(m.maxDd).padStart(9) + '  ' +
+                    f3(m.calmar).padStart(7) + '  ' +
+                    pct(m.avgW).padStart(8) + '  ' +
+                    m.turnover.toFixed(1).padStart(6)
+                );
+            }
+            // 关键对比：波动率目标 vs 同平均仓位的固定仓位
+            console.log('  —— 关键对比：Sharpe 之差（波动率目标 − 固定仓位对照）——');
+            for (const tv of [0.25, 0.40, 0.60]) {
+                const parts = [];
+                for (const label of ['HAR', 'HAR+VRP']) {
+                    const vt = vr.rows.find(r => r[0] === `波动率目标·${label}` && r[1] === tv);
+                    const fx = vr.rows.find(r => r[0] === `固定仓位对照·${label}` && r[1] === tv);
+                    if (vt && fx && vt[2] && fx[2]) {
+                        const d = vt[2].sharpe - fx[2].sharpe;
+                        parts.push(`${label} ${d >= 0 ? '+' : ''}${d.toFixed(3)}`);
+                    }
+                }
+                console.log(`    目标波动 ${pct(tv, 0)}：${parts.join('　')}`);
+            }
+        }
+        console.log('\n  读法：只有当「波动率目标」明显优于「固定仓位」时，才说明波动率择时本身有价值；');
+        console.log('        否则改善只是来自「买得少」。两者都优于满仓时，说明降杠杆就够了。');
     }
 
     for (const [tfSec, tfName] of tfs) {
