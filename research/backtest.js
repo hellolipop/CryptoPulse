@@ -494,6 +494,146 @@ function appMarkerReport(sym, tfSec, tfName) {
 }
 
 
+// ==================== 方案二：买卖点当触发器，独立因子当闸门 ====================
+// 思路：买卖点自己没有优势（实测命中率约 48%、扣费为负），那就不让它独自决定是否开仓，
+// 只在「独立因子显示拥挤度合理」时才允许成交。
+//
+// 关键风险：筛出子集后成绩变好，可能只是因为样本变少（幸存者式的错觉）。
+// 所以每个闸门都必须和一个「保留同样多买卖点、但随机挑选」的对照比。
+// 打不过随机子集的闸门，就没有信息量，不值得上线。
+
+const TRIP_COST = 0.002; // 双边 20bp
+
+/** 按闸门规则把买卖点走一遍，返回每轮往返的净收益 */
+function simulateTrips(candles, markers, allow) {
+    const trips = [];
+    let entry = null;
+    for (const m of markers) {
+        if (!allow(m)) continue;
+        const px = candles[m.i].c;
+        if (!px) continue;
+        if (m.side === 'buy') {
+            if (entry !== null) continue;   // 已持仓，忽略重复买入
+            entry = { i: m.i, px };
+        } else {
+            if (entry === null) continue;   // 空仓，忽略卖出
+            trips.push({ i: entry.i, j: m.i, ret: px / entry.px - 1 - TRIP_COST });
+            entry = null;
+        }
+    }
+    return trips;
+}
+
+function tripStats(trips) {
+    if (!trips.length) return { n: 0, winRate: NaN, avgRet: NaN, totalRet: NaN };
+    const rets = trips.map(t => t.ret);
+    const wins = rets.filter(r => r > 0).length;
+    let total = 1;
+    for (const r of rets) total *= (1 + r);   // 按复利累计
+    return { n: trips.length, winRate: wins / rets.length, avgRet: mean(rets), totalRet: total - 1 };
+}
+
+/**
+ * 闸门筛选能力的检验
+ *
+ * 返回：真实闸门保留 k 个买卖点时的成绩，在「随机保留 k 个」的成绩分布中的分位。
+ * 分位若只有 60% 上下，说明这个闸门和随便挑没区别。
+ */
+function gateSignificance(candles, markers, allow, iterations) {
+    const trips = simulateTrips(candles, markers, allow);
+    const st = tripStats(trips);
+    if (!st.n) return { st, percentile: NaN, randomMean: NaN, iterations: 0 };
+
+    // 真实闸门「放行」的买卖点个数（用于确定随机对照的规模）
+    const passed = markers.filter(allow).length;
+    const rand = [];
+    const n = markers.length;
+    for (let it = 0; it < iterations; it++) {
+        const idx = [];
+        for (let i = 0; i < n; i++) idx.push(i);
+        for (let i = n - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            const tmp = idx[i]; idx[i] = idx[j]; idx[j] = tmp;
+        }
+        const keep = new Set(idx.slice(0, passed));
+        const sub = markers.filter((_, k) => keep.has(k));
+        const rs = tripStats(simulateTrips(candles, sub, () => true));
+        if (rs.n) rand.push(rs.avgRet);
+    }
+    if (!rand.length) return { st, percentile: NaN, randomMean: NaN, iterations: 0 };
+    const below = rand.filter(r => r < st.avgRet).length;
+    return {
+        st,
+        percentile: below / rand.length,
+        randomMean: mean(rand),
+        iterations: rand.length,
+    };
+}
+
+function gateHalf(candles, markers, allow, iMin, iMax) {
+    const sub = markers.filter(m => m.i >= iMin && m.i <= iMax);
+    return tripStats(simulateTrips(candles, sub, allow));
+}
+
+function filterReport(sym, tfSec, tfName) {
+    const candles = resample(loadKlines(sym, '1h'), tfSec);
+    if (candles.length < 500) return null;
+    const ind = buildIndicators(candles);
+    const closes = candles.map(c => c.c);
+    ind.roc = buildROC(closes, 3, 50, 0.6);
+    ind.bollingerBands = ind.boll;
+
+    const fund = alignAsOf(loadFunding(sym), candles).map(x => (x ? x.rate : NaN));
+    const prem = alignAsOf(loadPremium(sym), candles).map(x => (x ? x.c : NaN));
+    const BARS_PER_DAY = 86400 / tfSec;
+    const LB = Math.max(60, Math.round(BARS_PER_DAY * 90));
+    const fundPct = candles.map((_, i) => rollingPercentile(fund, i, LB));
+    const premPct = candles.map((_, i) => rollingPercentile(prem, i, LB));
+    const ma200 = ind.ma200;
+
+    const markers = buildSignalSeries(
+        candles.map(c => ({ time: c.t, open: c.o, high: c.h, low: c.l, close: c.c, volume: c.v })),
+        ind, SENSITIVITY.balanced
+    ).filter(s => s.i < candles.length - 1);
+
+    // 闸门规则：全部事先定好，不做参数扫描（扫描本身会制造「发现」）
+    const filters = {
+        '不过滤（现状）': () => true,
+        '费率不拥挤': m => m.side === 'buy'
+            ? (isFinite(fundPct[m.i]) && fundPct[m.i] <= 0.5)
+            : (isFinite(fundPct[m.i]) && fundPct[m.i] >= 0.5),
+        '费率极值': m => m.side === 'buy'
+            ? (isFinite(fundPct[m.i]) && fundPct[m.i] <= 0.33)
+            : (isFinite(fundPct[m.i]) && fundPct[m.i] >= 0.67),
+        '费率强拥挤': m => m.side === 'buy'
+            ? (isFinite(fundPct[m.i]) && fundPct[m.i] <= 0.2)
+            : (isFinite(fundPct[m.i]) && fundPct[m.i] >= 0.8),
+        '基差风险': m => m.side === 'buy'
+            ? (isFinite(premPct[m.i]) && premPct[m.i] <= 0.5)
+            : (isFinite(premPct[m.i]) && premPct[m.i] >= 0.5),
+        '费率+基差双确认': m => m.side === 'buy'
+            ? (isFinite(fundPct[m.i]) && fundPct[m.i] <= 0.33 && isFinite(premPct[m.i]) && premPct[m.i] <= 0.5)
+            : (isFinite(fundPct[m.i]) && fundPct[m.i] >= 0.67 && isFinite(premPct[m.i]) && premPct[m.i] >= 0.5),
+        '顺势环境': m => m.side === 'buy'
+            ? (ma200[m.i] == null || closes[m.i] > ma200[m.i])
+            : (ma200[m.i] == null || closes[m.i] < ma200[m.i]),
+    };
+
+    const rows = {};
+    const mid = Math.floor(candles.length / 2);
+    for (const [name, allow] of Object.entries(filters)) {
+        const g = gateSignificance(candles, markers, allow, 300);
+        // 小时级样本最多，额外做前后半段对比，检验闸门是不是只在某一段有效
+        if (tfSec === 3600) {
+            g.half1 = gateHalf(candles, markers, allow, 0, mid - 1);
+            g.half2 = gateHalf(candles, markers, allow, mid, candles.length - 1);
+        }
+        rows[name] = g;
+    }
+    return { markers, rows, tfName, sym };
+}
+
+
 function pct(x) { return isFinite(x) ? (x * 100).toFixed(2) + '%' : '--'; }
 function f3(x) { return isFinite(x) ? x.toFixed(3) : '--'; }
 function bp(x) { return isFinite(x) ? (x * 10000).toFixed(1) + 'bp' : '--'; }
@@ -703,6 +843,54 @@ function main() {
                     pct(d.usefulShare).padStart(6)
                 );
             }
+        }
+    }
+
+    // ============ 第二部分：买卖点做触发器 + 独立因子做闸门 ============
+    console.log('\n' + '#'.repeat(104));
+    console.log('# 二、方案二：买卖点当触发器，独立因子当闸门（只在因子允许时才成交）');
+    console.log('#    判据＝每轮往返净收益（已扣双边 20bp）；分位＝真实闸门落在「随机保留同样多买卖点」分布中的位置');
+    console.log('#    分位接近 50% 说明该闸门与随便挑没区别；要显著才有信息量');
+    console.log('#'.repeat(104));
+    console.log('\n标的/周期      闸门规则             往返次数   胜率    单笔净收益    累计净收益   随机对照    分位');
+    console.log('-'.repeat(104));
+    for (const [tfSec, tfName] of tfs) {
+        for (const sym of syms) {
+            const fr = filterReport(sym, tfSec, tfName);
+            if (!fr) continue;
+            for (const [name, g] of Object.entries(fr.rows)) {
+                const st = g.st;
+                if (!st.n) continue;
+                console.log(
+                    `${sym.replace('USDT', '')}/${tfName}`.padEnd(15) +
+                    name.padEnd(22) +
+                    String(st.n).padStart(6) + '  ' +
+                    pct(st.winRate).padStart(7) + '  ' +
+                    bp(st.avgRet).padStart(11) + '  ' +
+                    pct(st.totalRet).padStart(11) + '  ' +
+                    bp(g.randomMean).padStart(9) + '  ' +
+                    pct(g.percentile).padStart(6)
+                );
+            }
+        }
+    }
+
+    console.log('\n  —— 小时级前后半段对比（闸门是不是只在某一段行情里有效）——');
+    console.log('  标的     闸门规则              前半段n  前半段单笔   前半段胜率   后半段n  后半段单笔   后半段胜率   同向');
+    console.log('  ' + '-'.repeat(102));
+    for (const sym of syms) {
+        const fr = filterReport(sym, 3600, '1小时');
+        if (!fr) continue;
+        for (const [name, g] of Object.entries(fr.rows)) {
+            const a = g.half1, b = g.half2;
+            if (!a || !b || !a.n || !b.n) continue;
+            const same = (a.avgRet > 0) === (b.avgRet > 0);
+            console.log(
+                '  ' + sym.replace('USDT', '').padEnd(8) + name.padEnd(22) +
+                String(a.n).padStart(6) + '  ' + bp(a.avgRet).padStart(10) + '  ' + pct(a.winRate).padStart(9) + '  ' +
+                String(b.n).padStart(7) + '  ' + bp(b.avgRet).padStart(10) + '  ' + pct(b.winRate).padStart(9) + '   ' +
+                (same ? '是' : '否')
+            );
         }
     }
 

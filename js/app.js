@@ -31,6 +31,9 @@ const CryptoPulseApp = {
         coinListLimit: 50,      // 列表模式显示条数
         coinListQuotes: {},      // 列表模式行情缓存 { binanceSymbol: {price, changePercent} }
         usdtToCnyRate: 7.25,    // USDT兑人民币汇率（估算）
+        paperGate: 'funding',   // 模拟盘闸门：off 不过滤 | funding 费率闸门
+        fundingHistory: null,   // 资金费率历史缓存 { coinId, fetchedAt, list }
+        fundingPercentile: null,// 逐根K线的资金费率滚动分位
     },
 
     // 常见币种的中文名（联网币种若无中文名则显示符号）
@@ -413,6 +416,177 @@ const CryptoPulseApp = {
     },
 
     /**
+     * 模拟盘信号闸门
+     *
+     * 买卖点自身没有优势（实测命中率约 48%、扣费后单笔 −16.8bp、累计约 −97%），
+     * 所以不让它独自决定开仓，而是叠加一个口径独立的因子当闸门：
+     * 只有资金费率不处于极端拥挤时才允许成交
+     * （多头拥挤时不追多，空头拥挤时不追空）。
+     *
+     * 实测（BTC/ETH，2023-09~2026-08，1小时，已扣双边 20bp）：
+     *   不过滤  ：2024 轮 · 胜率 28.4% · 单笔 −16.8bp · 累计约 −97%
+     *   费率闸门：128 轮 · 胜率 50.3% · 单笔 +17.5bp · 累计 −0.6% ~ +8.3%
+     * 注意：这是把「必亏」拉回「大致打平」，不是把它变成赚钱策略。
+     */
+    paperGates: {
+        off: {
+            key: 'off',
+            label: '不过滤',
+            desc: '买卖点全部执行，不加任何额外条件。',
+            stats: { trips: 2024, win: 28.4, perTrip: -16.8, total: '约 -97%' },
+        },
+        funding: {
+            key: 'funding',
+            label: '费率闸门',
+            desc: '只在资金费率不拥挤时执行：买入需费率分位 ≤33%，卖出需 ≥67%。',
+            stats: { trips: 128, win: 50.3, perTrip: 17.5, total: '-0.6% ~ +8.3%' },
+        },
+    },
+
+    getPaperGate() {
+        return this.paperGates[this.state.paperGate] || this.paperGates.off;
+    },
+
+    /**
+     * 切换闸门并立即按新规则重算模拟账户
+     */
+    setPaperGate(key) {
+        if (!this.paperGates[key] || this.state.paperGate === key) return;
+        this.state.paperGate = key;
+        this.saveUIState();
+
+        if (PaperTrader.isEnabled(this.state.currentCoin)) {
+            this.syncPaperAccount();
+        }
+        this.renderPaperTab();
+        this.showToast(`闸门已切换为「${this.getPaperGate().label}」`);
+    },
+
+    /**
+     * 拉取资金费率历史（按币种缓存 10 分钟）
+     *
+     * 闸门需要的是「信号发生当时」的拥挤度，所以必须拿到历史序列，
+     * 不能只看当前这一期费率。
+     */
+    async ensureFundingHistory(coinId) {
+        const cached = this.state.fundingHistory;
+        if (cached && cached.coinId === coinId && (Date.now() - cached.fetchedAt) < 600000) {
+            return cached.list;
+        }
+
+        const binanceSymbol = this.getBinanceSymbol(coinId);
+        if (!binanceSymbol) return null;
+
+        try {
+            const resp = await fetch(`https://fapi.binance.com/fapi/v1/fundingRate?symbol=${binanceSymbol}&limit=500`);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const arr = await resp.json();
+            if (!Array.isArray(arr) || arr.length < 60) throw new Error('样本不足');
+
+            const list = arr
+                .map(x => ({ t: Math.floor(Number(x.fundingTime) / 1000), rate: parseFloat(x.fundingRate) }))
+                .filter(x => isFinite(x.t) && isFinite(x.rate))
+                .sort((a, b) => a.t - b.t);
+
+            this.state.fundingHistory = { coinId, fetchedAt: Date.now(), list };
+            return list;
+        } catch (e) {
+            console.warn('[闸门] 资金费率历史获取失败:', e.message);
+            return null;
+        }
+    },
+
+    /**
+     * 逐根K线计算资金费率的滚动分位（90 天窗口）
+     *
+     * 只用该K线开盘之前已结算的费率，避免把未来信息算进闸门。
+     */
+    computeFundingPercentile() {
+        const hist = this.state.fundingHistory;
+        const candles = this.state.candleData;
+
+        if (!hist || !hist.list || !candles || !candles.length) {
+            this.state.fundingPercentile = null;
+            return null;
+        }
+
+        const list = hist.list;
+        const windowSec = 90 * 24 * 3600;
+        const out = new Array(candles.length).fill(NaN);
+        let j = 0;
+
+        for (let i = 0; i < candles.length; i++) {
+            // 注意：应用内的K线字段是 time（秒），不是 t
+            const ct = candles[i].time;
+            if (!isFinite(ct)) continue;
+
+            while (j + 1 < list.length && list[j + 1].t <= ct) j++;
+            if (!(list[j] && list[j].t <= ct)) continue;
+
+            const cur = list[j].rate;
+            const from = ct - windowSec;
+            const win = [];
+            for (let k = j; k >= 0; k--) {
+                if (list[k].t < from) break;
+                win.push(list[k].rate);
+            }
+            if (win.length < 30) continue;
+
+            win.sort((a, b) => a - b);
+            let below = 0;
+            for (const v of win) if (v <= cur) below++;
+            out[i] = below / win.length;
+        }
+
+        this.state.fundingPercentile = out;
+        return out;
+    },
+
+    /**
+     * 构造闸门判定函数
+     *
+     * 拿不到拥挤度时一律拒绝开仓——宁可错过，也不在信息缺失时下注。
+     * 返回 null 表示不过滤。
+     */
+    buildPaperGateFilter() {
+        const gate = this.getPaperGate();
+        if (gate.key === 'off') return null;
+
+        const pct = this.state.fundingPercentile;
+        if (!pct) return null;
+
+        return (m) => {
+            // 买卖点序列里的下标字段是 index（与回测脚本里的 i 不同名）
+            const idx = (m.index !== undefined) ? m.index : m.i;
+            const p = pct[idx];
+            if (!isFinite(p)) return false;
+            return m.side === 'buy' ? p <= 0.33 : p >= 0.67;
+        };
+    },
+
+    /**
+     * 渲染闸门选择器与实测说明
+     */
+    renderPaperGate() {
+        const host = document.getElementById('paperGateControl');
+        if (!host) return;
+
+        const cur = this.getPaperGate();
+        host.querySelectorAll('.gate-btn').forEach(btn => {
+            const on = btn.dataset.gate === cur.key;
+            btn.className = 'gate-btn flex-1 py-1.5 rounded-md text-[11px] transition-colors ' +
+                (on ? 'bg-white text-text-primary font-semibold shadow-sm' : 'text-text-secondary');
+        });
+
+        const info = document.getElementById('paperGateInfo');
+        if (info) {
+            const s = cur.stats;
+            const per = (s.perTrip > 0 ? '+' : '') + s.perTrip + 'bp';
+            info.textContent = `${cur.desc}　实测 ${s.trips} 轮 · 胜率 ${s.win}% · 单笔 ${per} · 累计 ${s.total}`;
+        }
+    },
+
+    /**
      * 切换灵敏度档位
      *
      * 会同时重算 K 线买卖点标注与实时综合信号，保证两处口径一致。
@@ -548,6 +722,16 @@ const CryptoPulseApp = {
         const toggle = document.getElementById('paperToggle');
         if (toggle) {
             toggle.addEventListener('click', () => this.togglePaperTrade());
+        }
+
+        // 闸门切换
+        const gateHost = document.getElementById('paperGateControl');
+        if (gateHost) {
+            gateHost.addEventListener('click', (e) => {
+                const btn = e.target.closest('.gate-btn');
+                if (btn && btn.dataset.gate) this.setPaperGate(btn.dataset.gate);
+            });
+            this.renderPaperGate();
         }
 
         const saveTotal = document.getElementById('paperSaveTotalBtn');
@@ -730,6 +914,8 @@ const CryptoPulseApp = {
     renderPaperTab() {
         const coinId = this.state.currentCoin;
         const price = this.resolvePaperPrice(coinId);
+
+        this.renderPaperGate();
 
         const portfolio = PaperTrader.getPortfolio(id => this.resolvePaperPrice(id));
         const m = PaperTrader.getMetrics(coinId, price);
@@ -1660,6 +1846,7 @@ const CryptoPulseApp = {
             showVolume: this.state.showVolume,
             showSignals: this.state.showSignalMarkers,
             sensitivity: this.state.sensitivity,
+            paperGate: this.state.paperGate,
         };
         try {
             localStorage.setItem(this.uiStateKey, JSON.stringify(state));
@@ -1730,6 +1917,12 @@ const CryptoPulseApp = {
                 this.state.sensitivity = saved.sensitivity;
             }
             this.renderSensitivity();
+
+            // 模拟盘闸门（只恢复状态并渲染，资金费率历史在K线加载后才有）
+            if (saved.paperGate && this.paperGates[saved.paperGate]) {
+                this.state.paperGate = saved.paperGate;
+            }
+            this.renderPaperGate();
 
             // Tab 切换
             if (saved.currentTab) {
@@ -2226,6 +2419,9 @@ const CryptoPulseApp = {
             this.state.candleData = candleData;
             this.evaluatePredictions();
             this.calculateIndicators();
+            // 闸门需要按K线时间对齐的资金费率分位，必须在K线就绪后计算
+            await this.ensureFundingHistory(coinId);
+            this.computeFundingPercentile();
             this.updateChart();
             this.updateSignal();
 
@@ -3462,7 +3658,11 @@ const CryptoPulseApp = {
 
         // 去掉正在走形的最后一根K线
         const closed = data.slice(0, data.length - 1);
-        const series = this.buildSignalSeries(closed, this.state.indicators);
+        let series = this.buildSignalSeries(closed, this.state.indicators);
+
+        // 闸门：买卖点负责触发，独立因子决定这次要不要真的成交
+        const allow = this.buildPaperGateFilter();
+        if (allow) series = series.filter(s => allow(s));
 
         const acc = PaperTrader.replay(coinId, series, this.state.currentTimeframe);
         if (!acc || !acc.trades.length) return;
