@@ -3,3 +3,8 @@ node_modules/
 .vscode/
 .idea/
 *.log
+
+# 回测数据（由 research/fetch-data.sh 生成，不入库）
+research/data/
+research/*.zip
+research/*.csv
