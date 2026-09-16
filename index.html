@@ -8,7 +8,7 @@
     <title>CryptoPulse - 虚拟货币实时分析</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="css/style.css?v=34">
+    <link rel="stylesheet" href="css/style.css?v=35">
     <script>
         tailwind.config = {
             theme: {
@@ -668,8 +668,9 @@
                             <span id="paperStatusTag" class="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-text-secondary">未开启</span>
                         </div>
                         <p class="text-[11px] text-text-tertiary mt-1 leading-relaxed">
-                            每个币种独立运行：只有打开本币种的开关，才会按它自己的信号自动成交。
+                            各币种独立运行，成交依据是K线图上标注的买卖点，与图示完全一致。
                         </p>
+                        <p id="paperStrategyTf" class="text-[10px] text-text-tertiary mt-1">--</p>
                     </div>
                     <button id="paperToggle" role="switch" aria-checked="false"
                         class="relative flex-shrink-0 w-12 h-7 mt-0.5 rounded-full bg-gray-200 transition-colors">
@@ -766,8 +767,10 @@
                 <ul class="text-[11px] text-text-tertiary leading-relaxed space-y-1">
                     <li>· 总资金是整个模拟盘的盘子，各币种从里面分配配额，未配额的部分不参与交易。</li>
                     <li>· 每个币种有独立开关与独立账户，切换币种看到的是该币种自己的数据。</li>
-                    <li>· 修改本币配额会重置该币种账户，因为本金变了收益率不再可比。</li>
-                    <li>· 仅在信号方向发生变化时成交，同一方向的信号不会重复下单。</li>
+                    <li>· 成交依据是K线图上标注的买卖点，以该根K线收盘价成交，所见即所做。</li>
+                    <li>· 只回放开启模拟之后的买卖点，开启前的历史不补记；只认已收盘的K线。</li>
+                    <li>· 策略周期取开启时选中的周期，之后不随看盘切换的周期变化。</li>
+                    <li>· 修改本币配额会用新的本金重算该币种账户。</li>
                     <li>· 买入用本币账户全部可用资金，卖出清空全部持仓；不计手续费与滑点。</li>
                     <li>· 「完成轮次」按卖出笔数计算；「同期买入持有」以首次买入价为基准。</li>
                 </ul>
@@ -973,12 +976,12 @@
     <!-- 轻提示 -->
     <div id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-24 z-[60] px-4 py-2.5 rounded-xl bg-gray-900/90 text-white text-sm shadow-lg opacity-0 pointer-events-none transition-opacity duration-200 hidden"></div>
 
-    <script src="js/technical.js?v=34"></script>
-    <script src="js/news.js?v=34"></script>
-    <script src="js/signals.js?v=34"></script>
-    <script src="js/prediction.js?v=34"></script>
-    <script src="js/paper.js?v=34"></script>
-    <script src="js/chart.js?v=34"></script>
-    <script src="js/app.js?v=34"></script>
+    <script src="js/technical.js?v=35"></script>
+    <script src="js/news.js?v=35"></script>
+    <script src="js/signals.js?v=35"></script>
+    <script src="js/prediction.js?v=35"></script>
+    <script src="js/paper.js?v=35"></script>
+    <script src="js/chart.js?v=35"></script>
+    <script src="js/app.js?v=35"></script>
 </body>
 </html>

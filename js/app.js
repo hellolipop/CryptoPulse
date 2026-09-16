@@ -569,7 +569,7 @@ const CryptoPulseApp = {
         const coin = this.getCoinInfo(coinId);
         const on = !PaperTrader.isEnabled(coinId);
 
-        const res = PaperTrader.setEnabled(coinId, on);
+        const res = PaperTrader.setEnabled(coinId, on, this.state.currentTimeframe);
         if (!res.ok) {
             this.showToast(res.message);
             const input = document.getElementById('paperAllocInput');
@@ -578,15 +578,14 @@ const CryptoPulseApp = {
         }
 
         if (on) {
-            // 只对「开启之后发生的方向变化」下单，
-            // 不对开启前已经存在的信号补一笔成交
-            const sig = this.state.signal;
-            PaperTrader.syncSide(coinId, sig ? sig.type : null);
+            // 开启后立刻按历史买卖点回放，把已经出现过的信号补上
+            this.syncPaperAccount();
         }
 
         this.renderPaperTab();
+        const tfLabel = this.getTimeframeConfig(this.state.currentTimeframe).label;
         this.showToast(on
-            ? `${coin.symbol} 已开始独立模拟，下次方向变化时自动成交`
+            ? `${coin.symbol} 已开始模拟，按 ${tfLabel} 的买卖点回放`
             : `${coin.symbol} 已停止模拟`);
     },
 
@@ -770,6 +769,14 @@ const CryptoPulseApp = {
                 tag.className = 'text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-text-secondary';
             }
         }
+
+        // 策略周期：开启时锁定，此后成交都按这个周期的买卖点回放，
+        // 不会因为看盘时切换周期而改写已有记录
+        const stratTf = PaperTrader.getAccount(coinId).strategyTimeframe;
+        const hasTf = stratTf !== undefined && stratTf !== null;
+        this.setText('paperStrategyTf', (enabled && hasTf)
+            ? `策略周期 ${this.getTimeframeConfig(stratTf).label}（开启时锁定）`
+            : '策略周期在开启模拟时锁定为当时选中的周期');
 
         // 开关外观
         const toggle = document.getElementById('paperToggle');
@@ -2492,29 +2499,33 @@ const CryptoPulseApp = {
     },
 
     /**
-     * 生成买卖点标记
+     * 计算K线上的买卖点序列
      *
-     * 逐根K线用已算好的指标序列合成综合分，再按与实时信号一致的阈值
-     * 归类为 强烈买入(≥70) / 买入(≥58) / 强烈卖出(≤30) / 卖出(≤42)，
-     * 其余一律不标注。只在多空方向真正切换时落一个点。
+     * 逐根K线用已算好的指标序列合成综合分，再按阈值归类为
+     * 强烈买入 / 买入 / 强烈卖出 / 卖出，其余一律不产生信号。
+     * 只在多空方向真正切换时落一个点。
      *
      * 权重与阈值由灵敏度档位提供，档位越低越偏重趋势项（滞后大但稳），
      * 档位越高越偏重领先项（滞后小但假信号多）。
      * 均衡档实测（BTC 200根K线）日线中位滞后 4→2 根、4小时 5→3 根，
      * 同时后续5根的方向命中率不降反升。
      *
+     * 这里是图上买卖点标注与模拟交易的共同数据源：
+     * 两边都从这一个序列取值，保证「图上看到的」和「模拟做出来的」永远一致。
+     *
      * @param {Array} data - K线数据
      * @param {Object} ind - 技术指标
-     * @returns {Array} 标记点数组
+     * @param {Object} [preset] - 灵敏度档位，缺省取当前档位
+     * @returns {Array} [{ index, time, price, label, side, strong, score }]
      */
-    generateSignalMarkers(data, ind) {
-        const markers = [];
-        if (!data || data.length < 30 || !ind) return markers;
+    buildSignalSeries(data, ind, preset) {
+        const series = [];
+        if (!data || data.length < 30 || !ind) return series;
 
-        const preset = this.getSensitivity();
-        const W = preset.weights;
-        const TH = preset.thresholds;
-        const MIN_GAP = preset.minGap;
+        const p = preset || this.getSensitivity();
+        const W = p.weights;
+        const TH = p.thresholds;
+        const MIN_GAP = p.minGap;
 
         const len = data.length;
         const closes = data.map(d => d.close);
@@ -2631,24 +2642,38 @@ const CryptoPulseApp = {
 
             prevSide = side;
 
-            const isBuy = side === 'buy';
-            const isStrong = label.indexOf('强烈') === 0;
-
-            markers.push({
+            series.push({
+                index: i,
                 time: data[i].time,
-                position: isBuy ? 'belowBar' : 'aboveBar',
-                color: isBuy ? '#089981' : '#f23645',
-                shape: isBuy ? 'arrowUp' : 'arrowDown',
-                text: label,
-                size: isStrong ? 2 : 1,
+                price: closes[i],
+                label,
+                side,
+                strong: label.indexOf('强烈') === 0,
+                score,
             });
 
             lastIdx = i;
         }
 
-        // 只保留最近的标记，小屏不至于糊成一片
-        // 上限设为40：灵敏档信号较多（约30个），过低会把它裁到和均衡档一样多
-        return markers.slice(-40);
+        return series;
+    },
+
+    /**
+     * 生成K线上的买卖点标注
+     *
+     * 直接由 buildSignalSeries 的结果转换而来，与模拟交易同源。
+     * 只保留最近的标记，小屏不至于糊成一片；
+     * 上限设为40：灵敏档信号较多（约30个），过低会把它裁到和均衡档一样多。
+     */
+    generateSignalMarkers(data, ind) {
+        return this.buildSignalSeries(data, ind).map(s => ({
+            time: s.time,
+            position: s.side === 'buy' ? 'belowBar' : 'aboveBar',
+            color: s.side === 'buy' ? '#089981' : '#f23645',
+            shape: s.side === 'buy' ? 'arrowUp' : 'arrowDown',
+            text: s.label,
+            size: s.strong ? 2 : 1,
+        })).slice(-40);
     },
 
     // 更新价格UI
@@ -3359,8 +3384,10 @@ const CryptoPulseApp = {
         // 切换灵敏度档位时跳过记录，避免频繁切换污染准确率统计
         if (!skipTrack) {
             this.trackPrediction(signal);
-            this.runPaperTrade(signal, totalScore);
         }
+
+        // 买卖点会随灵敏度档位、K线周期变化，每次都重放一遍模拟账户
+        this.syncPaperAccount();
 
         this.renderSignal();
         this.renderPredictTab();
@@ -3369,40 +3396,43 @@ const CryptoPulseApp = {
     },
 
     /**
-     * 按信号执行一次模拟成交
+     * 按当前币种的K线买卖点回放模拟账户
      *
-     * 只在方向发生变化时真正下单，同一方向的信号不会重复买入/卖出。
-     * 成交后刷新模拟页并给出轻提示。
+     * 与图上的买卖点标注同源（都取自 buildSignalSeries），
+     * 因此不会再出现「图上标了买入、模拟却没有任何动作」的情况。
      *
-     * @param {Object} signal - 综合信号
-     * @param {number} totalScore - 综合评分
+     * 只回放已收盘的K线：最后一根是正在走的那根，信号会随价格摆动，
+     * 拿它成交会让记录反复出现又消失。
      */
-    runPaperTrade(signal, totalScore) {
+    syncPaperAccount() {
         if (typeof PaperTrader === 'undefined') return;
 
-        // 只有当前币种自己开了独立开关，才会按它的信号成交
         const coinId = this.state.currentCoin;
         if (!PaperTrader.isEnabled(coinId)) return;
+        if (PaperTrader.getAllocation(coinId) <= 0) return;
 
-        const price = this.resolvePaperPrice(coinId);
-        if (!price) return;
+        const data = this.state.candleData;
+        if (!data || data.length < 31) return;
 
-        const trade = PaperTrader.onSignal({
-            coinId,
-            timeframe: this.state.currentTimeframe,
-            signalType: signal.type,
-            signalText: signal.text,
-            price,
-            score: signal.techScore,
-            totalScore,
-            sensitivity: this.state.sensitivity,
-        });
+        const prevAcc = PaperTrader.getAccount(coinId);
+        const prevLast = prevAcc.trades.length
+            ? prevAcc.trades[prevAcc.trades.length - 1].id
+            : null;
 
-        if (!trade) return;
+        // 去掉正在走形的最后一根K线
+        const closed = data.slice(0, data.length - 1);
+        const series = this.buildSignalSeries(closed, this.state.indicators);
+
+        const acc = PaperTrader.replay(coinId, series, this.state.currentTimeframe);
+        if (!acc || !acc.trades.length) return;
+
+        // 只有真的产生了新的买卖点才提示
+        const last = acc.trades[acc.trades.length - 1];
+        if (last.id === prevLast) return;
 
         const coin = this.getCoinInfo(coinId);
         this.showToast(
-            `${coin.symbol} 模拟${trade.side === 'buy' ? '买入' : '卖出'} @ $${TechnicalAnalysis.formatPrice(trade.price)}`
+            `${coin.symbol} 模拟${last.side === 'buy' ? '买入' : '卖出'} @ $${TechnicalAnalysis.formatPrice(last.price)}`
         );
     },
 

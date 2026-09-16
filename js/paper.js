@@ -13,12 +13,17 @@
  *   每个币种有独立的开关（enabled），开启哪个币种就只跑哪个币种的信号，
  *   互不影响；切换币种看到的是该币种自己的账户与成交记录。
  *
- * 成交规则：
- *   - 买入信号 → 用该币种配额内的全部可用资金买入
- *   - 卖出信号 → 清空该币种全部持仓
- *   - 观望信号 → 不做任何操作
- *   - 仅在方向发生变化时成交，避免每 30 秒刷新就重复下单
- *   - 不计手续费与滑点，成交价取信号触发时的价格
+ * 成交规则（与K线图上标注的买卖点完全一致）：
+ *   - 买入点 → 用该币种配额内的全部可用资金买入
+ *   - 卖出点 → 清空该币种全部持仓
+ *   - 仅在方向发生变化时成交，同一方向的连续信号不重复下单
+ *   - 以K线收盘价成交，不计手续费与滑点
+ *
+ * 之所以改为「回放K线买卖点」而不是听实时信号：
+ *   图上画出的买卖点和右侧的实时信号是两套不同算法算出来的，
+ *   两者经常不一致。此前用实时信号驱动，会出现「图上1点标了买入、
+ *   模拟却没有任何动作」的情况。现在统一以图上的买卖点为唯一依据，
+ *   并且按历史K线回放，所见即所做。
  */
 
 const PaperTrader = {
@@ -160,10 +165,20 @@ const PaperTrader = {
         const changed = data.allocations[coinId] !== v;
         data.allocations[coinId] = v;
 
-        // 配额变化 → 重建该币种账户
+        // 配额变化 → 按新本金重建该币种账户
+        // 但要保留「从何时开始模拟」与策略周期，否则改金额会把
+        // 起点重置成无限早，凭空多出一堆历史成交
         let reset = false;
         if (changed) {
+            const prev = data.accounts[coinId] || {};
             delete data.accounts[coinId];
+
+            const acc = this.getAccount(coinId);
+            if (prev.enabledAt) acc.enabledAt = prev.enabledAt;
+            if (prev.createdAt) acc.createdAt = prev.createdAt;
+            if (prev.strategyTimeframe !== undefined && prev.strategyTimeframe !== null) {
+                acc.strategyTimeframe = prev.strategyTimeframe;
+            }
             reset = true;
         }
 
@@ -196,9 +211,16 @@ const PaperTrader = {
      * 设置某币种的运行开关
      * 未配置配额时不允许开启，否则账户没有本金可交易。
      *
+     * 开启时记录两件事：
+     *   enabledAt        —— 从这一刻起算，只回放此后的K线买卖点
+     *   strategyTimeframe —— 跟随开启时选中的周期，之后不随看盘周期变化
+     *
+     * @param {string} coinId
+     * @param {boolean} on
+     * @param {string|number} [timeframe] - 开启时选中的周期
      * @returns {{ok: boolean, message?: string}}
      */
-    setEnabled(coinId, on) {
+    setEnabled(coinId, on, timeframe) {
         if (!coinId) return { ok: false, message: '缺少币种' };
 
         if (on && this.getAllocation(coinId) <= 0) {
@@ -207,6 +229,15 @@ const PaperTrader = {
 
         const data = this.load();
         data.enabled[coinId] = !!on;
+
+        if (on) {
+            const acc = this.getAccount(coinId);
+            if (!acc.enabledAt) acc.enabledAt = Date.now();
+            if (timeframe !== undefined && timeframe !== null) {
+                acc.strategyTimeframe = timeframe;
+            }
+        }
+
         this.save();
         return { ok: true };
     },
@@ -230,6 +261,8 @@ const PaperTrader = {
                 lastSide: null,
                 firstBuyPrice: null,
                 lastTimeframe: null,
+                enabledAt: null,
+                strategyTimeframe: null,
                 createdAt: Date.now(),
             };
         }
@@ -237,13 +270,23 @@ const PaperTrader = {
     },
 
     /**
-     * 重置账户（清空成交与持仓，资金回到配额值）
+     * 重置账户：从此刻起重来回放，资金回到配额值
+     *
+     * 因为回放是确定性的，单纯清空账户会在下次回放时被重建，
+     * 所以这里把起点推到当前时刻，等于「从现在开始重新模拟」。
      */
     reset(coinId) {
         const data = this.load();
+        const prev = data.accounts[coinId] || {};
+        const tf = prev.strategyTimeframe;
+
         delete data.accounts[coinId];
+        const acc = this.getAccount(coinId);
+        acc.enabledAt = Date.now();
+        if (tf !== undefined && tf !== null) acc.strategyTimeframe = tf;
+
         this.save();
-        return this.getAccount(coinId);
+        return acc;
     },
 
     /**
@@ -267,125 +310,127 @@ const PaperTrader = {
     },
 
     /**
-     * 信号类型 → 买卖方向
-     */
-    toSide(signalType) {
-        if (signalType === 'buy' || signalType === 'strong_buy') return 'buy';
-        if (signalType === 'sell' || signalType === 'strong_sell') return 'sell';
-        return null;
-    },
-
-    /**
-     * 收到信号时的处理入口
+     * 按K线买卖点回放，重建该币种的账户
      *
-     * @param {Object} p - { coinId, timeframe, signalType, signalText, price,
-     *                       score, totalScore, sensitivity }
-     * @returns {Object|null} 成交记录，未成交返回 null
+     * 这是一个纯重算：每次都从配额本金出发，按时间顺序把买卖点走一遍，
+     * 因此结果只取决于信号序列本身，不依赖页面是否开着、当时看的是哪个币种。
+     * 任何时候切回该币种，都会得到完全一致的历史记录。
+     *
+     * @param {string} coinId
+     * @param {Array} series - 买卖点序列（按时间升序）
+     *        [{ time(秒), price, side:'buy'|'sell', label, score }]
+     * @param {string|number} [timeframe] - 当前看盘周期，仅在没有既定策略周期时采用
+     * @returns {Object|null} 重建后的账户，未配额返回 null
      */
-    onSignal(p) {
-        if (!p || !p.coinId || !p.price || p.price <= 0) return null;
+    replay(coinId, series, timeframe) {
+        if (!coinId || !Array.isArray(series)) return null;
 
-        // 该币种未开启独立运行，或没有配额，都不参与
-        if (!this.isEnabled(p.coinId)) return null;
-        if (this.getAllocation(p.coinId) <= 0) return null;
+        const capital = this.getAllocation(coinId);
+        if (capital <= 0) return null;
 
-        const side = this.toSide(p.signalType);
-        if (!side) return null; // 观望不操作
+        const data = this.load();
+        const prev = data.accounts[coinId] || {};
+        // 旧数据没有 enabledAt，用账户创建时间兜底，
+        // 这样升级前的账户也能从「当初开启的那一刻」开始回放
+        const enabledAt = prev.enabledAt || prev.createdAt || 0;
+        const hasTf = timeframe !== undefined && timeframe !== null;
+        const prevTf = prev.strategyTimeframe;
 
-        const acc = this.getAccount(p.coinId);
-
-        // 仅方向变化时成交
-        if (acc.lastSide === side) return null;
-
-        // 无可用资金时只记方向
-        if (side === 'buy' && acc.cash <= 1) {
-            acc.lastSide = side;
-            this.save();
-            return null;
-        }
-
-        // 空仓时收到卖出信号：只记方向，避免同一方向反复触发
-        if (side === 'sell' && acc.holdings <= 0) {
-            acc.lastSide = side;
-            this.save();
-            return null;
-        }
-
-        const now = Date.now();
-        const trade = {
-            id: `${p.coinId}-${now}`,
-            time: now,
-            coinId: p.coinId,
-            timeframe: p.timeframe,
-            side,
-            price: p.price,
-            signalText: p.signalText || '',
-            signalType: p.signalType || '',
-            score: typeof p.score === 'number' ? p.score : null,
-            totalScore: typeof p.totalScore === 'number' ? p.totalScore : null,
-            sensitivity: p.sensitivity || '',
-            qty: 0,
-            amount: 0,
-            pnl: null,
-            pnlPct: null,
+        const acc = {
+            coinId,
+            initialCapital: capital,
+            cash: capital,
+            holdings: 0,
+            avgCost: 0,
+            trades: [],
+            lastSide: null,
+            firstBuyPrice: null,
+            lastTimeframe: hasTf ? timeframe : (prevTf !== undefined ? prevTf : null),
+            enabledAt: enabledAt || null,
+            strategyTimeframe: (prevTf !== undefined && prevTf !== null) ? prevTf : (hasTf ? timeframe : null),
+            createdAt: prev.createdAt || Date.now(),
         };
 
-        if (side === 'buy') {
-            const qty = acc.cash / p.price;
-            const cost = acc.cash;
+        for (let i = 0; i < series.length; i++) {
+            const p = series[i];
+            if (!p || !p.price || p.price <= 0) continue;
 
-            const prevQty = acc.holdings;
-            const prevCost = acc.avgCost * prevQty;
-            acc.holdings = prevQty + qty;
-            acc.avgCost = acc.holdings > 0 ? (prevCost + cost) / acc.holdings : 0;
-            acc.cash = 0;
+            const side = p.side;
+            if (side !== 'buy' && side !== 'sell') continue;
 
-            trade.qty = qty;
-            trade.amount = cost;
+            // 只回放开启模拟之后的买卖点，开启前的历史不补记
+            if (enabledAt && p.time * 1000 < enabledAt) continue;
 
-            if (acc.firstBuyPrice === null) acc.firstBuyPrice = p.price;
-        } else {
-            const qty = acc.holdings;
-            const proceeds = qty * p.price;
+            // 同向不重复下单；买卖点序列本身已是多空交替
+            if (acc.lastSide === side) continue;
 
-            trade.qty = qty;
-            trade.amount = proceeds;
-            trade.avgCost = acc.avgCost;
-            trade.pnl = (p.price - acc.avgCost) * qty;
-            trade.pnlPct = acc.avgCost > 0 ? (p.price / acc.avgCost - 1) : 0;
+            // 满仓时再遇买入、空仓时再遇卖出：只记方向，不产生成交
+            if (side === 'buy' && acc.cash <= 1) { acc.lastSide = side; continue; }
+            if (side === 'sell' && acc.holdings <= 0) { acc.lastSide = side; continue; }
 
-            acc.cash += proceeds;
-            acc.holdings = 0;
-            acc.avgCost = 0;
+            const now = p.time * 1000;
+            const trade = {
+                id: `${coinId}-${p.time}`,
+                time: now,
+                coinId,
+                timeframe: acc.strategyTimeframe,
+                side,
+                price: p.price,
+                signalText: p.label || '',
+                signalType: side,
+                score: typeof p.score === 'number' ? p.score : null,
+                totalScore: null,
+                sensitivity: p.sensitivity || '',
+                qty: 0,
+                amount: 0,
+                pnl: null,
+                pnlPct: null,
+            };
+
+            if (side === 'buy') {
+                const qty = acc.cash / p.price;
+                const cost = acc.cash;
+
+                const prevQty = acc.holdings;
+                const prevCost = acc.avgCost * prevQty;
+                acc.holdings = prevQty + qty;
+                acc.avgCost = acc.holdings > 0 ? (prevCost + cost) / acc.holdings : 0;
+                acc.cash = 0;
+
+                trade.qty = qty;
+                trade.amount = cost;
+
+                if (acc.firstBuyPrice === null) acc.firstBuyPrice = p.price;
+            } else {
+                const qty = acc.holdings;
+                const proceeds = qty * p.price;
+
+                trade.qty = qty;
+                trade.amount = proceeds;
+                trade.avgCost = acc.avgCost;
+                trade.pnl = (p.price - acc.avgCost) * qty;
+                trade.pnlPct = acc.avgCost > 0 ? (p.price / acc.avgCost - 1) : 0;
+
+                acc.cash += proceeds;
+                acc.holdings = 0;
+                acc.avgCost = 0;
+            }
+
+            // 成交后的账户快照，用于权益曲线与最大回撤
+            trade.cashAfter = acc.cash;
+            trade.holdingsAfter = acc.holdings;
+            trade.equityAfter = acc.cash + acc.holdings * p.price;
+
+            acc.trades.push(trade);
+            if (acc.trades.length > this.maxTrades) {
+                acc.trades = acc.trades.slice(-this.maxTrades);
+            }
+            acc.lastSide = side;
         }
 
-        // 成交后的账户快照，用于权益曲线与最大回撤
-        trade.cashAfter = acc.cash;
-        trade.holdingsAfter = acc.holdings;
-        trade.equityAfter = acc.cash + acc.holdings * p.price;
-
-        acc.trades.push(trade);
-        if (acc.trades.length > this.maxTrades) {
-            acc.trades = acc.trades.slice(-this.maxTrades);
-        }
-        acc.lastSide = side;
-        acc.lastTimeframe = p.timeframe;
-
+        data.accounts[coinId] = acc;
         this.save();
-        return trade;
-    },
-
-    /**
-     * 同步已记录的方向状态
-     *
-     * 开关刚打开时调用，把当前信号方向记下来，
-     * 这样不会对「开启前已经存在的信号」补一笔成交，
-     * 只有后续方向变化才真正下单。
-     */
-    syncSide(coinId, signalType) {
-        const acc = this.getAccount(coinId);
-        acc.lastSide = this.toSide(signalType);
-        this.save();
+        return acc;
     },
 
     /**
