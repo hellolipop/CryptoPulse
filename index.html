@@ -8,7 +8,7 @@
     <title>CryptoPulse - 虚拟货币实时分析</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="css/style.css?v=43">
+    <link rel="stylesheet" href="css/style.css?v=45">
     <script>
         tailwind.config = {
             theme: {
@@ -186,7 +186,12 @@
             <section class="mt-2 bg-white px-4 py-3">
                 <div class="flex items-center justify-between mb-2">
                     <h3 class="text-sm font-semibold">综合分析信号</h3>
-                    <span id="signalStrengthTag" class="text-xs px-2 py-0.5 rounded-full bg-golden/10 text-golden font-medium">--</span>
+                    <div class="flex items-center gap-1.5">
+                        <!-- 新闻/衍生品等因子还没到时，明确标出「分析中」，
+                             避免把只基于价格与K线的半成品结论当成最终结果 -->
+                        <span id="signalPendingTag" class="hidden text-[10px] px-2 py-0.5 rounded-full bg-gray-100 text-text-tertiary">分析中…</span>
+                        <span id="signalStrengthTag" class="text-xs px-2 py-0.5 rounded-full bg-golden/10 text-golden font-medium">--</span>
+                    </div>
                 </div>
                 <div class="flex items-center gap-4">
                     <!-- 信号大图标 -->
@@ -1199,13 +1204,13 @@
     <!-- 轻提示 -->
     <div id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-24 z-[60] px-4 py-2.5 rounded-xl bg-gray-900/90 text-white text-sm shadow-lg opacity-0 pointer-events-none transition-opacity duration-200 hidden"></div>
 
-    <script src="js/technical.js?v=43"></script>
-    <script src="js/news.js?v=43"></script>
-    <script src="js/signals.js?v=43"></script>
-    <script src="js/prediction.js?v=43"></script>
-    <script src="js/paper.js?v=43"></script>
-    <script src="js/binance.js?v=43"></script>
-    <script src="js/chart.js?v=43"></script>
-    <script src="js/app.js?v=43"></script>
+    <script src="js/technical.js?v=45"></script>
+    <script src="js/news.js?v=45"></script>
+    <script src="js/signals.js?v=45"></script>
+    <script src="js/prediction.js?v=45"></script>
+    <script src="js/paper.js?v=45"></script>
+    <script src="js/binance.js?v=45"></script>
+    <script src="js/chart.js?v=45"></script>
+    <script src="js/app.js?v=45"></script>
 </body>
 </html>

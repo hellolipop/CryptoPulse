@@ -48,9 +48,6 @@ const NewsAnalyzer = {
      * @returns {Promise<Array>} 新闻列表
      */
     async fetchNews(coinId = 'bitcoin') {
-        const allNews = [];
-        const errors = [];
-
         // 映射币种到 API 分类
         const categoryMap = {
             'bitcoin': 'bitcoin',
@@ -64,85 +61,25 @@ const NewsAnalyzer = {
         };
         const category = categoryMap[coinId] || 'general';
 
-        // ========== 源1: cryptocurrency.cv 新闻 API ==========
-        // 免费、无需Key、支持CORS、多源聚合（CoinDesk, The Block, Decrypt等）
-        try {
-            const categories = ['general', category, 'etf', 'defi'].filter((v, i, a) => a.indexOf(v) === i);
-            const fetchPromises = categories.slice(0, 3).map(cat =>
-                this.fetchWithTimeout(`https://cryptocurrency.cv/api/news?category=${cat}&limit=10`, {}, 8000)
-                    .then(r => r.json())
-                    .then(d => {
-                        if (d.articles && Array.isArray(d.articles)) {
-                            return d.articles.map(item => ({
-                                id: item.id || item.url,
-                                title: item.title || '',
-                                description: item.description || item.summary || '',
-                                url: item.url || item.link || '#',
-                                source: item.source || item.publisher || 'CryptoNews',
-                                image: item.image || item.thumbnail || '',
-                                publishedAt: item.publishedAt || item.date || new Date().toISOString(),
-                                categories: item.categories || [cat],
-                                _source: 'cryptocurrency.cv',
-                                _lang: 'en'
-                            }));
-                        }
-                        return [];
-                    })
-            );
+        // 三个源互不依赖，必须并行。
+        // 之前是逐个 await，总耗时变成三者相加（实测约 5.6 秒）；
+        // 并行后总耗时约等于最慢的那一个。
+        const names = ['cryptocurrency.cv', 'binance', '528btc'];
+        const settled = await Promise.allSettled([
+            this.sourceCryptocurrencyCv(category),
+            this.sourceBinanceAnnouncements(),
+            this.source528btc(),
+        ]);
 
-            const results = await Promise.allSettled(fetchPromises);
-            results.forEach(result => {
-                if (result.status === 'fulfilled' && Array.isArray(result.value)) {
-                    allNews.push(...result.value);
-                }
-            });
-        } catch (e) {
-            errors.push(`cryptocurrency.cv: ${e.message}`);
-        }
-
-        // ========== 源2: Binance 公告（通过 CORS 代理）==========
-        try {
-            const bnResp = await this.fetchWithTimeout(
-                'https://corsproxy.io/?' + encodeURIComponent(
-                    'https://www.binance.com/bapi/composite/v1/public/cms/article/list/query?type=1&pageNo=1&pageSize=5'
-                ), {}, 6000
-            );
-            if (bnResp.ok) {
-                const bnData = await bnResp.json();
-                const articles = bnData.data?.articles || [];
-                if (articles.length > 0) {
-                    allNews.push(...articles.slice(0, 5).map(item => ({
-                        id: item.id || Date.now() + Math.random(),
-                        title: item.title || '',
-                        description: item.digest || item.intro || '',
-                        url: `https://www.binance.com/en/support/announcement/${item.code || item.id}`,
-                        source: 'Binance 公告',
-                        image: '',
-                        publishedAt: item.publishDate || new Date(item.publishTime).toISOString() || new Date().toISOString(),
-                        categories: ['exchange', 'binance'],
-                        _source: 'binance',
-                        _lang: 'zh'
-                    })));
-                }
+        const allNews = [];
+        const errors = [];
+        settled.forEach((r, i) => {
+            if (r.status === 'fulfilled' && Array.isArray(r.value)) {
+                allNews.push(...r.value);
+            } else if (r.status === 'rejected') {
+                errors.push(`${names[i]}: ${r.reason && r.reason.message ? r.reason.message : r.reason}`);
             }
-        } catch (e) {
-            errors.push(`binance: ${e.message}`);
-        }
-
-        // ========== 源3: 528btc 快讯（多代理降级 + 人机验证检测）==========
-        try {
-            const result = await this.fetch528btcFlash();
-            if (result.items.length > 0) {
-                allNews.push(...result.items);
-            }
-            if (result.blocked) {
-                console.warn('[528btc] 被反爬人机验证拦截，本次未获取到快讯:', result.reason);
-            } else if (result.items.length === 0) {
-                console.warn('[528btc] 未解析到快讯内容:', result.reason);
-            }
-        } catch (e) {
-            errors.push(`528btc: ${e.message}`);
-        }
+        });
 
         // ========== 去重 + 处理 ==========
         if (allNews.length > 0) {
@@ -184,6 +121,85 @@ const NewsAnalyzer = {
         // ========== 兜底：模拟数据 ==========
         console.warn('所有新闻源获取失败，使用模拟数据:', errors.join(', '));
         return this.getMockNews(coinId);
+    },
+
+    /**
+     * 源1：cryptocurrency.cv（免费、无需 Key、支持 CORS、多源聚合）
+     * @returns {Promise<Array>}
+     */
+    async sourceCryptocurrencyCv(category) {
+        const categories = ['general', category, 'etf', 'defi'].filter((v, i, a) => a.indexOf(v) === i);
+        const fetchPromises = categories.slice(0, 3).map(cat =>
+            this.fetchWithTimeout(`https://cryptocurrency.cv/api/news?category=${cat}&limit=10`, {}, 8000)
+                .then(r => r.json())
+                .then(d => {
+                    if (d.articles && Array.isArray(d.articles)) {
+                        return d.articles.map(item => ({
+                            id: item.id || item.url,
+                            title: item.title || '',
+                            description: item.description || item.summary || '',
+                            url: item.url || item.link || '#',
+                            source: item.source || item.publisher || 'CryptoNews',
+                            image: item.image || item.thumbnail || '',
+                            publishedAt: item.publishedAt || item.date || new Date().toISOString(),
+                            categories: item.categories || [cat],
+                            _source: 'cryptocurrency.cv',
+                            _lang: 'en'
+                        }));
+                    }
+                    return [];
+                })
+        );
+        const results = await Promise.allSettled(fetchPromises);
+        const out = [];
+        results.forEach(result => {
+            if (result.status === 'fulfilled' && Array.isArray(result.value)) {
+                out.push(...result.value);
+            }
+        });
+        return out;
+    },
+
+    /**
+     * 源2：Binance 公告（经 CORS 代理）
+     * @returns {Promise<Array>}
+     */
+    async sourceBinanceAnnouncements() {
+        const bnResp = await this.fetchWithTimeout(
+            'https://corsproxy.io/?' + encodeURIComponent(
+                'https://www.binance.com/bapi/composite/v1/public/cms/article/list/query?type=1&pageNo=1&pageSize=5'
+            ), {}, 6000
+        );
+        if (!bnResp.ok) return [];
+        const bnData = await bnResp.json();
+        const articles = (bnData.data && bnData.data.articles) || [];
+        return articles.slice(0, 5).map(item => ({
+            id: item.id || Date.now() + Math.random(),
+            title: item.title || '',
+            description: item.digest || item.intro || '',
+            url: `https://www.binance.com/en/support/announcement/${item.code || item.id}`,
+            source: 'Binance 公告',
+            image: '',
+            publishedAt: item.publishDate || new Date(item.publishTime).toISOString() || new Date().toISOString(),
+            categories: ['exchange', 'binance'],
+            _source: 'binance',
+            _lang: 'zh'
+        }));
+    },
+
+    /**
+     * 源3：528btc 快讯（多代理降级 + 人机验证检测）
+     * 该站有反爬滑块，被拦时主动放弃，不把验证页当新闻解析。
+     * @returns {Promise<Array>}
+     */
+    async source528btc() {
+        const result = await this.fetch528btcFlash();
+        if (result.blocked) {
+            console.warn('[528btc] 被反爬人机验证拦截，本次未获取到快讯:', result.reason);
+        } else if (result.items.length === 0) {
+            console.warn('[528btc] 未解析到快讯内容:', result.reason);
+        }
+        return result.items;
     },
 
     /**

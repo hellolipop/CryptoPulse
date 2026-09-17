@@ -2342,15 +2342,24 @@ const CryptoPulseApp = {
     async loadCoinData(coinId, forceRefresh = false) {
         const token = ++this._loadToken;
         this.state.isLoading = true;
-        this.showLoading(true);
+
+        // 遮罩延迟 200ms 再出现：正常几百毫秒完成的切换根本不会闪遮罩，
+        // 体感上就是「点一下立刻切过去」；只有真的变慢时才用遮罩挡住半成品界面。
+        clearTimeout(this._loadingTimer);
+        this._loadingTimer = setTimeout(() => {
+            if (token === this._loadToken && this.state.isLoading) this.showLoading(true);
+        }, 200);
 
         try {
+            // 关键路径只等「价格 + K线」——这两项决定首屏能看到什么。
+            //
+            // 之前这里把 5 个加载器放在同一条等待链上，遮罩要等最慢的那个才消失。
+            // 实测各加载器耗时：价格 245ms、K线 293ms、恐慌指数 432ms、衍生品 1101ms、
+            // 新闻 5609ms。于是切币种要盯着遮罩等 5.6 秒，而用户真正想看的行情
+            // 其实 300 毫秒就绪了。
             await Promise.allSettled([
                 this.loadPriceData(coinId),
                 this.loadCandleData(coinId),
-                this.loadNews(coinId),
-                this.loadFearGreedIndex(),
-                this.loadDerivativesData(coinId)
             ]);
 
             if (token !== this._loadToken) return;
@@ -2362,10 +2371,44 @@ const CryptoPulseApp = {
             console.error('加载数据失败:', error);
         } finally {
             if (token === this._loadToken) {
+                clearTimeout(this._loadingTimer);
                 this.state.isLoading = false;
                 this.showLoading(false);
             }
         }
+
+        // 非关键路径：放在遮罩之外后台补齐，拿到后再刷新一次信号
+        this.loadDeferredData(coinId, token);
+    },
+
+    /**
+     * 后台补齐非关键数据（恐慌指数 / 衍生品 / 新闻）。
+     * 这三项都要打外部接口，其中新闻最慢；放在遮罩之外，
+     * 用户可以立刻看行情，分析结果到了再自动更新。
+     */
+    async loadDeferredData(coinId, token) {
+        this.setAnalysisPending(true);
+        try {
+            await Promise.allSettled([
+                this.loadFearGreedIndex(),
+                this.loadDerivativesData(coinId),
+                this.loadNews(coinId),
+            ]);
+        } finally {
+            if (token !== this._loadToken) return;
+            if (this.state.currentCoin !== coinId) return;
+            this.setAnalysisPending(false);
+            this.updateSignal();
+        }
+    },
+
+    /**
+     * 因子尚未齐全时给出明确的「分析中」状态。
+     * 否则用户会看到一个只基于价格与K线的半成品结论，并误以为那就是最终结果。
+     */
+    setAnalysisPending(pending) {
+        const el = document.getElementById('signalPendingTag');
+        if (el) el.classList.toggle('hidden', !pending);
     },
 
     // 加载价格数据（币安 API）
