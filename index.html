@@ -8,7 +8,7 @@
     <title>CryptoPulse - 虚拟货币实时分析</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="css/style.css?v=46">
+    <link rel="stylesheet" href="css/style.css?v=50">
     <script>
         tailwind.config = {
             theme: {
@@ -74,6 +74,18 @@
 
         <!-- 子标签导航已移至底部主导航（对齐主流：底部常驻、图标+文字） -->
     </header>
+
+    <!-- 非币安币种的数据范围提示（仅 CoinGecko 币种显示）
+         CoinGecko 要求显著标注归属：Powered by CoinGecko 且字号不小于 10px -->
+    <div id="cgNotice" class="hidden bg-blue-50 border-b border-blue-100 px-4 py-2.5">
+        <div class="max-w-4xl mx-auto">
+            <p class="text-[11px] font-semibold text-blue-800">该币种不在币安现货，数据来自 CoinGecko</p>
+            <p id="cgNoticeBody" class="text-[10px] text-blue-700 mt-1 leading-relaxed"></p>
+            <p class="text-[10px] text-blue-600 mt-1.5">
+                <a href="https://www.coingecko.com" target="_blank" rel="noopener noreferrer" class="underline">Powered by CoinGecko</a>
+            </p>
+        </div>
+    </div>
 
     <main class="max-w-4xl mx-auto">
         <!-- ====== 报价 Tab ====== -->
@@ -1065,6 +1077,10 @@
                 <button class="text-xs font-medium text-text-secondary">ETH</button>
             </div>
 
+            <!-- CoinGecko 搜索结果：币安没收录的币种。
+                 单独一块展示，避免与币安交易对混在一起分不清来源。 -->
+            <div id="cgSearchBlock" class="hidden border-b border-border-light"></div>
+
             <!-- 列表头 -->
             <div class="px-4 py-2 flex items-center text-xs text-text-tertiary border-b border-border-light">
                 <span class="flex-1">名称 / 成交额</span>
@@ -1204,13 +1220,14 @@
     <!-- 轻提示 -->
     <div id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-24 z-[60] px-4 py-2.5 rounded-xl bg-gray-900/90 text-white text-sm shadow-lg opacity-0 pointer-events-none transition-opacity duration-200 hidden"></div>
 
-    <script src="js/technical.js?v=46"></script>
-    <script src="js/news.js?v=46"></script>
-    <script src="js/signals.js?v=46"></script>
-    <script src="js/prediction.js?v=46"></script>
-    <script src="js/paper.js?v=46"></script>
-    <script src="js/binance.js?v=46"></script>
-    <script src="js/chart.js?v=46"></script>
-    <script src="js/app.js?v=46"></script>
+    <script src="js/technical.js?v=50"></script>
+    <script src="js/news.js?v=50"></script>
+    <script src="js/signals.js?v=50"></script>
+    <script src="js/prediction.js?v=50"></script>
+    <script src="js/paper.js?v=50"></script>
+    <script src="js/binance.js?v=50"></script>
+    <script src="js/coingecko.js?v=50"></script>
+    <script src="js/chart.js?v=50"></script>
+    <script src="js/app.js?v=50"></script>
 </body>
 </html>

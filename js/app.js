@@ -26,6 +26,8 @@ const CryptoPulseApp = {
         catalogLoaded: false,
         catalogLoading: false,
         coinMeta: {},           // 联网添加的币种元数据 { coinId: {id, symbol, name, binanceSymbol} }
+        cgSearchResults: [],    // 搜索里来自 CoinGecko 的候选（币安未收录）
+        cgCandleMeta: null,     // 当前 CoinGecko 币种的K线口径（粒度/成交量是否估算）
         watchlistQuotes: {},    // 自选币种行情 { coinId: {price, changePercent} }
         marketTab: 'watchlist', // 币种选择器内的分类：watchlist | hot | all | defi | meme
         coinListLimit: 50,      // 列表模式显示条数
@@ -1531,6 +1533,8 @@ const CryptoPulseApp = {
             coinSearchInput.addEventListener('input', (e) => {
                 this.state.coinListLimit = 50;
                 this.renderCoinSelectorList(e.target.value);
+                // 同时去 CoinGecko 找币安没收录的币种
+                this.searchCoinGeckoInto(e.target.value);
             });
         }
 
@@ -2057,6 +2061,11 @@ const CryptoPulseApp = {
 
         const input = document.getElementById('coinSearchInput');
         if (input) input.value = '';
+
+        // 收起 CoinGecko 结果块，并让在途请求作废
+        this.state.cgSearchResults = [];
+        this._cgSearchToken = (this._cgSearchToken || 0) + 1;
+        this.renderCgSearchResults();
     },
 
     // 切换币种选择器内的分类
@@ -2167,10 +2176,12 @@ const CryptoPulseApp = {
             return;
         }
 
-        // 行情缺失的批量补拉
+        // 行情缺失的批量补拉。
+        // filter(Boolean) 不能省：CoinGecko 币种没有币安交易对，binanceSymbol 为 null，
+        // 混进请求里会让整个批量行情接口报错，连累其它币种也拿不到价格。
         const pending = this._listQuotePending || (this._listQuotePending = new Set());
         const missing = shown
-            .filter(c => !this.state.coinListQuotes[c.binanceSymbol] && !pending.has(c.binanceSymbol))
+            .filter(c => c.binanceSymbol && !this.state.coinListQuotes[c.binanceSymbol] && !pending.has(c.binanceSymbol))
             .map(c => c.binanceSymbol);
         if (missing.length > 0) {
             this.loadCoinListQuotes(missing);
@@ -2355,6 +2366,215 @@ const CryptoPulseApp = {
         await this.loadCoinData(coinId);
     },
 
+    // ==================== 数据源路由（币安 / CoinGecko）====================
+
+    /**
+     * 判断某个币种走哪个数据源。
+     * 币安现货没有收录的币种（例如 GWEI/ETHGas）走 CoinGecko。
+     */
+    getDataSource(coinId) {
+        const meta = this.state.coinMeta[coinId];
+        if (meta && meta.source === 'coingecko' && meta.cgId) return 'coingecko';
+        return 'binance';
+    },
+
+    /**
+     * 把 CoinGecko 的币种登记到本地，之后就能像普通币种一样被搜索与切换。
+     * binanceSymbol 显式置为 null，表示它不在币安 —— getBinanceSymbol 据此返回空。
+     */
+    addCoinFromCoinGecko(cg) {
+        if (!cg || !cg.id) return null;
+        const coinId = String(cg.symbol || cg.id).toLowerCase();
+        this.state.coinMeta[coinId] = {
+            id: coinId,
+            symbol: (cg.symbol || '').toUpperCase(),
+            name: cg.name || cg.symbol || coinId,
+            binanceSymbol: null,
+            source: 'coingecko',
+            cgId: cg.id,
+            cgRank: cg.rank || null,
+            image: cg.thumb || '',
+        };
+        this.saveCoinMeta();
+        return coinId;
+    },
+
+    /**
+     * 把应用内的周期映射到 CoinGecko 的档位。
+     *
+     * CoinGecko 的粒度由 days 决定、不能自由指定 interval：
+     *   1 天 → 30 分钟；3~30 天 → 4 小时；31 天以上 → 4 天。
+     * 所以只能就近取档，界面上会如实标出实际粒度。
+     */
+    getCgTimeframe(tf) {
+        const map = { '0.25': 1, '0.5': 1, '1': 7, '4': 30, '24': 365, '168': 365 };
+        const days = map[String(tf)] || 7;
+        return CoinGecko.TIMEFRAMES.find(t => t.days === days) || CoinGecko.TIMEFRAMES[1];
+    },
+
+    /**
+     * 用 CoinGecko 加载币种数据。
+     *
+     * 与币安路径的差异直接决定界面要标注什么：
+     *   - 粒度由 days 决定，不能像币安那样自由选 interval
+     *   - OHLC 端点不含成交量，只能用 market_chart 按时间窗近似补
+     *   - 没有资金费率 / 持仓量 / 多空比
+     * 因此这里只产出「价格 + K线 + 技术指标」，不产出综合买卖信号。
+     */
+    async loadCoinDataFromCoinGecko(coinId, token) {
+        const meta = this.state.coinMeta[coinId];
+        const cgId = meta && meta.cgId;
+        if (!cgId) throw new Error('缺少 CoinGecko 币种 ID');
+
+        const tfCfg = this.getCgTimeframe(this.state.currentTimeframe);
+
+        const [mkt, built] = await Promise.all([
+            CoinGecko.market(cgId),
+            CoinGecko.buildCandles(cgId, tfCfg.days),
+        ]);
+
+        if (token !== this._loadToken) return;
+        if (this.state.currentCoin !== coinId) return;
+        if (!mkt) throw new Error('CoinGecko 未返回该币种行情');
+
+        this.state.coinInfo = {
+            id: coinId,
+            symbol: (mkt.symbol || '').toUpperCase(),
+            name: mkt.name || coinId,
+            image: mkt.image || '',
+            current_price: mkt.current_price,
+            price_change_24h: mkt.price_change_24h,
+            price_change_percentage_24h: mkt.price_change_percentage_24h,
+            high_24h: mkt.high_24h,
+            low_24h: mkt.low_24h,
+            market_cap: mkt.market_cap,
+            total_volume: mkt.total_volume,
+            ath: mkt.ath,
+            atl: mkt.atl,
+            circulating_supply: mkt.circulating_supply,
+            total_supply: mkt.total_supply,
+            market_cap_rank: mkt.market_cap_rank,
+            price_change_percentage_1h: mkt.price_change_percentage_1h_in_currency,
+            price_change_percentage_7d: mkt.price_change_percentage_7d_in_currency,
+            price_change_percentage_30d: mkt.price_change_percentage_30d_in_currency,
+            source: 'coingecko',
+        };
+
+        this.state.candleData = built.candles;
+        this.state.candleSource = 'coingecko';
+        this.state.cgCandleMeta = {
+            granularity: built.granularity,
+            volumeApprox: built.volumeApprox,
+            label: built.label,
+            bars: built.candles.length,
+        };
+        // 显式清空，避免沿用上一个币种残留的衍生品数据
+        this.state.derivatives = null;
+        this.state.fundingRate = null;
+        this.state.volumeAnalysis = null;
+
+        this.updatePriceUI();
+
+        // 图表不画买卖点：这个数据源下成交量是估算的、又缺衍生品，
+        // 画出来的买卖点会让人误以为可以照做。
+        const prevMarkers = this.state.showSignalMarkers;
+        this.state.showSignalMarkers = false;
+        this.calculateIndicators();
+        this.updateChart();
+        this.state.showSignalMarkers = prevMarkers;
+
+        this.renderCgNotice(true);
+        this.renderCgSignalState();
+    },
+
+    /**
+     * 只刷新 CoinGecko 币种的价格与市值（供 30 秒自动刷新使用）。
+     * K线不刷：CoinGecko 的 OHLC 本身有 15 分钟缓存，刷了也不会变。
+     */
+    async refreshCgPrice(coinId) {
+        const meta = this.state.coinMeta[coinId];
+        if (!meta || !meta.cgId) return;
+        try {
+            CoinGecko.invalidateMarkets(meta.cgId);
+            const mkt = await CoinGecko.market(meta.cgId);
+            if (!mkt) return;
+            if (this.state.currentCoin !== coinId) return;
+
+            this.state.coinInfo = Object.assign({}, this.state.coinInfo, {
+                current_price: mkt.current_price,
+                price_change_24h: mkt.price_change_24h,
+                price_change_percentage_24h: mkt.price_change_percentage_24h,
+                high_24h: mkt.high_24h,
+                low_24h: mkt.low_24h,
+                market_cap: mkt.market_cap,
+                total_volume: mkt.total_volume,
+            });
+            this.updatePriceUI();
+        } catch (e) {
+            // 自动刷新失败就静默跳过，不打扰用户
+        }
+    },
+
+    /**
+     * CoinGecko 币种的顶部提示条。
+     * 说明数据来源、实际粒度、以及哪些因子缺失。
+     */
+    renderCgNotice(show) {
+        const el = document.getElementById('cgNotice');
+        if (!el) return;
+        el.classList.toggle('hidden', !show);
+        if (!show) return;
+
+        const m = this.state.cgCandleMeta || {};
+        const body = document.getElementById('cgNoticeBody');
+        if (body) {
+            body.innerHTML = [
+                `K线粒度 <strong>${this.esc(m.granularity || '--')}</strong>（CoinGecko 的粒度由时间跨度决定，不能自由指定），`,
+                `成交量 ${m.volumeApprox ? '由市值接口按时间窗<strong>估算</strong>' : '<strong>缺失</strong>'}。`,
+                '缺少资金费率、持仓量、多空比，因此<strong>不给出综合买卖信号</strong>，只提供技术指标。',
+            ].join('');
+        }
+    },
+
+    /**
+     * CoinGecko 币种的信号卡：只报技术面，不给综合买卖结论。
+     *
+     * 综合信号是 技术40% + 量能20% + 情绪16% + 消息12% + 衍生品12%。
+     * 这类币种缺两项、量能还是估算的，硬凑一个分值出来看着权威、实际不可比，
+     * 所以这里宁可显示「数据受限」。
+     */
+    renderCgSignalState() {
+        const ind = this.state.indicators;
+        if (!ind) return;
+
+        const scoreEl = document.getElementById('signalMainText');
+        const descEl = document.getElementById('signalMainDesc');
+        const scoreTextEl = document.getElementById('signalScoreText');
+        const barEl = document.getElementById('signalScoreBar');
+        const tagEl = document.getElementById('signalStrengthTag');
+        const iconEl = document.getElementById('signalMainIcon');
+
+        if (scoreEl) {
+            scoreEl.textContent = '数据受限';
+            scoreEl.className = 'text-xl font-bold text-text-secondary';
+        }
+        if (tagEl) {
+            tagEl.textContent = 'CoinGecko';
+            tagEl.className = 'text-xs px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 font-medium';
+        }
+        if (descEl) {
+            descEl.textContent = '该币种不在币安现货，缺少衍生品与可靠成交量数据，不给出综合买卖信号';
+        }
+        if (scoreTextEl) scoreTextEl.textContent = '仅技术面';
+        if (barEl) {
+            barEl.style.width = '0%';
+            barEl.className = 'h-full rounded-full bg-gray-200';
+        }
+        if (iconEl) {
+            iconEl.className = 'w-14 h-14 rounded-2xl flex items-center justify-center bg-gray-100 flex-shrink-0';
+        }
+    },
+
     // 加载币种数据
     async loadCoinData(coinId, forceRefresh = false) {
         const token = ++this._loadToken;
@@ -2366,6 +2586,32 @@ const CryptoPulseApp = {
         this._loadingTimer = setTimeout(() => {
             if (token === this._loadToken && this.state.isLoading) this.showLoading(true);
         }, 200);
+
+        // 币安没收录的币种走 CoinGecko：粒度与可用因子都不同，单独一条路径
+        if (this.getDataSource(coinId) === 'coingecko') {
+            try {
+                await this.loadCoinDataFromCoinGecko(coinId, token);
+                this.state.lastUpdate = new Date();
+                this.loadFearGreedIndex();
+            } catch (e) {
+                console.error('CoinGecko 加载失败:', e);
+                if (token === this._loadToken && this.state.currentCoin === coinId) {
+                    this.showToast('CoinGecko 加载失败：' + e.message);
+                }
+            } finally {
+                if (token === this._loadToken) {
+                    clearTimeout(this._loadingTimer);
+                    this.state.isLoading = false;
+                    this.showLoading(false);
+                }
+            }
+            // 新闻与币种无关，照常在后台补
+            this.loadNews(coinId).catch(() => {});
+            return;
+        }
+
+        // 回到币安币种时收起 CoinGecko 的提示条
+        this.renderCgNotice(false);
 
         try {
             // 关键路径只等「价格 + K线」——这两项决定首屏能看到什么。
@@ -2430,6 +2676,13 @@ const CryptoPulseApp = {
 
     // 加载价格数据（币安 API）
     async loadPriceData(coinId) {
+        // CoinGecko 币种绝不能走这里：getBinanceSymbol 返回空会触发「模拟数据」兜底，
+        // 而自动刷新每 30 秒就会调一次，等于把真实行情反复覆盖成随机数。
+        if (this.getDataSource(coinId) === 'coingecko') {
+            await this.refreshCgPrice(coinId);
+            return;
+        }
+
         const binanceSymbol = this.getBinanceSymbol(coinId);
         if (!binanceSymbol) {
             this.useMockPriceData(coinId);
@@ -2519,6 +2772,10 @@ const CryptoPulseApp = {
 
     // 加载K线数据（币安 API）
     async loadCandleData(coinId) {
+        // CoinGecko 币种的K线由 loadCoinDataFromCoinGecko 负责。
+        // 这里的 getBinanceSymbol 返回空会落到「模拟K线」兜底，把真实数据覆盖掉。
+        if (this.getDataSource(coinId) === 'coingecko') return;
+
         const binanceSymbol = this.getBinanceSymbol(coinId);
         if (!binanceSymbol) {
             this.useMockCandleData(coinId);
@@ -2534,6 +2791,10 @@ const CryptoPulseApp = {
             if (!response.ok) throw new Error('Binance Kline API error');
 
             const data = await response.json();
+
+            // 切币后才回来的响应必须丢弃，否则会把新币种的K线覆盖成旧币种的。
+            // 之前这里没有这道判断，切到 CoinGecko 币种时会被在途的币安请求污染。
+            if (this.state.currentCoin !== coinId) return;
 
             const candleData = data.map(item => ({
                 time: Math.floor(item[0] / 1000),
@@ -3039,6 +3300,99 @@ const CryptoPulseApp = {
             text: s.label,
             size: s.strong ? 2 : 1,
         })).slice(-40);
+    },
+
+    /**
+     * 搜索里的 CoinGecko 分支：找出币安没收录的币种（例如 GWEI）。
+     *
+     * 只在关键词长度 ≥2 时触发；结果按符号与币安目录去重，
+     * 避免同一个币出现两遍分不清来源。请求失败（含限频）静默处理，
+     * 不能因为第二个数据源出问题就把币安的结果也拖没。
+     */
+    async searchCoinGeckoInto(query) {
+        const q = String(query || '').trim();
+        if (q.length < 2) {
+            this.state.cgSearchResults = [];
+            this.renderCgSearchResults();
+            return;
+        }
+
+        // 注意要用 (x || 0) + 1：直接 ++ 一个 undefined 会得到 NaN，
+        // 而 NaN !== NaN 恒为真，会导致下面的「丢弃过期结果」判断永远提前返回。
+        const token = (this._cgSearchToken || 0) + 1;
+        this._cgSearchToken = token;
+
+        let list = [];
+        try {
+            list = await CoinGecko.search(q);
+        } catch (e) {
+            console.warn('[CoinGecko] 搜索失败:', e.message);
+            return;
+        }
+
+        // 期间用户又改了关键词或关了弹窗，就丢弃这次结果
+        if (token !== this._cgSearchToken) return;
+        const modal = document.getElementById('coinSelectorModal');
+        if (!modal || modal.classList.contains('hidden')) return;
+
+        const have = new Set((this.state.coinCatalog || []).map(c => String(c.symbol || '').toUpperCase()));
+        this.state.cgSearchResults = list
+            .filter(c => c.symbol && !have.has(c.symbol))
+            .slice(0, 8);
+        this.renderCgSearchResults();
+    },
+
+    renderCgSearchResults() {
+        const host = document.getElementById('cgSearchBlock');
+        if (!host) return;
+        const list = this.state.cgSearchResults || [];
+
+        if (!list.length) {
+            host.classList.add('hidden');
+            host.innerHTML = '';
+            return;
+        }
+
+        host.classList.remove('hidden');
+        host.innerHTML =
+            `<p class="px-3 pt-3 pb-1 text-[10px] text-text-tertiary">币安未收录，来自 CoinGecko：只提供行情与技术指标</p>` +
+            list.map(c => `
+                <button class="cg-result w-full text-left px-3 py-2.5 flex items-center justify-between gap-3"
+                    data-cgid="${this.esc(c.id)}" data-symbol="${this.esc(c.symbol)}" data-name="${this.esc(c.name)}">
+                    <span class="min-w-0">
+                        <span class="flex items-center gap-1.5">
+                            <span class="text-sm font-semibold">${this.esc(c.symbol)}</span>
+                            <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600">CoinGecko</span>
+                        </span>
+                        <span class="block text-[11px] text-text-tertiary truncate">${this.esc(c.name)}${c.rank ? ' · 市值第 ' + Number(c.rank) : ''}</span>
+                    </span>
+                    <span class="text-[11px] text-blue-600 flex-shrink-0">查看</span>
+                </button>`).join('');
+
+        host.querySelectorAll('.cg-result').forEach(btn => {
+            btn.addEventListener('click', () => this.selectCoinGeckoCoin({
+                id: btn.dataset.cgid,
+                symbol: btn.dataset.symbol,
+                name: btn.dataset.name,
+            }));
+        });
+    },
+
+    /** 选中一个 CoinGecko 币种：登记元数据 → 加入自选 → 切换过去 */
+    async selectCoinGeckoCoin(cg) {
+        const coinId = this.addCoinFromCoinGecko(cg);
+        if (!coinId) return;
+
+        this.state.cgSearchResults = [];
+        this._cgSearchToken = (this._cgSearchToken || 0) + 1;
+        this.renderCgSearchResults();
+        this.hideCoinSelectorModal();
+
+        if (!this.state.watchlist.includes(coinId)) {
+            this.registerWatchlist(coinId);
+        }
+        await this.switchCoin(coinId);
+        this.showToast(`${cg.symbol} 数据来自 CoinGecko（币安未收录）`);
     },
 
     // 更新价格UI
@@ -3680,6 +4034,14 @@ const CryptoPulseApp = {
 
     // 更新信号
     updateSignal(skipTrack = false) {
+        // CoinGecko 币种不出综合信号。
+        // 放在这里统一拦截：新闻加载完、情绪指数回来时都会调 updateSignal，
+        // 若只在加载路径上设一次，后到的调用会把「数据受限」重新覆盖成一个信号。
+        if (this.getDataSource(this.state.currentCoin) === 'coingecko') {
+            this.renderCgSignalState();
+            return;
+        }
+
         const ind = this.state.indicators;
 
         const techScoreResult = TechnicalAnalysis.calculateTechnicalScore({
@@ -5069,6 +5431,10 @@ const CryptoPulseApp = {
 
     // 补齐币种元数据（从目录拉取的币种需落盘，否则切换后读不到）
     ensureCoinMeta(coinId) {
+        // 已经是 CoinGecko 币种就别覆盖，否则数据源路由会被改回币安
+        const existing = this.state.coinMeta[coinId];
+        if (existing && existing.source === 'coingecko') return;
+
         const fromPopular = this.popularCoins.find(c => c.id === coinId);
         const fromCatalog = this.state.coinCatalog.find(c => c.coinId === coinId);
         if (!fromPopular && fromCatalog) {
