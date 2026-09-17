@@ -2133,6 +2133,14 @@ const CryptoPulseApp = {
 
         let pool = this.getCategoryCoins(this.state.marketTab);
         if (q) {
+            // 搜索不再受当前分类限制。
+            //
+            // 选择器默认停在「自选」，而原来的写法是「先在当前分类里筛，再按关键词过滤」，
+            // 于是自选里没有的币种永远搜不到 —— 输入一个自己有持仓但没加自选的币种，
+            // 结果是一片空白，看起来就像搜索坏了。搜索符号时用户的预期是全库匹配。
+            pool = this.state.coinCatalog && this.state.coinCatalog.length
+                ? this.state.coinCatalog
+                : pool;
             pool = pool.filter(c =>
                 (c.symbol || '').toLowerCase().includes(q) ||
                 (c.name || '').toLowerCase().includes(q) ||
@@ -2143,9 +2151,18 @@ const CryptoPulseApp = {
         const shown = pool.slice(0, this.state.coinListLimit);
 
         if (shown.length === 0) {
-            container.innerHTML = `<div class="py-10 text-center">
-                <p class="text-sm text-text-secondary">未找到相关币种</p>
-                <p class="text-xs text-text-tertiary mt-1">试试输入符号，如 BTC、ETH</p>
+            // 空结果要区分「搜错了」和「这个币根本不在数据范围内」，
+            // 否则用户无法判断是搜索有问题还是币种没收录。
+            const total = (this.state.coinCatalog && this.state.coinCatalog.length) || 0;
+            const kw = this.esc ? this.esc(q) : q;
+            container.innerHTML = `<div class="py-10 px-6 text-center">
+                <p class="text-sm text-text-secondary">没有找到匹配「${kw}」的币种</p>
+                <p class="text-xs text-text-tertiary mt-2 leading-relaxed">
+                    行情与搜索范围都来自<strong>币安现货 USDT 交易对</strong>${total ? `，当前覆盖 ${total} 个` : ''}。
+                    只在其它交易所上线的币种（例如 GWEI/ETHGas 仅见于 HTX、BitMart、Upbit）不在这个范围内，
+                    因此搜不到属于数据范围限制，并非搜索故障。
+                </p>
+                <p class="text-xs text-text-tertiary mt-1.5">也可以直接输入完整符号：BTC、ETH、SOL</p>
             </div>`;
             return;
         }
