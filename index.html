@@ -8,7 +8,7 @@
     <title>CryptoPulse - 虚拟货币实时分析</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="css/style.css?v=50">
+    <link rel="stylesheet" href="css/style.css?v=52">
     <script>
         tailwind.config = {
             theme: {
@@ -84,6 +84,16 @@
             <p class="text-[10px] text-blue-600 mt-1.5">
                 <a href="https://www.coingecko.com" target="_blank" rel="noopener noreferrer" class="underline">Powered by CoinGecko</a>
             </p>
+        </div>
+    </div>
+
+    <!-- 美股标的的数据范围提示（仅美股显示）
+         美股在币安 USDT-M 合约市场，合约 2026 年才上线，历史深度很浅，
+         这里必须把来源与限制讲清楚，否则用户会拿加密币的直觉去用 -->
+    <div id="stockNotice" class="hidden bg-blue-50 border-b border-blue-100 px-4 py-2.5">
+        <div class="max-w-4xl mx-auto">
+            <p class="text-[11px] font-semibold text-blue-800">美股标的 · 币安 USDT-M 合约（TradFi）</p>
+            <p id="stockNoticeBody" class="text-[10px] text-blue-700 mt-1 leading-relaxed"></p>
         </div>
     </div>
 
@@ -853,7 +863,23 @@
                     </div>
                 </section>
 
-                <!-- 连接 -->
+                <!-- 美股：这条链路是现货测试网，接不了美股（美股只在合约市场） -->
+                <section id="tradeStockNotice" class="hidden mt-2 bg-blue-50 border-y border-blue-200 px-4 py-3">
+                    <div class="flex items-start gap-2">
+                        <svg class="w-4 h-4 mt-0.5 flex-shrink-0 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        <div>
+                            <p class="text-[11px] font-semibold text-blue-800">美股不支持这里的下单</p>
+                            <p class="text-[10px] text-blue-700 mt-1 leading-relaxed">
+                                当前查看的是<strong>美股</strong>，它只在币安 <strong>USDT-M 合约</strong>市场，
+                                而这条下单链路是现货测试网，两者不通用。所以美股标的不会出现在下面的交易对列表里。
+                                行情、K线、指标与分析照常可用，模拟盘也照常按美股K线回放。
+                            </p>
+                        </div>
+                    </div>
+                </section>
+
                 <section class="mt-2 bg-white px-4 py-3">
                     <div class="flex items-center justify-between mb-2.5">
                         <h3 class="text-sm font-semibold">连接测试网</h3>
@@ -1065,6 +1091,7 @@
                 <button data-market="watchlist" class="coin-cat-btn text-sm font-medium text-golden whitespace-nowrap">自选</button>
                 <button data-market="hot" class="coin-cat-btn text-sm font-medium text-text-secondary whitespace-nowrap">主流</button>
                 <button data-market="all" class="coin-cat-btn text-sm font-medium text-text-secondary whitespace-nowrap">全部</button>
+                <button data-market="usstock" class="coin-cat-btn text-sm font-medium text-text-secondary whitespace-nowrap">美股</button>
                 <button data-market="defi" class="coin-cat-btn text-sm font-medium text-text-secondary whitespace-nowrap">DeFi</button>
                 <button data-market="meme" class="coin-cat-btn text-sm font-medium text-text-secondary whitespace-nowrap">MEME</button>
             </div>
@@ -1220,14 +1247,15 @@
     <!-- 轻提示 -->
     <div id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-24 z-[60] px-4 py-2.5 rounded-xl bg-gray-900/90 text-white text-sm shadow-lg opacity-0 pointer-events-none transition-opacity duration-200 hidden"></div>
 
-    <script src="js/technical.js?v=50"></script>
-    <script src="js/news.js?v=50"></script>
-    <script src="js/signals.js?v=50"></script>
-    <script src="js/prediction.js?v=50"></script>
-    <script src="js/paper.js?v=50"></script>
-    <script src="js/binance.js?v=50"></script>
-    <script src="js/coingecko.js?v=50"></script>
-    <script src="js/chart.js?v=50"></script>
-    <script src="js/app.js?v=50"></script>
+    <script src="js/technical.js?v=52"></script>
+    <script src="js/news.js?v=52"></script>
+    <script src="js/signals.js?v=52"></script>
+    <script src="js/prediction.js?v=52"></script>
+    <script src="js/paper.js?v=52"></script>
+    <script src="js/binance.js?v=52"></script>
+    <script src="js/coingecko.js?v=52"></script>
+    <script src="js/stocks.js?v=52"></script>
+    <script src="js/chart.js?v=52"></script>
+    <script src="js/app.js?v=52"></script>
 </body>
 </html>

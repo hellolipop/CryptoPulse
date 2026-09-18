@@ -25,11 +25,16 @@ const CryptoPulseApp = {
         coinCatalog: [],        // 联网获取的币安全量交易对
         catalogLoaded: false,
         catalogLoading: false,
+        stockCatalog: [],       // 币安 USDT-M 合约里的美股标的（TradFi）
+        stockCatalogLoaded: false,
+        stockCatalogLoading: false,
+        stockQuotes: {},        // 美股列表行情 { binanceSymbol: {price, changePercent} }
+        stockDepthNotice: null, // 当前美股标的的历史深度提示（合约上线晚，K线不够）
         coinMeta: {},           // 联网添加的币种元数据 { coinId: {id, symbol, name, binanceSymbol} }
         cgSearchResults: [],    // 搜索里来自 CoinGecko 的候选（币安未收录）
         cgCandleMeta: null,     // 当前 CoinGecko 币种的K线口径（粒度/成交量是否估算）
         watchlistQuotes: {},    // 自选币种行情 { coinId: {price, changePercent} }
-        marketTab: 'watchlist', // 币种选择器内的分类：watchlist | hot | all | defi | meme
+        marketTab: 'watchlist', // 币种选择器内的分类：watchlist | hot | all | defi | meme | usstock
         coinListLimit: 50,      // 列表模式显示条数
         coinListQuotes: {},      // 列表模式行情缓存 { binanceSymbol: {price, changePercent} }
         usdtToCnyRate: 7.25,    // USDT兑人民币汇率（估算）
@@ -268,7 +273,12 @@ const CryptoPulseApp = {
     },
 
     // 币安 API 基础地址
+    //   现货：价格与K线走公开行情镜像；合约：股票标的与衍生品走 fapi
+    //
+    // 美股为什么要单独一个 base：实测币安现货 exchangeInfo 共 3705 个交易对，
+    // 其中股票标的 **0 个** —— 美股只在 USDT-M 合约市场（fapi）上线。
     binanceApiBase: 'https://data-api.binance.vision/api/v3',
+    futuresApiBase: 'https://fapi.binance.com/fapi/v1',
 
     // 数据加载令牌：保证最后一次切换币种的请求生效
     _loadToken: 0,
@@ -1274,6 +1284,7 @@ const CryptoPulseApp = {
                 if (cached && cached.ts && Date.now() - cached.ts < 24 * 3600 * 1000 && cached.list?.length) {
                     this.state.coinCatalog = this.sortCatalog(this.applyCoinNames(cached.list));
                     this.state.catalogLoaded = true;
+                    this.tagTokenizedStocks();
                     return;
                 }
             } catch (e) { /* 忽略缓存损坏 */ }
@@ -1310,6 +1321,7 @@ const CryptoPulseApp = {
             this.state.coinCatalog = unique;
             this.state.catalogLoaded = true;
             this.state.catalogLoading = false;
+            this.tagTokenizedStocks();
 
             localStorage.setItem('cryptoPulse_catalog_v2', JSON.stringify({ ts: Date.now(), list: unique }));
             console.log(`[币种目录] 联网获取成功，共 ${unique.length} 个 USDT 交易对`);
@@ -1359,9 +1371,18 @@ const CryptoPulseApp = {
      * 批量拉取自选币种行情
      */
     async loadWatchlistQuotes() {
-        const symbols = this.state.watchlist
+        // 美股走合约市场，不能塞进现货的批量行情请求里：
+        // 一个现货接口不认识的交易对会让整批请求失败，其它币种也一起拿不到价格。
+        const stockSymbols = this.state.watchlist
+            .filter(id => this.isStock(id))
             .map(id => this.getBinanceSymbol(id))
             .filter(Boolean);
+        const symbols = this.state.watchlist
+            .filter(id => !this.isStock(id))
+            .map(id => this.getBinanceSymbol(id))
+            .filter(Boolean);
+
+        if (stockSymbols.length > 0) this.loadWatchlistStockQuotes(stockSymbols);
         if (symbols.length === 0) return;
 
         try {
@@ -1382,7 +1403,9 @@ const CryptoPulseApp = {
                     };
                 }
             });
-            this.state.watchlistQuotes = quotes;
+            // 合并而不是覆盖：自选里可能同时有现货币种与美股，
+            // 直接赋值会把另一边的行情抹掉，界面上表现为「刚才还有价格，刷一下就没了」。
+            this.state.watchlistQuotes = Object.assign({}, this.state.watchlistQuotes, quotes);
             // 若币种选择器打开，同步刷新
             const modal = document.getElementById('coinSelectorModal');
             if (modal && !modal.classList.contains('hidden')) {
@@ -1390,6 +1413,44 @@ const CryptoPulseApp = {
             }
         } catch (e) {
             console.warn('自选行情加载失败:', e.message);
+        }
+    },
+
+    /**
+     * 自选里的美股行情。
+     * 走合约的全量快照后在本地筛，理由见 loadStockQuotes。
+     */
+    async loadWatchlistStockQuotes(symbols) {
+        if (typeof Stocks === 'undefined' || !symbols.length) return;
+        try {
+            const map = await Stocks.allTickers();
+            const patch = {};
+            const listQuotes = {};
+            symbols.forEach(sym => {
+                const t = map[sym];
+                if (!t) return;
+                const coinId = this.state.watchlist.find(id => this.getBinanceSymbol(id) === sym);
+                if (!coinId) return;
+                patch[coinId] = {
+                    coinId,
+                    price: t.current_price,
+                    changePercent: t.price_change_percentage_24h,
+                };
+                listQuotes[sym] = {
+                    price: t.current_price,
+                    changePercent: t.price_change_percentage_24h,
+                    quoteVolume: t.quote_volume,
+                };
+            });
+            this.state.watchlistQuotes = Object.assign({}, this.state.watchlistQuotes, patch);
+            this.state.stockQuotes = Object.assign({}, this.state.stockQuotes, listQuotes);
+
+            const modal = document.getElementById('coinSelectorModal');
+            if (modal && !modal.classList.contains('hidden')) {
+                this.renderCoinSelectorList();
+            }
+        } catch (e) {
+            console.warn('美股自选行情加载失败:', e.message);
         }
     },
 
@@ -1842,6 +1903,10 @@ const CryptoPulseApp = {
                 : '模拟盘：按历史K线回放信号，不下任何真实订单。';
         }
 
+        // 美股在合约市场，现货测试网这条链路接不了，提前讲清楚
+        const stockNotice = document.getElementById('tradeStockNotice');
+        if (stockNotice) stockNotice.classList.toggle('hidden', !this.currentIsStock());
+
         if (mode === 'live') this.renderBinancePanel();
     },
 
@@ -2026,6 +2091,16 @@ const CryptoPulseApp = {
 
     // 币种副标题
     getCoinSubtitle(coin) {
+        // 美股要标出「币安合约」：它不是现货，交易方式与加密现货不同
+        if (coin.market === 'futures') {
+            const name = coin.name && coin.name !== coin.symbol ? coin.name + ' · ' : '';
+            return name + '币安合约 ' + (coin.symbol || '') + '/USDT';
+        }
+        // 现货的代币化股票要单独说明：它不是加密币，而且与合约版不是同一个市场
+        if (coin.tokenized) {
+            return '币安现货代币化股票 · 与「' + (coin.tokenizedUnderlying || '') +
+                '」同标的（合约版历史更长、流动性更好）';
+        }
         if (coin.name && coin.name !== coin.symbol && coin.name !== coin.coinId) {
             return coin.name;
         }
@@ -2050,6 +2125,7 @@ const CryptoPulseApp = {
 
         // 后台联网拉取目录
         this.loadCoinCatalog();
+        this.loadStockCatalog();
         this.loadWatchlistQuotes();
     },
 
@@ -2076,6 +2152,14 @@ const CryptoPulseApp = {
         this.updateCoinCategoryButtons();
         this.saveUIState();
         this.renderCoinSelectorList();
+
+        // 美股目录不在现货 exchangeInfo 里，需要单独拉一次合约目录
+        if (cat === 'usstock') {
+            this.loadStockCatalog().then(() => {
+                this.renderCoinSelectorList();
+                this.loadStockQuotes();
+            });
+        }
     },
 
     updateCoinCategoryButtons() {
@@ -2093,6 +2177,14 @@ const CryptoPulseApp = {
 
     // 获取某个分类下的币种
     getCategoryCoins(cat) {
+        // 美股是独立市场（币安 USDT-M 合约的 TradFi 板块），
+        // 不能混进现货目录里一起排，否则「全部」会被一百多个股票代码淹没。
+        if (cat === 'usstock') {
+            return this.state.stockCatalog.length
+                ? this.state.stockCatalog
+                : [];
+        }
+
         const catalog = this.state.coinCatalog.length
             ? this.state.coinCatalog
             : this.popularCoins.map(c => ({
@@ -2147,8 +2239,11 @@ const CryptoPulseApp = {
             // 选择器默认停在「自选」，而原来的写法是「先在当前分类里筛，再按关键词过滤」，
             // 于是自选里没有的币种永远搜不到 —— 输入一个自己有持仓但没加自选的币种，
             // 结果是一片空白，看起来就像搜索坏了。搜索符号时用户的预期是全库匹配。
+            //
+            // 美股同理：在现货分类下输入 AAPL 也应该能搜到，
+            // 否则用户得先猜到「切到美股分类才能搜」。
             pool = this.state.coinCatalog && this.state.coinCatalog.length
-                ? this.state.coinCatalog
+                ? this.state.coinCatalog.concat(this.state.stockCatalog || [])
                 : pool;
             pool = pool.filter(c =>
                 (c.symbol || '').toLowerCase().includes(q) ||
@@ -2160,18 +2255,33 @@ const CryptoPulseApp = {
         const shown = pool.slice(0, this.state.coinListLimit);
 
         if (shown.length === 0) {
+            // 美股分类首屏：目录还没回来时要说明「正在加载」，
+            // 而不是套用通用空结果文案（那句「没有找到匹配「」的币种」在这里毫无意义）。
+            if (this.state.marketTab === 'usstock' && !q) {
+                container.innerHTML = `<div class="py-10 px-6 text-center">
+                    <p class="text-sm text-text-secondary">${this.state.stockCatalogLoading ? '正在加载美股目录…' : '暂时没有取到美股目录'}</p>
+                    <p class="text-xs text-text-tertiary mt-2 leading-relaxed">
+                        美股标的来自<strong>币安 USDT-M 合约</strong>（TradFi 板块），不在现货交易对里，
+                        需要单独拉一次合约目录。
+                    </p>
+                </div>`;
+                return;
+            }
+
             // 空结果要区分「搜错了」和「这个币根本不在数据范围内」，
             // 否则用户无法判断是搜索有问题还是币种没收录。
             const total = (this.state.coinCatalog && this.state.coinCatalog.length) || 0;
+            const stockTotal = (this.state.stockCatalog && this.state.stockCatalog.length) || 0;
             const kw = this.esc ? this.esc(q) : q;
             container.innerHTML = `<div class="py-10 px-6 text-center">
                 <p class="text-sm text-text-secondary">没有找到匹配「${kw}」的币种</p>
                 <p class="text-xs text-text-tertiary mt-2 leading-relaxed">
-                    行情与搜索范围都来自<strong>币安现货 USDT 交易对</strong>${total ? `，当前覆盖 ${total} 个` : ''}。
+                    搜索范围是<strong>币安现货 USDT 交易对</strong>${total ? `（当前覆盖 ${total} 个）` : ''}
+                    与<strong>币安合约里的美股标的</strong>${stockTotal ? `（${stockTotal} 个，见「美股」分类）` : ''}。
                     只在其它交易所上线的币种（例如 GWEI/ETHGas 仅见于 HTX、BitMart、Upbit）不在这个范围内，
                     因此搜不到属于数据范围限制，并非搜索故障。
                 </p>
-                <p class="text-xs text-text-tertiary mt-1.5">也可以直接输入完整符号：BTC、ETH、SOL</p>
+                <p class="text-xs text-text-tertiary mt-1.5">也可以直接输入完整符号：BTC、ETH、SOL、AAPL</p>
             </div>`;
             return;
         }
@@ -2179,21 +2289,30 @@ const CryptoPulseApp = {
         // 行情缺失的批量补拉。
         // filter(Boolean) 不能省：CoinGecko 币种没有币安交易对，binanceSymbol 为 null，
         // 混进请求里会让整个批量行情接口报错，连累其它币种也拿不到价格。
+        // 美股同理：它在合约市场，现货批量行情接口认不出这些交易对。
         const pending = this._listQuotePending || (this._listQuotePending = new Set());
         const missing = shown
-            .filter(c => c.binanceSymbol && !this.state.coinListQuotes[c.binanceSymbol] && !pending.has(c.binanceSymbol))
+            .filter(c => c.binanceSymbol && c.market !== 'futures' &&
+                !this.state.coinListQuotes[c.binanceSymbol] && !pending.has(c.binanceSymbol))
             .map(c => c.binanceSymbol);
         if (missing.length > 0) {
             this.loadCoinListQuotes(missing);
+        }
+        // 美股走合约的全量快照，一次请求覆盖整个分类
+        if (shown.some(c => c.market === 'futures') &&
+            !Object.keys(this.state.stockQuotes || {}).length) {
+            this.loadStockQuotes();
         }
 
         container.innerHTML = shown.map(coin => {
             const isActive = coin.coinId === this.state.currentCoin;
             const inWatchlist = this.isSymbolInWatchlist(coin.binanceSymbol);
+            const isStockRow = coin.market === 'futures';
 
-            // 优先用自选行情，其次用列表行情
+            // 优先用自选行情，其次用列表行情；美股在 stockQuotes 里
             let quote = this.state.watchlistQuotes[coin.coinId];
             if (!quote) quote = this.state.coinListQuotes[coin.binanceSymbol];
+            if (!quote) quote = this.state.stockQuotes[coin.binanceSymbol];
             const hasQuote = !!quote;
             const up = hasQuote ? quote.changePercent >= 0 : true;
 
@@ -2215,6 +2334,7 @@ const CryptoPulseApp = {
                         <div class="min-w-0">
                             <div class="flex items-center gap-1.5">
                                 <span class="text-sm font-semibold text-text-primary">${coin.symbol}</span>
+                                ${isStockRow ? '<span class="text-[10px] px-1 py-px rounded bg-blue-50 text-blue-600">合约</span>' : (coin.tokenized ? '<span class="text-[10px] px-1 py-px rounded bg-amber-50 text-amber-600">代币</span>' : '')}
                                 ${isActive ? '<span class="text-[10px] px-1 py-px rounded bg-golden/15 text-golden">当前</span>' : ''}
                             </div>
                             <p class="text-xs text-text-secondary truncate">${this.getCoinSubtitle(coin)}</p>
@@ -2333,6 +2453,11 @@ const CryptoPulseApp = {
             };
             this.saveCoinMeta();
         }
+
+        // 美股在合约目录里，source 要标成 stock，否则会被当成现货去请求
+        const fromStock = (this.state.stockCatalog || []).find(c => c.coinId === coinId);
+        if (fromStock) this.addCoinFromStock(fromStock);
+
         await this.addToWatchlist(coinId);
     },
 
@@ -2347,6 +2472,9 @@ const CryptoPulseApp = {
 
         const fromCatalog = this.state.coinCatalog.find(c => c.coinId === coinId);
         if (fromCatalog) return fromCatalog;
+
+        const fromStock = (this.state.stockCatalog || []).find(c => c.coinId === coinId);
+        if (fromStock) return fromStock;
 
         return {
             id: coinId,
@@ -2366,16 +2494,185 @@ const CryptoPulseApp = {
         await this.loadCoinData(coinId);
     },
 
-    // ==================== 数据源路由（币安 / CoinGecko）====================
+    // ==================== 数据源路由（币安现货 / 币安合约美股 / CoinGecko）====================
 
     /**
      * 判断某个币种走哪个数据源。
-     * 币安现货没有收录的币种（例如 GWEI/ETHGas）走 CoinGecko。
+     *
+     *   binance   —— 币安现货 USDT 交易对（默认）
+     *   stock     —— 币安 USDT-M 合约里的股票标的，价格与K线要换 futuresApiBase
+     *   coingecko —— 币安没有收录的币种（例如 GWEI/ETHGas）
      */
     getDataSource(coinId) {
         const meta = this.state.coinMeta[coinId];
+        if (meta && meta.source === 'stock' && meta.binanceSymbol) return 'stock';
         if (meta && meta.source === 'coingecko' && meta.cgId) return 'coingecko';
         return 'binance';
+    },
+
+    isStock(coinId) {
+        return this.getDataSource(coinId) === 'stock';
+    },
+
+    /**
+     * 交易市场：现货还是合约。
+     * 现货接口（ticker / klines / 批量行情）不能混进合约标的——
+     * 一个不存在的交易对会让整批请求失败，连累其它币种也拿不到行情。
+     */
+    getMarket(coinId) {
+        return this.isStock(coinId) ? 'futures' : 'spot';
+    },
+
+    // 当前查看的美股标的是不是合约标的（供顶部提示条判断）
+    currentIsStock() {
+        return this.isStock(this.state.currentCoin);
+    },
+
+    /**
+     * 把合约目录里的美股标的登记到本地，之后就能像普通币种一样搜索与切换。
+     * source 标成 stock，路由据此改走合约接口。
+     */
+    addCoinFromStock(entry) {
+        if (!entry || !entry.binanceSymbol) return null;
+        const coinId = entry.coinId || String(entry.symbol || '').toLowerCase();
+        this.state.coinMeta[coinId] = {
+            id: coinId,
+            coinId: coinId,
+            symbol: entry.symbol,
+            name: entry.name || entry.symbol,
+            binanceSymbol: entry.binanceSymbol,
+            source: 'stock',
+            market: 'futures',
+            underlyingType: entry.underlyingType || '',
+            marketLabel: entry.marketLabel || '美股',
+            onboardDate: entry.onboardDate || 0,
+            stepSize: entry.stepSize,
+            minNotional: entry.minNotional,
+        };
+        this.saveCoinMeta();
+        return coinId;
+    },
+
+    /**
+     * 拉取合约目录并筛出美股标的。
+     * 识别靠 underlyingType 字段（EQUITY），不是硬编码名单，
+     * 币安上新股票时这边不用改。
+     */
+    async loadStockCatalog(force = false) {
+        if (this.state.stockCatalogLoading) return this.state.stockCatalog;
+        if (this.state.stockCatalogLoaded && !force) return this.state.stockCatalog;
+        if (typeof Stocks === 'undefined') return [];
+
+        // 先读缓存（24 小时有效），避免每次打开选择器都打一次 exchangeInfo
+        if (!force) {
+            try {
+                const cached = JSON.parse(localStorage.getItem('cryptoPulse_stockCatalog_v1') || 'null');
+                if (cached && cached.ts && Date.now() - cached.ts < 24 * 3600 * 1000 && cached.list?.length) {
+                    this.state.stockCatalog = this.sortStockCatalog(cached.list);
+                    this.state.stockCatalogLoaded = true;
+                    this.tagTokenizedStocks();
+                    return this.state.stockCatalog;
+                }
+            } catch (e) { /* 忽略缓存损坏 */ }
+        }
+
+        this.state.stockCatalogLoading = true;
+        try {
+            const list = await Stocks.loadCatalog();
+            this.state.stockCatalog = this.sortStockCatalog(list);
+            this.state.stockCatalogLoaded = true;
+            this.tagTokenizedStocks();
+            localStorage.setItem('cryptoPulse_stockCatalog_v1',
+                JSON.stringify({ ts: Date.now(), list: this.state.stockCatalog }));
+            console.log(`[美股目录] 合约市场筛出 ${this.state.stockCatalog.length} 个美股标的`);
+
+            if (this.state.marketTab === 'usstock') this.renderCoinSelectorList();
+            return this.state.stockCatalog;
+        } catch (e) {
+            console.warn('[美股目录] 获取失败:', e.message);
+            this.state.stockCatalogLoaded = true;
+            return this.state.stockCatalog;
+        } finally {
+            this.state.stockCatalogLoading = false;
+        }
+    },
+
+    /**
+     * 给现货目录里的「代币化股票」打标。
+     *
+     * 币安现货也有美股（代码是原代码 + B，如 AAPLB），但它和普通币种在
+     * exchangeInfo 里字段完全一样，没法靠字段区分；而单纯「以 B 结尾」
+     * 会把 BNB / SHIB / ARB / CKB / TRB 一起误伤。
+     * 所以用合约那边的美股名单反查配对，认出来的打 tokenized 标记，
+     * 列表里显示为「代币」并标明这是现货，避免被当成同一只股票的另一个代码。
+     *
+     * 这个方法幂等，目录或美股名单任一就绪后调用都安全。
+     */
+    tagTokenizedStocks() {
+        if (typeof Stocks === 'undefined') return;
+        const catalog = this.state.coinCatalog;
+        if (!catalog || !catalog.length) return;
+        if (!this.state.stockCatalog || !this.state.stockCatalog.length) return;
+
+        const set = Stocks.tokenizedBaseSet(this.state.stockCatalog.map(c => c.symbol));
+        catalog.forEach(c => {
+            const sym = String(c.symbol || '').toUpperCase();
+            if (!set.has(sym)) { c.tokenized = false; return; }
+            const underlying = sym.slice(0, -1);
+            c.tokenized = true;
+            c.tokenizedUnderlying = underlying;
+            // 中文名沿用原标的，并显式标注「代币化」，避免被误读成同名加密币
+            c.name = (Stocks.NAMES[underlying] || underlying) + '（代币化）';
+        });
+    },
+
+    /**
+     * 美股排序：有行情就按成交额从大到小（流动性优先），
+     * 没行情时按标的简称排，保证顺序稳定不跳。
+     */
+    sortStockCatalog(list) {
+        const q = this.state.stockQuotes || {};
+        return list.slice().sort((a, b) => {
+            const qa = q[a.binanceSymbol] ? q[a.binanceSymbol].quoteVolume : 0;
+            const qb = q[b.binanceSymbol] ? q[b.binanceSymbol].quoteVolume : 0;
+            if (qa !== qb) return qb - qa;
+            return (a.symbol || '').localeCompare(b.symbol || '');
+        });
+    },
+
+    /**
+     * 批量拉取美股行情。
+     *
+     * 实测 fapi/v1/ticker/24hr 带 symbols（复数）参数时并不按列表过滤、会返回全量，
+     * 所以这里直接取全量快照在本地筛，一次请求覆盖整个美股分类，比依赖那个参数可靠。
+     */
+    async loadStockQuotes() {
+        if (typeof Stocks === 'undefined') return;
+        if (this._stockQuotePending) return;
+        this._stockQuotePending = true;
+        try {
+            const map = await Stocks.allTickers();
+            const quotes = {};
+            (this.state.stockCatalog || []).forEach(c => {
+                const t = map[c.binanceSymbol];
+                if (t) {
+                    quotes[c.binanceSymbol] = {
+                        price: t.current_price,
+                        changePercent: t.price_change_percentage_24h,
+                        quoteVolume: t.quote_volume,
+                    };
+                }
+            });
+            this.state.stockQuotes = quotes;
+            this.state.stockCatalog = this.sortStockCatalog(this.state.stockCatalog);
+
+            const modal = document.getElementById('coinSelectorModal');
+            if (modal && !modal.classList.contains('hidden')) this.renderCoinSelectorList();
+        } catch (e) {
+            console.warn('[美股行情] 获取失败:', e.message);
+        } finally {
+            this._stockQuotePending = false;
+        }
     },
 
     /**
@@ -2484,6 +2781,7 @@ const CryptoPulseApp = {
         this.state.showSignalMarkers = prevMarkers;
 
         this.renderCgNotice(true);
+        this.renderStockNotice();
         this.renderCgSignalState();
     },
 
@@ -2513,6 +2811,44 @@ const CryptoPulseApp = {
         } catch (e) {
             // 自动刷新失败就静默跳过，不打扰用户
         }
+    },
+
+    /**
+     * 美股提示条。
+     *
+     * 必须说明三件事，否则用户会照着加密币的直觉用错：
+     *   1) 这是**合约**不是现货，交易方式不同；
+     *   2) 24 小时连续交易（实测K线覆盖全部 24 个小时位，没有休市缺口）；
+     *   3) 历史深度很浅 —— 合约 2026 年才上线，日线约 166 根、周线约 24 根。
+     */
+    renderStockNotice() {
+        const el = document.getElementById('stockNotice');
+        const tradeNote = document.getElementById('tradeStockNotice');
+        const show = this.currentIsStock();
+        // 两处都要跟着切换：顶部说明条 + 交易页里「美股不能在这里下单」的提示。
+        // 放在同一个方法里，避免切币种时漏掉其中一个。
+        if (tradeNote) tradeNote.classList.toggle('hidden', !show);
+        if (!el) return;
+        el.classList.toggle('hidden', !show);
+        if (!show) return;
+
+        const body = document.getElementById('stockNoticeBody');
+        if (!body) return;
+
+        const bars = (this.state.candleData || []).length;
+        const tfLabel = this.getTimeframeConfig(this.state.currentTimeframe).label;
+        const depth = this.state.stockDepthNotice;
+        const parts = [
+            `数据来自 <strong>${typeof Stocks !== 'undefined' ? Stocks.SOURCE_LABEL : '币安 USDT-M 合约'}</strong>（美股永续合约，24 小时连续交易，非现货）。`,
+            `当前 ${tfLabel} 共 <strong>${bars}</strong> 根K线。`,
+        ];
+        if (depth) parts.push(`<span class="text-amber-700">${depth}</span>`);
+        parts.push('加密市场的恐慌贪婪指数与加密新闻对个股不适用，因此综合评分只由<strong>技术面 + 量能</strong>两项构成（权重 2:1）。');
+        // 币安现货其实也有代币化股票，不说清楚的话用户在搜索里看到 AAPLB 会困惑
+        parts.push('<span class="block mt-1">币安现货另有<strong>代币化股票</strong>（代码带 B 后缀，如 AAPLB）。'
+            + '实测同一只苹果：现货日线 52 根、24h 成交额 203 万美元，合约日线 166 根、成交额 5408 万美元，'
+            + '所以这里统一用合约标的；现货那批在搜索结果里仍可见，已标「代币」。</span>');
+        body.innerHTML = parts.join('');
     },
 
     /**
@@ -2612,6 +2948,9 @@ const CryptoPulseApp = {
 
         // 回到币安币种时收起 CoinGecko 的提示条
         this.renderCgNotice(false);
+        // 美股：显示 / 收起合约市场的说明条
+        this.state.stockDepthNotice = null;
+        this.renderStockNotice();
 
         try {
             // 关键路径只等「价格 + K线」——这两项决定首屏能看到什么。
@@ -2652,11 +2991,25 @@ const CryptoPulseApp = {
     async loadDeferredData(coinId, token) {
         this.setAnalysisPending(true);
         try {
-            await Promise.allSettled([
-                this.loadFearGreedIndex(),
-                this.loadDerivativesData(coinId),
-                this.loadNews(coinId),
-            ]);
+            // 美股只补衍生品。
+            //
+            // 另外两个因子对个股是**错的**，不能凑数：
+            //   - 恐慌贪婪指数是加密市场的指标，跟苹果股价没有关系；
+            //   - 新闻源（cryptocurrency.cv / 币安公告 / 528btc）全是加密资讯，
+            //     拿它们给个股打消息分会得到一个纯噪声的分数。
+            // 因此股票跳过这两项，综合评分里也相应去掉这两个权重（见 updateSignal）。
+            if (this.isStock(coinId)) {
+                this.state.newsList = [];
+                this._newsReady = true;
+                this.renderNews();
+                await Promise.allSettled([this.loadDerivativesData(coinId)]);
+            } else {
+                await Promise.allSettled([
+                    this.loadFearGreedIndex(),
+                    this.loadDerivativesData(coinId),
+                    this.loadNews(coinId),
+                ]);
+            }
         } finally {
             if (token !== this._loadToken) return;
             if (this.state.currentCoin !== coinId) return;
@@ -2686,6 +3039,13 @@ const CryptoPulseApp = {
         const binanceSymbol = this.getBinanceSymbol(coinId);
         if (!binanceSymbol) {
             this.useMockPriceData(coinId);
+            return;
+        }
+
+        // 美股在 USDT-M 合约市场，报价要换 fapi 端点；
+        // 拿现货接口去问 AAPLUSDT 会直接报错，然后落到模拟数据兜底。
+        if (this.isStock(coinId)) {
+            await this.loadStockPriceData(coinId, binanceSymbol);
             return;
         }
 
@@ -2725,6 +3085,38 @@ const CryptoPulseApp = {
             console.error('获取价格数据失败:', error);
             if (this.state.currentCoin === coinId) {
                 this.useMockPriceData(coinId);
+            }
+        }
+    },
+
+    /**
+     * 美股（币安 USDT-M 合约）的报价。
+     *
+     * 走合约的 ticker/24hr，字段名与现货一致（实测键名完全相同），
+     * 所以这里复用 Stocks.toPriceInfo 做映射，避免两套解析逻辑各错各的。
+     *
+     * 失败时**不降级成模拟数据**：美股没有内置的基准价，
+     * 用随机数顶替只会让用户看到一条根本不存在的行情。
+     */
+    async loadStockPriceData(coinId, binanceSymbol) {
+        try {
+            const info = await Stocks.ticker(binanceSymbol);
+            if (!info) throw new Error('合约行情为空');
+            if (this.state.currentCoin !== coinId) return;
+
+            const coinInfo = this.getCoinInfo(coinId);
+            this.state.coinInfo = Object.assign({
+                id: coinId,
+                symbol: coinInfo.symbol,
+                name: coinInfo.name,
+                image: coinInfo.image || '',
+            }, info);
+
+            this.updatePriceUI();
+        } catch (error) {
+            console.error('获取美股行情失败:', error);
+            if (this.state.currentCoin === coinId) {
+                this.showToast('美股行情获取失败：' + error.message);
             }
         }
     },
@@ -2782,6 +3174,12 @@ const CryptoPulseApp = {
             return;
         }
 
+        // 美股走合约 K线接口
+        if (this.isStock(coinId)) {
+            await this.loadStockCandleData(coinId, binanceSymbol);
+            return;
+        }
+
         try {
             const { interval, limit } = this.getBinanceInterval(this.state.currentTimeframe);
             const response = await fetch(
@@ -2806,6 +3204,7 @@ const CryptoPulseApp = {
             }));
 
             this.state.candleData = candleData;
+            this.state.candleSource = 'binance';
             this.evaluatePredictions();
             this.calculateIndicators();
             // 闸门需要按K线时间对齐的资金费率分位，必须在K线就绪后计算
@@ -2817,6 +3216,50 @@ const CryptoPulseApp = {
         } catch (error) {
             console.error('获取K线数据失败:', error);
             this.useMockCandleData(coinId);
+        }
+    },
+
+    /**
+     * 美股（币安 USDT-M 合约）的K线。
+     *
+     * 与现货路径的关键差异是**历史深度**：
+     * 美股合约 2026 年才上线，实测 AAPLUSDT 最早一根日线是 2026-04-06，
+     * 日线只有 166 根、周线只有 24 根。所以：
+     *   - 请求 limit 仍按现有口径（200），但实际能拿到多少就多少；
+     *   - 拿到的根数如果不够算长期均线，明确记下来并在界面上提示，
+     *     而不是让 MA200 静默变成空值、用户以为指标坏了。
+     */
+    async loadStockCandleData(coinId, binanceSymbol) {
+        try {
+            const { interval, limit } = this.getBinanceInterval(this.state.currentTimeframe);
+            const candleData = await Stocks.klines(binanceSymbol, interval, limit);
+
+            // 切币后才回来的响应必须丢弃
+            if (this.state.currentCoin !== coinId) return;
+
+            if (!candleData.length) throw new Error('合约K线为空');
+
+            this.state.candleData = candleData;
+            this.state.candleSource = 'stock';
+            this.state.stockDepthNotice = Stocks.depthWarning(
+                this.state.currentTimeframe, candleData.length
+            );
+            this.renderStockNotice();
+
+            this.evaluatePredictions();
+            this.calculateIndicators();
+            // 闸门按K线时间对齐费率分位；美股费率历史偏短，样本不够时闸门会自动不过滤
+            await this.ensureFundingHistory(coinId);
+            this.computeFundingPercentile();
+            this.updateChart();
+            this.updateSignal();
+
+        } catch (error) {
+            console.error('获取美股K线失败:', error);
+            // 与行情一致：不用模拟K线顶替，美股没有可参照的合成基准
+            if (this.state.currentCoin === coinId) {
+                this.showToast('美股K线获取失败：' + error.message);
+            }
         }
     },
 
@@ -3806,6 +4249,14 @@ const CryptoPulseApp = {
 
     // 加载新闻
     async loadNews(coinId) {
+        // 美股直接跳过：新闻源全是加密媒体，抓回来只会污染 state.newsList。
+        // 综合评分那边虽然已经不计消息面，但没必要每 5 分钟白打三个外部接口。
+        if (this.isStock(coinId || this.state.currentCoin)) {
+            this.state.newsList = [];
+            this._newsReady = true;
+            this.renderNews();
+            return;
+        }
         try {
             const news = await NewsAnalyzer.fetchNews(coinId);
             this.state.newsList = news;
@@ -3825,7 +4276,26 @@ const CryptoPulseApp = {
         const newsList = this.state.newsList;
         
         if (!container) return;
-        
+
+        // 美股：新闻源里根本没有个股资讯，这时候渲染「暂无新闻数据」会让用户
+        // 以为是抓取失败，反复点刷新。所以直接说明这个板块对个股不适用。
+        if (this.currentIsStock()) {
+            const badge = document.getElementById('newsSentimentBadge');
+            if (badge) {
+                badge.textContent = '不适用';
+                badge.className = 'text-xs px-2 py-0.5 rounded-full bg-gray-100 text-text-secondary';
+            }
+            container.innerHTML = `<div class="py-8 px-4 text-center">
+                <p class="text-sm text-text-secondary">个股资讯暂未接入</p>
+                <p class="text-xs text-text-tertiary mt-2 leading-relaxed">
+                    当前资讯源是加密货币媒体（cryptocurrency.cv、币安公告、528btc），
+                    对个股没有可用内容。与其拿加密新闻给个股凑一个情绪分，这里选择留空，
+                    综合评分也不计入消息面（见顶部说明）。
+                </p>
+            </div>`;
+            return;
+        }
+
         if (!newsList || newsList.length === 0) {
             container.innerHTML = '<p class="text-text-secondary text-sm text-center py-8">暂无新闻数据</p>';
             return;
@@ -4073,17 +4543,36 @@ const CryptoPulseApp = {
         this.state.volumeAnalysis = volumeResult;
 
         // 五因子加权：技术面 / 量能 / 市场情绪 / 消息面 / 衍生品
-        const totalScore = Math.round(
-            techScoreResult.score * 0.40 +
-            volumeResult.score * 0.20 +
-            sentimentScore * 0.16 +
-            newsScoreResult.score * 0.12 +
-            derivativesScore * 0.12
-        );
+        //
+        // 美股只保留前两项。剩下三项对个股不是「差一点」而是「根本不对」：
+        //   - 恐慌贪婪指数衡量的是加密市场情绪，与苹果股价没有因果关系；
+        //   - 新闻源全是加密资讯，给个股打出来的消息分是纯噪声；
+        //   - 合约资金费率实测长期贴近 0（20 期样本绝对值均 < 0.035%），
+        //     远低于 calculateDerivativesScore 的 0.05% 阈值，永远是 50 分，
+        //     留着等于凭空给个股塞了一个常数项。
+        //
+        // 去掉三项后按剩余权重重新归一（技术面:量能 = 2:1），
+        // 这样分值的量纲与加密币一致，阈值档位也还能沿用。
+        const isStock = this.isStock(this.state.currentCoin);
+        const rawWeights = isStock
+            ? { technical: 40, volume: 20, sentiment: 0, news: 0, derivatives: 0 }
+            : { technical: 40, volume: 20, sentiment: 16, news: 12, derivatives: 12 };
+        const wSum = rawWeights.technical + rawWeights.volume + rawWeights.sentiment +
+            rawWeights.news + rawWeights.derivatives;
+
+        const totalScore = Math.round((
+            techScoreResult.score * rawWeights.technical +
+            volumeResult.score * rawWeights.volume +
+            (isStock ? 0 : sentimentScore * rawWeights.sentiment) +
+            (isStock ? 0 : newsScoreResult.score * rawWeights.news) +
+            (isStock ? 0 : derivativesScore * rawWeights.derivatives)
+        ) / wSum);
 
         const signal = SignalGenerator.generateSignal(
             { ...techScoreResult, score: techScoreResult.score },
-            { ...newsScoreResult, score: newsScoreResult.score },
+            isStock
+                ? { score: null, topNews: [], label: 'na', positiveCount: 0, negativeCount: 0 }
+                : { ...newsScoreResult, score: newsScoreResult.score },
             {
                 supportResistance: ind.supportResistance,
                 currentPrice: ind.currentPrice,
@@ -4093,16 +4582,21 @@ const CryptoPulseApp = {
                 volumeMetrics: volumeResult.metrics,
                 volumeSignals: volumeResult.signals,
                 totalScore,
+                isStock,
                 thresholds: this.getSensitivity().thresholds,
                 breakdown: {
                     technical: techScoreResult.score,
                     volume: volumeResult.score,
-                    news: newsScoreResult.score,
-                    sentiment: sentimentScore,
-                    derivatives: derivativesScore
+                    // 股票把不适用的因子显式标成 null，界面据此显示「不适用」，
+                    // 而不是显示一个看似有意义的 50 分。
+                    news: isStock ? null : newsScoreResult.score,
+                    sentiment: isStock ? null : sentimentScore,
+                    derivatives: isStock ? null : derivativesScore,
                 }
             }
         );
+
+        if (isStock) signal.newsScore = null;
 
         this.state.signal = signal;
         this.state.signal.totalScore = totalScore;
@@ -4249,9 +4743,13 @@ const CryptoPulseApp = {
     bnRenderSymbols() {
         const sel = document.getElementById('bnSymbol');
         if (!sel) return;
-        const list = (this.state.watchlist || []).map(id => ({
-            id, sym: this.getBinanceSymbol(id), name: this.getCoinInfo(id).symbol,
-        })).filter(x => x.sym);
+        // 美股不能进这个下拉框：这条链路是**现货**测试网，而美股只在合约市场。
+        // 放进来只会让用户点一次、报一次错（现货接口上不存在 AAPLUSDT）。
+        const list = (this.state.watchlist || [])
+            .filter(id => !this.isStock(id))
+            .map(id => ({
+                id, sym: this.getBinanceSymbol(id), name: this.getCoinInfo(id).symbol,
+            })).filter(x => x.sym);
 
         const cur = this.getBinanceSymbol(this.state.currentCoin);
         const keep = sel.value;
@@ -4845,8 +5343,12 @@ const CryptoPulseApp = {
         }
 
         // 信号强度标签
+        // 美股额外标注「2 因子」：它的评分只由技术面与量能构成，
+        // 与加密币的五因子分值不是同一口径，不标出来会被直接横向比较。
         if (signalStrengthTag) {
-            signalStrengthTag.textContent = strengthText;
+            signalStrengthTag.textContent = this.isStock(this.state.currentCoin)
+                ? strengthText + ' · 2因子'
+                : strengthText;
             signalStrengthTag.className = `text-xs px-2 py-0.5 rounded-full bg-${signalColor}/10 text-${signalColor} font-medium`;
         }
 
@@ -4868,38 +5370,31 @@ const CryptoPulseApp = {
         const scoreColorOf = (v) => SignalGenerator.getScoreColor(v)
             .replace('crypto-', '').replace('green', 'rise-green').replace('red', 'fall-red').replace('gold', 'golden');
 
-        const techMini = document.getElementById('techScoreMini');
-        if (techMini) {
-            techMini.textContent = signal.techScore;
-            techMini.className = `text-sm font-semibold mt-0.5 ${scoreColorOf(signal.techScore)}`;
-        }
+        // 因子值为 null 表示这个因子对该标的「不适用」（美股用不到加密情绪与加密新闻）。
+        // 这时显示「—」并给出原因，而不是拿 50 分占位——那个 50 会被读成「中性」，
+        // 用户会以为指标算过并且算出了中性。
+        const setMini = (id, value, naReason) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            if (value === null || value === undefined) {
+                el.textContent = '—';
+                el.className = 'text-sm font-semibold mt-0.5 text-text-tertiary';
+                el.title = naReason || '该因子不适用于当前标的';
+            } else {
+                el.textContent = value;
+                el.className = `text-sm font-semibold mt-0.5 ${scoreColorOf(value)}`;
+                el.title = '';
+            }
+        };
 
-        const volumeMini = document.getElementById('volumeScoreMini');
-        const volumeScore = signal.breakdown?.volume ?? 50;
-        if (volumeMini) {
-            volumeMini.textContent = volumeScore;
-            volumeMini.className = `text-sm font-semibold mt-0.5 ${scoreColorOf(volumeScore)}`;
-        }
-
-        const sentimentMini = document.getElementById('sentimentScoreMini');
-        const sentimentScore = signal.breakdown?.sentiment ?? 50;
-        if (sentimentMini) {
-            sentimentMini.textContent = sentimentScore;
-            sentimentMini.className = `text-sm font-semibold mt-0.5 ${scoreColorOf(sentimentScore)}`;
-        }
-
-        const newsMini = document.getElementById('newsScoreMini');
-        if (newsMini) {
-            newsMini.textContent = signal.newsScore;
-            newsMini.className = `text-sm font-semibold mt-0.5 ${scoreColorOf(signal.newsScore)}`;
-        }
-
-        const derivMini = document.getElementById('derivScoreMini');
-        const derivScore = signal.breakdown?.derivatives ?? 50;
-        if (derivMini) {
-            derivMini.textContent = derivScore;
-            derivMini.className = `text-sm font-semibold mt-0.5 ${scoreColorOf(derivScore)}`;
-        }
+        setMini('techScoreMini', signal.techScore);
+        setMini('volumeScoreMini', signal.breakdown?.volume ?? 50);
+        setMini('sentimentScoreMini', signal.breakdown?.sentiment ?? null,
+            '恐慌贪婪指数是加密市场指标，对个股不适用');
+        setMini('newsScoreMini', signal.newsScore,
+            '当前新闻源只有加密资讯，对个股不适用');
+        setMini('derivScoreMini', signal.breakdown?.derivatives ?? null,
+            '合约资金费率对美股长期贴近 0，该因子不可用');
     },
 
     // 渲染预测Tab
@@ -5434,6 +5929,8 @@ const CryptoPulseApp = {
         // 已经是 CoinGecko 币种就别覆盖，否则数据源路由会被改回币安
         const existing = this.state.coinMeta[coinId];
         if (existing && existing.source === 'coingecko') return;
+        // 美股同理：被覆盖成没有 source 的元数据后会退回现货接口，价格直接变模拟数据
+        if (existing && existing.source === 'stock') return;
 
         const fromPopular = this.popularCoins.find(c => c.id === coinId);
         const fromCatalog = this.state.coinCatalog.find(c => c.coinId === coinId);
