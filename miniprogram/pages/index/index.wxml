@@ -1,0 +1,88 @@
+<!-- 列表行：列表与搜索结果共用，避免两处样式走样 -->
+<template name="coin-row">
+    <view class="item" data-coinid="{{coinId}}" data-market="{{market}}" data-binancesymbol="{{binanceSymbol}}" bindtap="goDetail">
+        <view class="star {{watched ? 'star-on' : ''}}"
+              data-coinid="{{coinId}}" data-symbol="{{symbol}}" data-market="{{market}}" data-binancesymbol="{{binanceSymbol}}"
+              catchtap="toggleWatch">{{watched ? '★' : '☆'}}</view>
+        <view class="item-main">
+            <view class="item-title">
+                <text class="sym">{{symbol}}</text>
+                <text wx:if="{{market === 'futures'}}" class="tag tag-futures">合约</text>
+            </view>
+            <text class="sub">{{name}}</text>
+        </view>
+        <view class="item-right">
+            <text class="price num">{{price ? price : '--'}}</text>
+            <text class="chg num {{dirClass ? dirClass : 'flat'}}">{{changePercent ? changePercent : '--'}}</text>
+        </view>
+    </view>
+</template>
+
+<view class="wrap">
+    <!-- 搜索 -->
+    <view class="search-bar">
+        <input class="search-input"
+               value="{{keyword}}"
+               placeholder="搜索币种或美股代码，如 BTC、AAPL"
+               placeholder-class="ph"
+               confirm-type="search"
+               bindinput="onKeyword" />
+        <view wx:if="{{keyword}}" class="clear" bindtap="clearKeyword">清除</view>
+    </view>
+
+    <!-- 分类：搜索时让位给结果 -->
+    <view wx:if="{{!keyword}}" class="cats">
+        <view wx:for="{{cats}}"
+              wx:key="key"
+              class="cat {{cat === item.key ? 'cat-on' : ''}}"
+              data-key="{{item.key}}"
+              bindtap="switchCat">{{item.label}}</view>
+    </view>
+
+    <!-- 错误 -->
+    <view wx:if="{{error}}" class="error" bindtap="loadList">{{error}}（点击重试）</view>
+
+    <!-- 搜索模式 -->
+    <block wx:if="{{keyword}}">
+        <view wx:if="{{resultNote}}" class="hint">{{resultNote}}</view>
+        <view wx:if="{{searching}}" class="empty">正在搜索…</view>
+        <block wx:else>
+            <view wx:if="{{!results.length}}" class="empty">
+                <text class="empty-line">没有匹配「{{keyword}}」的标的</text>
+                <text class="empty-line">搜索范围：币安现货 USDT 交易对 + 币安合约美股（162 个）</text>
+                <text class="empty-line">美股代码直接输字母即可，例如 AAPL、TSLA、NVDA</text>
+            </view>
+            <view wx:else class="list">
+                <template is="coin-row" wx:for="{{results}}" wx:key="coinId" data="{{...item}}" />
+            </view>
+        </block>
+    </block>
+
+    <!-- 列表模式 -->
+    <block wx:else>
+        <view wx:if="{{loading}}" class="empty">{{loadingText}}</view>
+        <block wx:else>
+            <view wx:if="{{!list.length}}" class="empty">
+                <block wx:if="{{cat === 'watch'}}">
+                    <text class="empty-line">自选还没有标的</text>
+                    <text class="empty-line">切到「热门」或「美股」，点左侧星号即可加入</text>
+                </block>
+                <block wx:elif="{{cat === 'stock'}}">
+                    <text class="empty-line">暂时没有取到美股目录</text>
+                    <text class="empty-line">美股来自币安 USDT-M 合约的 TradFi 板块，需要单独拉取合约目录</text>
+                </block>
+                <block wx:else>
+                    <text class="empty-line">暂无数据</text>
+                </block>
+            </view>
+            <view wx:else class="list">
+                <template is="coin-row" wx:for="{{list}}" wx:key="coinId" data="{{...item}}" />
+            </view>
+        </block>
+    </block>
+
+    <view class="foot">
+        <text class="foot-line">行情来自币安现货与 USDT-M 合约</text>
+        <text class="foot-line">本页为自用工具，数据仅供参考，不构成投资建议</text>
+    </view>
+</view>

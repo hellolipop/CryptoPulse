@@ -1,0 +1,46 @@
+{
+  "appid": "touristappid",
+  "projectname": "CryptoPulse",
+  "description": "加密货币 + 币安美股实时分析（原生小程序版）",
+  "compileType": "miniprogram",
+  "miniprogramRoot": "./",
+  "libVersion": "3.5.5",
+  "setting": {
+    "urlCheck": false,
+    "es6": true,
+    "enhance": true,
+    "postcss": true,
+    "minified": false,
+    "checkSiteMap": false,
+    "ignoreDevUnusedFiles": false,
+    "coverView": true,
+    "nodeModules": false,
+    "autoAudits": false,
+    "showShadowRootInWxmlPanel": true,
+    "useCompilerPlugins": false
+  },
+  "condition": {
+    "miniprogram": {
+      "list": [
+        {
+          "name": "行情列表",
+          "pathName": "pages/index/index",
+          "query": "",
+          "scene": null
+        },
+        {
+          "name": "详情-比特币",
+          "pathName": "pages/detail/detail",
+          "query": "coinId=bitcoin&market=spot&symbol=BTCUSDT",
+          "scene": null
+        },
+        {
+          "name": "详情-苹果(美股)",
+          "pathName": "pages/detail/detail",
+          "query": "coinId=aapl&market=futures&symbol=AAPLUSDT",
+          "scene": null
+        }
+      ]
+    }
+  }
+}

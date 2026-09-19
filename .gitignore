@@ -8,3 +8,8 @@ node_modules/
 research/data/
 research/*.zip
 research/*.csv
+
+# 微信开发者工具生成的本地文件（含本机 AppID / 编译缓存，不该入库）
+miniprogram/project.private.config.json
+miniprogram/miniprogram_npm/
+miniprogram/.idea/

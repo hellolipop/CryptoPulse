@@ -71,6 +71,23 @@ npx serve .
 ### 方式三：部署到静态网站
 可直接部署到 Vercel、Netlify、GitHub Pages 等静态网站托管服务。
 
+## 📱 小程序版（个人主体也能用）
+
+`miniprogram/` 是一份**原生微信小程序**，用微信开发者工具导入后在手机上预览即可自己使用，
+不需要域名、不需要服务器、**也不需要 ICP 备案**（预览版不受备案限制）。
+
+之所以不是「套一层 web-view」：微信**不允许个人主体小程序配置业务域名**，而 `web-view` 依赖业务域名，
+个人主体用不了。所以界面用 WXML/WXSS 重写、K线用 Canvas 手绘，但**分析逻辑一行都没重写** ——
+`libs/` 下的指标、信号、美股数据源是从 `js/` 同步过来的同一份代码。
+
+```bash
+# 改动了 js/technical.js、js/signals.js、js/stocks.js 中的任何一个后，同步一次
+node miniprogram/sync-libs.js
+```
+
+详细的导入步骤、手机上打不开数据的处理、以及本版与网页版的功能差异，见
+[`miniprogram/README.md`](miniprogram/README.md)。
+
 ## 📁 项目结构
 
 ```
@@ -96,6 +113,11 @@ crypto-analyzer/
 │   ├── binance.test.js
 │   ├── coingecko.test.js
 │   └── stocks.test.js
+├── miniprogram/        # 原生微信小程序版（见 miniprogram/README.md）
+│   ├── libs/           # ⚠️ 由 sync-libs.js 从 js/ 生成，勿手改
+│   ├── utils/          # api / analyze / chart / format / store / fetch-shim
+│   ├── pages/          # index 行情列表、detail 详情
+│   └── tests/          # analyze / page / wxml 三个测试
 ├── research/           # 因子回测与实证脚本
 └── README.md           # 项目说明文档
 ```

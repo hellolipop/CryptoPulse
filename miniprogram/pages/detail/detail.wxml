@@ -1,0 +1,146 @@
+<view class="wrap">
+    <view wx:if="{{error}}" class="error" bindtap="loadAll">{{error}}（点击重试）</view>
+
+    <!-- 报价 -->
+    <view class="card head">
+        <view class="head-top">
+            <view class="head-id">
+                <view class="head-title">
+                    <text class="head-sym">{{symbol}}</text>
+                    <text wx:if="{{isStock}}" class="tag tag-futures">合约</text>
+                </view>
+                <text class="head-name">{{name}}{{isStock ? ' · 币安 USDT-M 合约' : ''}}</text>
+            </view>
+            <view class="head-star {{watched ? 'star-on' : ''}}" bindtap="toggleWatch">{{watched ? '★ 已自选' : '☆ 自选'}}</view>
+        </view>
+
+        <view class="head-price">
+            <text class="price num {{dirClass}}">{{price}}</text>
+            <text class="chg num {{dirClass}}">{{changePercent}}</text>
+        </view>
+
+        <view class="grid4">
+            <view class="cell"><text class="cell-k">24h 最高</text><text class="cell-v num">{{high}}</text></view>
+            <view class="cell"><text class="cell-k">24h 最低</text><text class="cell-v num">{{low}}</text></view>
+            <view class="cell"><text class="cell-k">24h 成交额</text><text class="cell-v num">{{amountText}}</text></view>
+            <view class="cell"><text class="cell-k">成交笔数</text><text class="cell-v num">{{tradeCount}}</text></view>
+        </view>
+    </view>
+
+    <!-- K线 -->
+    <view class="card chart-card">
+        <view class="chart-head">
+            <text class="chart-title">K线 · {{timeframeLabel}} · {{bars}} 根</text>
+            <text class="chart-tip">左起为最早，右端为最新</text>
+        </view>
+        <canvas type="2d" id="kline" class="kline"></canvas>
+        <view class="tf-bar">
+            <view wx:for="{{timeframes}}"
+                  wx:key="key"
+                  class="tf {{timeframe === item.key ? 'tf-on' : ''}}"
+                  data-key="{{item.key}}"
+                  bindtap="switchTimeframe">{{item.label}}</view>
+        </view>
+    </view>
+
+    <!-- 数据口径提示 -->
+    <view wx:if="{{depthNote || longMANote}}" class="notice">
+        <text wx:if="{{depthNote}}" class="notice-line">{{depthNote}}</text>
+        <text wx:if="{{longMANote}}" class="notice-line">{{longMANote}}</text>
+    </view>
+
+    <!-- 综合信号 -->
+    <view class="card sec">
+        <view class="sec-head">
+            <text class="sec-title">综合分析信号</text>
+            <view class="sec-right">
+                <text wx:if="{{pending}}" class="pending">分析中…</text>
+                <text class="score num">评分 {{signal.totalScore}}</text>
+            </view>
+        </view>
+
+        <view class="signal-main">
+            <text class="signal-text {{signal.dirClass}}">{{signal.text}}</text>
+            <text class="signal-desc">{{signal.desc}}</text>
+        </view>
+
+        <view class="factor-title">因子构成（权重为 0 的项不参与评分）</view>
+        <view class="factors">
+            <view wx:for="{{factors}}" wx:key="label" class="factor">
+                <text class="factor-l">{{item.label}}</text>
+                <text class="factor-v num {{item.cls}}">{{item.value}}</text>
+                <text wx:if="{{item.na}}" class="factor-na">{{item.naReason}}</text>
+            </view>
+        </view>
+        <text wx:if="{{excludedNote}}" class="excluded">未参与评分：{{excludedNote}}</text>
+
+        <view class="sens-bar">
+            <view wx:for="{{sensitivities}}"
+                  wx:key="key"
+                  class="sens {{sensitivity === item.key ? 'sens-on' : ''}}"
+                  data-key="{{item.key}}"
+                  bindtap="switchSensitivity">{{item.label}}</view>
+        </view>
+        <text class="sens-note">灵敏度只改变分类阈值与权重，不改动指标本身。</text>
+    </view>
+
+    <!-- 技术指标 -->
+    <view class="card sec">
+        <view class="sec-head"><text class="sec-title">技术指标</text></view>
+        <view class="grid3">
+            <view wx:for="{{indicators}}" wx:key="label" class="cell cell-box">
+                <text class="cell-k">{{item.label}}</text>
+                <text class="cell-v num {{item.cls}}">{{item.value}}</text>
+            </view>
+            <view class="cell cell-box">
+                <text class="cell-k">{{longMALabel}}</text>
+                <text class="cell-v num {{longMADirClass}}">{{longMAValue}}</text>
+            </view>
+        </view>
+    </view>
+
+    <!-- 关键价位 -->
+    <view wx:if="{{levels.length}}" class="card sec">
+        <view class="sec-head"><text class="sec-title">关键价位</text></view>
+        <view class="levels">
+            <view wx:for="{{levels}}" wx:key="label" class="level">
+                <text class="cell-k">{{item.label}}</text>
+                <text class="cell-v num {{item.cls}}">{{item.value}}</text>
+            </view>
+        </view>
+    </view>
+
+    <!-- 操作建议 -->
+    <view wx:if="{{tips.length}}" class="card sec">
+        <view class="sec-head"><text class="sec-title">操作建议</text></view>
+        <view class="tips">
+            <view wx:for="{{tips}}" wx:key="text" class="tip">
+                <text class="tip-text">{{item.text}}</text>
+            </view>
+        </view>
+    </view>
+
+    <view wx:if="{{advice}}" class="card sec">
+        <view class="sec-head"><text class="sec-title">加减仓区间</text></view>
+        <view class="zones">
+            <view wx:for="{{advice.buyZones}}" wx:key="label" class="zone">
+                <text class="zone-side up">买入</text>
+                <text class="zone-label">{{item.label}}</text>
+                <text class="zone-level num up">{{item.level}}</text>
+                <text class="zone-desc">{{item.description}}</text>
+            </view>
+            <view wx:for="{{advice.sellZones}}" wx:key="label" class="zone">
+                <text class="zone-side down">卖出</text>
+                <text class="zone-label">{{item.label}}</text>
+                <text class="zone-level num down">{{item.level}}</text>
+                <text class="zone-desc">{{item.description}}</text>
+            </view>
+        </view>
+        <text wx:if="{{advice.note}}" class="zone-note">{{advice.note}}</text>
+    </view>
+
+    <view class="foot">
+        <text class="foot-line">数据来源：币安现货 / 币安 USDT-M 合约 / alternative.me</text>
+        <text class="foot-line">本工具仅供自用参考，不构成任何投资建议</text>
+    </view>
+</view>

@@ -1,0 +1,394 @@
+.wrap {
+    padding-bottom: 40rpx;
+}
+
+.card {
+    margin: 20rpx 20rpx 0;
+    border-radius: 16rpx;
+    overflow: hidden;
+}
+
+/* 报价 */
+.head {
+    padding: 28rpx 24rpx 20rpx;
+}
+
+.head-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+}
+
+.head-id {
+    flex: 1;
+    min-width: 0;
+}
+
+.head-title {
+    display: flex;
+    align-items: center;
+}
+
+.head-sym {
+    font-size: 40rpx;
+    font-weight: 700;
+}
+
+.head-name {
+    display: block;
+    font-size: 24rpx;
+    color: #a0a7b3;
+    margin-top: 6rpx;
+}
+
+.head-star {
+    font-size: 26rpx;
+    color: #a0a7b3;
+    padding: 8rpx 16rpx;
+    border: 1rpx solid #eaecef;
+    border-radius: 30rpx;
+}
+
+.star-on {
+    color: #f0b90b;
+    border-color: rgba(240, 185, 11, 0.5);
+}
+
+.head-price {
+    display: flex;
+    align-items: baseline;
+    margin: 20rpx 0 24rpx;
+}
+
+.price {
+    font-size: 56rpx;
+    font-weight: 700;
+}
+
+.chg {
+    font-size: 28rpx;
+    margin-left: 18rpx;
+}
+
+.grid4 {
+    display: flex;
+    flex-wrap: wrap;
+    border-top: 1rpx solid #eaecef;
+    padding-top: 20rpx;
+}
+
+.cell {
+    width: 50%;
+    margin-bottom: 14rpx;
+}
+
+.cell-box {
+    width: 33.33%;
+    margin-bottom: 20rpx;
+}
+
+.cell-k {
+    display: block;
+    font-size: 22rpx;
+    color: #a0a7b3;
+}
+
+.cell-v {
+    display: block;
+    font-size: 28rpx;
+    margin-top: 6rpx;
+}
+
+/* K线 */
+.chart-card {
+    padding: 20rpx 0 0;
+}
+
+.chart-head {
+    padding: 0 24rpx 12rpx;
+}
+
+.chart-title {
+    font-size: 26rpx;
+    font-weight: 600;
+}
+
+.chart-tip {
+    display: block;
+    font-size: 20rpx;
+    color: #c2c7d0;
+    margin-top: 4rpx;
+}
+
+.kline {
+    width: 100%;
+    height: 560rpx;
+}
+
+.tf-bar {
+    display: flex;
+    border-top: 1rpx solid #eaecef;
+    margin-top: 8rpx;
+}
+
+.tf {
+    flex: 1;
+    text-align: center;
+    padding: 20rpx 0;
+    font-size: 26rpx;
+    color: #707a8a;
+}
+
+.tf-on {
+    color: #1a1a1a;
+    font-weight: 600;
+    box-shadow: inset 0 -4rpx 0 #f0b90b;
+}
+
+/* 口径提示 */
+.notice {
+    margin: 20rpx 20rpx 0;
+    padding: 20rpx 24rpx;
+    background: #fffbf0;
+    border-radius: 16rpx;
+}
+
+.notice-line {
+    display: block;
+    font-size: 22rpx;
+    color: #a07c1a;
+    line-height: 1.7;
+}
+
+/* 区块 */
+.sec {
+    padding: 24rpx;
+}
+
+.sec-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 18rpx;
+}
+
+.sec-title {
+    font-size: 28rpx;
+    font-weight: 600;
+}
+
+.sec-right {
+    display: flex;
+    align-items: center;
+}
+
+.pending {
+    font-size: 20rpx;
+    color: #a0a7b3;
+    background: #f5f5f5;
+    padding: 4rpx 12rpx;
+    border-radius: 20rpx;
+    margin-right: 12rpx;
+}
+
+.score {
+    font-size: 26rpx;
+    color: #707a8a;
+}
+
+/* 信号 */
+.signal-main {
+    padding: 4rpx 0 18rpx;
+}
+
+.signal-text {
+    font-size: 40rpx;
+    font-weight: 700;
+}
+
+.signal-desc {
+    display: block;
+    font-size: 24rpx;
+    color: #707a8a;
+    margin-top: 8rpx;
+    line-height: 1.6;
+}
+
+.factor-title {
+    font-size: 22rpx;
+    color: #a0a7b3;
+    padding-top: 16rpx;
+    border-top: 1rpx solid #eaecef;
+}
+
+.factors {
+    display: flex;
+    flex-wrap: wrap;
+    margin-top: 12rpx;
+}
+
+.factor {
+    width: 33.33%;
+    margin-bottom: 16rpx;
+}
+
+.factor-l {
+    display: block;
+    font-size: 22rpx;
+    color: #a0a7b3;
+}
+
+.factor-v {
+    display: block;
+    font-size: 32rpx;
+    font-weight: 600;
+    margin-top: 4rpx;
+}
+
+.factor-na {
+    display: block;
+    font-size: 18rpx;
+    color: #c2c7d0;
+    margin-top: 2rpx;
+}
+
+.excluded {
+    display: block;
+    font-size: 22rpx;
+    color: #a0a7b3;
+    line-height: 1.7;
+    margin-top: 6rpx;
+}
+
+.sens-bar {
+    display: flex;
+    background: #f5f5f5;
+    border-radius: 12rpx;
+    padding: 6rpx;
+    margin-top: 20rpx;
+}
+
+.sens {
+    flex: 1;
+    text-align: center;
+    padding: 14rpx 0;
+    font-size: 26rpx;
+    color: #707a8a;
+    border-radius: 10rpx;
+}
+
+.sens-on {
+    background: #ffffff;
+    color: #1a1a1a;
+    font-weight: 600;
+}
+
+.sens-note {
+    display: block;
+    font-size: 20rpx;
+    color: #c2c7d0;
+    margin-top: 10rpx;
+}
+
+/* 指标 */
+.grid3 {
+    display: flex;
+    flex-wrap: wrap;
+}
+
+/* 关键价位 */
+.levels {
+    display: flex;
+    flex-wrap: wrap;
+}
+
+.level {
+    width: 50%;
+    margin-bottom: 16rpx;
+}
+
+/* 建议 */
+.tips {
+    border-top: 1rpx solid #eaecef;
+    padding-top: 12rpx;
+}
+
+.tip {
+    padding: 12rpx 0;
+}
+
+.tip-text {
+    font-size: 25rpx;
+    color: #4a4f5c;
+    line-height: 1.6;
+}
+
+/* 区间 */
+.zones {
+    border-top: 1rpx solid #eaecef;
+    padding-top: 12rpx;
+}
+
+.zone {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    padding: 14rpx 0;
+}
+
+.zone-side {
+    font-size: 22rpx;
+    width: 64rpx;
+}
+
+.zone-label {
+    font-size: 25rpx;
+    color: #4a4f5c;
+    width: 150rpx;
+}
+
+.zone-level {
+    font-size: 26rpx;
+    font-weight: 600;
+    width: 170rpx;
+}
+
+.zone-desc {
+    flex: 1;
+    font-size: 22rpx;
+    color: #a0a7b3;
+    text-align: right;
+}
+
+.zone-note {
+    display: block;
+    font-size: 22rpx;
+    color: #707a8a;
+    line-height: 1.7;
+    margin-top: 12rpx;
+    padding-top: 12rpx;
+    border-top: 1rpx solid #eaecef;
+}
+
+/* 其它 */
+.error {
+    margin: 20rpx;
+    padding: 24rpx;
+    background: #fff5f5;
+    color: #c0392b;
+    font-size: 24rpx;
+    line-height: 1.7;
+    border-radius: 12rpx;
+}
+
+.foot {
+    padding: 40rpx 24rpx 20rpx;
+    text-align: center;
+}
+
+.foot-line {
+    display: block;
+    font-size: 20rpx;
+    color: #c2c7d0;
+    line-height: 1.8;
+}

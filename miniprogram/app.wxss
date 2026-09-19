@@ -1,0 +1,70 @@
+/* 全局样式：配色与网页端一致（白底 + 金色强调 + 涨绿跌红） */
+
+page {
+    background: #f5f5f5;
+    color: #1a1a1a;
+    font-size: 28rpx;
+    font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif;
+    -webkit-font-smoothing: antialiased;
+}
+
+.card {
+    background: #ffffff;
+}
+
+/* 涨跌色：与网页端 rise-green / fall-red 同色 */
+.up { color: #089981; }
+.down { color: #f23645; }
+.flat { color: #707a8a; }
+
+.text-primary { color: #1a1a1a; }
+.text-secondary { color: #707a8a; }
+.text-tertiary { color: #a0a7b3; }
+.golden { color: #f0b90b; }
+
+/* 数字等宽，避免跳动时列宽抖动 */
+.num {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum';
+}
+
+.row {
+    display: flex;
+    align-items: center;
+}
+
+.divider {
+    height: 1rpx;
+    background: #eaecef;
+}
+
+.tag {
+    font-size: 20rpx;
+    line-height: 1.6;
+    padding: 0 8rpx;
+    border-radius: 6rpx;
+}
+
+.tag-futures {
+    background: #eef4ff;
+    color: #2563eb;
+}
+
+.tag-active {
+    background: rgba(240, 185, 11, 0.15);
+    color: #b8860b;
+}
+
+.empty {
+    padding: 100rpx 40rpx;
+    text-align: center;
+    color: #a0a7b3;
+    font-size: 26rpx;
+    line-height: 1.8;
+}
+
+.section-title {
+    font-size: 26rpx;
+    color: #707a8a;
+    padding: 24rpx 24rpx 12rpx;
+}
