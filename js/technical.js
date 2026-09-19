@@ -5,6 +5,53 @@
 
 const TechnicalAnalysis = {
     /**
+     * 长期均线的候选窗口，由长到短。
+     *
+     * 为什么需要降级：MA200 需要 200 根K线，但**标的本身可能比 200 根还年轻**。
+     * 实测币安美股合约 2026-04-06 才上线，日线只有 166 根、周线只有 24 根
+     * （带 startTime 回溯和 indexPriceKlines 都取不到更早的，是标的年龄问题，
+     * 不是取数问题）。这种时候 MA200 在数学上就不可得，再优化取数也没用。
+     *
+     * 所以取不到时按可用的最长窗口降级，而不是把这一项悄悄丢掉——
+     * 丢掉等于完全没有大趋势输入，评分会悄悄偏向中性。
+     */
+    LONG_MA_LADDER: [200, 150, 120, 99, 60],
+
+    /**
+     * 在候选窗口里挑出当前K线数撑得住的最长窗口
+     * @param {number} barCount - 可用的K线根数
+     * @returns {number|null} 选中的窗口；连最短的 60 都撐不住时返回 null
+     */
+    pickLongMAWindow(barCount) {
+        if (!isFinite(barCount) || barCount <= 0) return null;
+        for (let i = 0; i < this.LONG_MA_LADDER.length; i++) {
+            if (barCount >= this.LONG_MA_LADDER[i]) return this.LONG_MA_LADDER[i];
+        }
+        return null;
+    },
+
+    /**
+     * 归一化长期均线的输入，取出「判断大趋势时真正要用的那个值」。
+     *
+     * 新调用方传 longMA = { window, series, substituted }（窗口可能已降级）；
+     * 老调用方只传 ma200 数组时，按「窗口 200、未降级」处理，保持兼容。
+     * @returns {Object|null} { window, substituted, value }；取不到可用值时返回 null
+     */
+    resolveLongMA(longMA, ma200) {
+        if (longMA && longMA.window && longMA.series && longMA.series.length) {
+            const last = longMA.series[longMA.series.length - 1];
+            if (!last) return null;
+            return { window: longMA.window, substituted: !!longMA.substituted, value: last };
+        }
+        if (Array.isArray(ma200) && ma200.length) {
+            const last = ma200[ma200.length - 1];
+            if (!last) return null;
+            return { window: 200, substituted: false, value: last };
+        }
+        return null;
+    },
+
+    /**
      * 计算简单移动平均线 (SMA)
      * @param {Array} data - 价格数据数组
      * @param {number} period - 周期
@@ -610,7 +657,7 @@ const TechnicalAnalysis = {
         const signals = [];
         const breakdown = {};
         
-        const { rsi, macd, ma3, ma7, ma25, ma200, currentPrice, bollingerBands, vwap, obv, stochRSI, kdj, ahr999, roc } = indicators;
+        const { rsi, macd, ma3, ma7, ma25, ma200, longMA, currentPrice, bollingerBands, vwap, obv, stochRSI, kdj, ahr999, roc } = indicators;
         
         // RSI 分析 (权重: 15分)
         let rsiScore = 0;
@@ -698,16 +745,30 @@ const TechnicalAnalysis = {
                 }
             }
             
-            // MA200 判断大趋势
-            if (ma200 && ma200[ma200.length - 1]) {
-                const lastMA200 = ma200[ma200.length - 1];
-                if (currentPrice > lastMA200) {
+            // 长期趋势判断。
+            //
+            // 名义窗口是 MA200，但标的可能比 200 根K线还年轻（实测币安美股合约
+            // 2026-04-06 才上线，日线只有 166 根），此时 MA200 在数学上不可得。
+            // 调用方会按 LONG_MA_LADDER 降级出实际能用的窗口，这里就按那个窗口判断，
+            // 并把「实际用的是哪个窗口」写进文案与 breakdown：
+            // 既不让用户误以为看的是 MA200，也不让这一项被静默丢掉。
+            const lm = TechnicalAnalysis.resolveLongMA(longMA, ma200);
+            if (lm && currentPrice) {
+                const label = 'MA' + lm.window;
+                const suffix = lm.substituted ? `（历史深度不足 MA200，改用 ${label}）` : '';
+                if (currentPrice > lm.value) {
                     maScore += 3;
-                    signals.push({ type: 'buy', text: '价格站在MA200上方，大趋势偏多', indicator: 'MA200', strength: 'weak' });
+                    signals.push({ type: 'buy', text: `价格站在${label}上方，大趋势偏多${suffix}`, indicator: label, strength: 'weak' });
                 } else {
                     maScore -= 3;
-                    signals.push({ type: 'sell', text: '价格在MA200下方，大趋势偏空', indicator: 'MA200', strength: 'weak' });
+                    signals.push({ type: 'sell', text: `价格在${label}下方，大趋势偏空${suffix}`, indicator: label, strength: 'weak' });
                 }
+                breakdown.longMA = { window: lm.window, substituted: lm.substituted, value: lm.value };
+            } else {
+                // 连最短的窗口都撑不住（例如美股周线只有 24 根）。
+                // 记下「这一项没参与计算」，否则 breakdown 里看不出少算了一项，
+                // 分数看起来照样完整。
+                breakdown.longMA = { window: null, substituted: false, value: null };
             }
             score += maScore;
         }

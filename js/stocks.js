@@ -17,9 +17,14 @@
  *   - 资金费率历史（fapi/v1/fundingRate）与持仓量（fapi/v1/openInterest）都能取到
  *
  * 做不到 / 必须如实标注：
- *   - **历史深度很浅**。实测 AAPLUSDT 最早一根 K 线是 2026-04-06：
- *     日线只有 166 根、周线只有 24 根（合约 2026 年才上线）。
- *     因此日线上的 MA200 拿不到（需要 200 根），周线基本没法做均线判断。
+ *   - **历史深度很浅，且无法补充**。实测 AAPLUSDT 最早一根 K 线是 2026-04-06：
+ *     日线只有 166 根、周线只有 24 根（合约 2026 年才上线）。带 startTime 往前
+ *     回溯同样停在 2026-04-06；换 indexPriceKlines / markPriceKlines 也只有 170 根。
+ *     这是**标的年龄**的限制，不是取数方式的问题 —— 标的只存在了 166 天，
+ *     就不可能有 200 天的成交记录。
+ *     因此 MA200 在日线上不可得、周线上连 MA60 都不够。处理方式见 technical.js
+ *     的 LONG_MA_LADDER：按可用根数降级到最长可用窗口，并把实际窗口标在界面上，
+ *     而不是让这一项静默消失。
  *   - **资金费率长期贴近 0**。实测 AAPLUSDT 的 premiumIndex lastFundingRate
  *     为 0.00000000，历史 100 期费率绝对值也都在 0.00035 以内，
  *     远低于加密合约的量级 —— 衍生品因子对股票几乎是常数，不能参与评分。
@@ -102,11 +107,30 @@ const Stocks = {
         premium: 20 * 1000,
     },
 
-    // 实测：AAPLUSDT 日线只有 166 根，合约 2026-04-06 才上线。
-    // 这个下限用来判断「历史太浅、均线类指标不可用」。
-    MIN_DEPTH_WARN: {
-        '24': 200,   // 日线要 200 根才够 MA200
-        '168': 60,   // 周线要 60 根才算有个像样的样本
+    /**
+     * 历史深度不足时的提示文案。
+     *
+     * 窗口降级的规则放在 technical.js 的 LONG_MA_LADDER 里（分析口径只应有一处定义），
+     * 这里只负责把「实际发生了什么」讲清楚：到底用的是哪个窗口，
+     * 还是连最短窗口都撑不住、这一项完全没参与评分。
+     *
+     * @param {string} timeframeKey - 周期标识（'24' 日线 / '168' 周线 / 其它）
+     * @param {number} barCount - 实际取到的K线根数
+     * @param {number|null} longWindow - 实际采用的长期均线窗口；null 表示没有可用窗口
+     * @returns {string|null} 提示文案；null 表示深度够用、无需提示
+     */
+    depthWarning(timeframeKey, barCount, longWindow) {
+        if (!isFinite(barCount) || barCount <= 0) return null;
+        if (longWindow === 200) return null;
+
+        const label = String(timeframeKey) === '168' ? '周线'
+            : String(timeframeKey) === '24' ? '日线' : '当前周期';
+
+        if (isFinite(longWindow) && longWindow > 0) {
+            return `${label} ${barCount} 根K线（币安美股合约 2026 年才上线）不足 MA200 所需的 200 根，`
+                + `大趋势已改用 MA${longWindow} —— 这是可用窗口里最长的一个。`;
+        }
+        return `${label}仅 ${barCount} 根K线，连最短的 MA60 都不够，大趋势项不参与本次评分。`;
     },
 
     _cache: new Map(),
@@ -267,17 +291,6 @@ const Stocks = {
             quote_volume: parseFloat(t.quoteVolume),
             market_cap: 0,
         };
-    },
-
-    /**
-     * 历史深度是否够用。
-     * 返回 null 表示够用；否则返回一段可以直接显示给用户的说明。
-     */
-    depthWarning(timeframeKey, barCount) {
-        const need = this.MIN_DEPTH_WARN[String(timeframeKey)];
-        if (!need || !isFinite(barCount) || barCount >= need) return null;
-        const label = String(timeframeKey) === '168' ? '周线' : '日线';
-        return `${label}只有 ${barCount} 根K线（合约 2026 年才上线，历史深度不够 ${need} 根），长期均线类指标不可用。`;
     },
 
     // ---------------- 网络 ----------------

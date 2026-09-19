@@ -8,7 +8,7 @@
     <title>CryptoPulse - 虚拟货币实时分析</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="css/style.css?v=52">
+    <link rel="stylesheet" href="css/style.css?v=53">
     <script>
         tailwind.config = {
             theme: {
@@ -464,8 +464,10 @@
                         <p id="stochRSIInfo" class="text-base font-bold tabular-nums">--</p>
                     </div>
                     <div class="bg-gray-50 rounded-xl p-3">
-                        <p class="text-xs text-text-secondary mb-1">MA200 牛熊线</p>
+                        <p id="maLongLabel" class="text-xs text-text-secondary mb-1">MA200 牛熊线</p>
                         <p id="ma200Info" class="text-base font-bold tabular-nums">--</p>
+                        <!-- 标的比 200 根K线年轻时 MA200 不可得，这里说明实际改用了哪个窗口 -->
+                        <p id="maLongNote" class="hidden text-[10px] text-text-tertiary mt-1 leading-tight"></p>
                     </div>
                     <div class="bg-gray-50 rounded-xl p-3">
                         <p class="text-xs text-text-secondary mb-1">AHR999</p>
@@ -1247,15 +1249,15 @@
     <!-- 轻提示 -->
     <div id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-24 z-[60] px-4 py-2.5 rounded-xl bg-gray-900/90 text-white text-sm shadow-lg opacity-0 pointer-events-none transition-opacity duration-200 hidden"></div>
 
-    <script src="js/technical.js?v=52"></script>
-    <script src="js/news.js?v=52"></script>
-    <script src="js/signals.js?v=52"></script>
-    <script src="js/prediction.js?v=52"></script>
-    <script src="js/paper.js?v=52"></script>
-    <script src="js/binance.js?v=52"></script>
-    <script src="js/coingecko.js?v=52"></script>
-    <script src="js/stocks.js?v=52"></script>
-    <script src="js/chart.js?v=52"></script>
-    <script src="js/app.js?v=52"></script>
+    <script src="js/technical.js?v=53"></script>
+    <script src="js/news.js?v=53"></script>
+    <script src="js/signals.js?v=53"></script>
+    <script src="js/prediction.js?v=53"></script>
+    <script src="js/paper.js?v=53"></script>
+    <script src="js/binance.js?v=53"></script>
+    <script src="js/coingecko.js?v=53"></script>
+    <script src="js/stocks.js?v=53"></script>
+    <script src="js/chart.js?v=53"></script>
+    <script src="js/app.js?v=53"></script>
 </body>
 </html>

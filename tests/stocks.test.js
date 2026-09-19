@@ -225,25 +225,32 @@ section('5. 行情映射：字段名与现货一致，空值不糊弄');
 }
 
 // ============================================================
-section('6. 历史深度：不够时必须报警，而不是静默算错均线');
+section('6. 历史深度：不够时必须说清楚改用了哪个窗口');
 
 {
     const { ST } = makeEnv();
 
-    // 实测：AAPLUSDT 日线 166 根、周线 24 根
-    const d = ST.depthWarning('24', 166);
+    // 实测：AAPLUSDT 日线 166 根，按降级规则会选 150
+    const d = ST.depthWarning('24', 166, 150);
     ok(!!d, '日线 166 根要给出提示');
     ok(d.indexOf('166') >= 0, '提示里带上实际根数');
-    ok(d.indexOf('均线') >= 0, '提示里说明后果是长期均线不可用');
+    ok(d.indexOf('200') >= 0, '提示里说明 200 根这个门槛');
+    ok(d.indexOf('MA150') >= 0, '提示里点名实际改用的窗口 —— 不然用户以为看的是 MA200');
 
-    const w = ST.depthWarning('168', 24);
+    const w = ST.depthWarning('168', 24, null);
     ok(!!w, '周线 24 根要给出提示');
     ok(w.indexOf('周线') >= 0, '提示里点名是周线');
+    ok(w.indexOf('不参与') >= 0, '连最短窗口都不够时，要说明这一项没参与评分');
 
-    eq(ST.depthWarning('24', 500), null, '日线 500 根够用，不提示');
-    eq(ST.depthWarning('168', 60), null, '周线正好 60 根算够用');
-    eq(ST.depthWarning('1', 200), null, '小时线不做深度要求');
-    eq(ST.depthWarning('24', NaN), null, '根数未知时不误报');
+    const short = ST.depthWarning('24', 60, 60);
+    ok(!!short, '日线 60 根仍不足 200，要给提示');
+    ok(short.indexOf('MA60') >= 0, '降到 60 时提示里说的是 MA60');
+
+    eq(ST.depthWarning('24', 200, 200), null, '正好 200 根，够用不提示');
+    eq(ST.depthWarning('24', 500, 200), null, '远超 200 根不提示');
+    eq(ST.depthWarning('1', 200, 200), null, '小时线取到 200 根同样不提示');
+    eq(ST.depthWarning('24', NaN, null), null, '根数未知时不误报');
+    eq(ST.depthWarning('24', 0, null), null, '根数为 0 时不误报');
 }
 
 // ============================================================

@@ -3241,8 +3241,11 @@ const CryptoPulseApp = {
 
             this.state.candleData = candleData;
             this.state.candleSource = 'stock';
+            // 窗口降级规则在 technical.js 里，这里按同一规则算出实际窗口再生成文案，
+            // 保证「界面显示的窗口」和「评分实际用的窗口」永远是同一个
             this.state.stockDepthNotice = Stocks.depthWarning(
-                this.state.currentTimeframe, candleData.length
+                this.state.currentTimeframe, candleData.length,
+                TechnicalAnalysis.pickLongMAWindow(candleData.length)
             );
             this.renderStockNotice();
 
@@ -3438,6 +3441,28 @@ const CryptoPulseApp = {
         const ma25 = TechnicalAnalysis.calculateSMA(closes, 25);
         const ma99 = TechnicalAnalysis.calculateSMA(closes, 99);
         const ma200 = TechnicalAnalysis.calculateSMA(closes, 200);
+
+        // 长期均线（大趋势线）。
+        //
+        // 标的可能比 200 根K线还年轻：实测币安美股合约 2026-04-06 才上线，
+        // 日线只有 166 根、周线只有 24 根。带 startTime 回溯、换 indexPriceKlines/
+        // markPriceKlines 都取不到更早的数据（实测前者 167 根、后两者 170 根），
+        // 因为这是**标的年龄**的限制，不是取数方式的问题 —— 再怎么补也补不出
+        // 200 天前的成交记录。
+        //
+        // 所以这里按可用根数选出最长可用的窗口（200→150→120→99→60），
+        // 拿它做大趋势判断，并把实际窗口如实标到界面上；
+        // 连 60 都撑不住时（美股周线 24 根）才真的放弃这一项。
+        const longWindow = TechnicalAnalysis.pickLongMAWindow(closes.length);
+        const longMA = {
+            window: longWindow,
+            series: longWindow === null ? null
+                : longWindow === 200 ? ma200
+                    : TechnicalAnalysis.calculateSMA(closes, longWindow),
+            substituted: longWindow !== null && longWindow !== 200,
+            bars: closes.length,
+        };
+
         const ema7 = TechnicalAnalysis.calculateEMA(closes, 7);
         const ema25 = TechnicalAnalysis.calculateEMA(closes, 25);
         const ema99 = TechnicalAnalysis.calculateEMA(closes, 99);
@@ -3467,6 +3492,7 @@ const CryptoPulseApp = {
             ma25,
             ma99,
             ma200,
+            longMA,
             ema7,
             ema25,
             ema99,
@@ -4222,16 +4248,56 @@ const CryptoPulseApp = {
             }
         }
 
-        // MA200
-        if (ind.ma200 && ind.ma200[ind.ma200.length - 1]) {
-            const lastMA200 = ind.ma200[ind.ma200.length - 1];
-            this.setText('ma200Info', '$' + TechnicalAnalysis.formatPrice(lastMA200));
-            const el = document.getElementById('ma200Info');
-            if (el) el.className = `text-base font-bold tabular-nums ${ind.currentPrice > lastMA200 ? 'text-rise-green' : 'text-fall-red'}`;
+        // 长期均线（大趋势线）
+        //
+        // 窗口可能已经降级：标的比 200 根K线年轻时 MA200 不可得（实测币安美股
+        // 合约日线只有 166 根），calculateIndicators 会改用最长可用窗口。
+        // 这里必须把**实际用的是哪个窗口**显示出来，否则用户会以为看的是 MA200，
+        // 拿一个 150 日均线的值去当 200 日牛熊线用。
+        const lm = ind.longMA;
+        const maLongLabel = document.getElementById('maLongLabel');
+        const ma200El = document.getElementById('ma200Info');
+        const maLongNote = document.getElementById('maLongNote');
+
+        const lastLongMA = lm && lm.series && lm.series.length
+            ? lm.series[lm.series.length - 1] : null;
+
+        if (lastLongMA) {
+            if (maLongLabel) maLongLabel.textContent = 'MA' + lm.window + ' 牛熊线';
+            if (ma200El) {
+                ma200El.textContent = '$' + TechnicalAnalysis.formatPrice(lastLongMA);
+                ma200El.className = `text-base font-bold tabular-nums ${ind.currentPrice > lastLongMA ? 'text-rise-green' : 'text-fall-red'}`;
+            }
+            if (maLongNote) {
+                maLongNote.textContent = lm.substituted
+                    ? `${lm.bars} 根K线不足 200，MA200 不可得，此处改用 MA${lm.window}`
+                    : '';
+                maLongNote.classList.toggle('hidden', !lm.substituted);
+            }
+        } else {
+            // 连最短的窗口都撑不住（例如美股周线只有 24 根）
+            if (maLongLabel) maLongLabel.textContent = '长期均线';
+            if (ma200El) {
+                ma200El.textContent = '不可用';
+                ma200El.className = 'text-base font-bold tabular-nums text-text-tertiary';
+            }
+            if (maLongNote) {
+                const bars = (lm && lm.bars) || 0;
+                maLongNote.textContent = `${bars} 根K线不足 60，长期均线不可得，大趋势项未参与评分`;
+                maLongNote.classList.remove('hidden');
+            }
         }
 
         // AHR999
-        if (ind.ahr999 && ind.ahr999.value !== null && !isNaN(ind.ahr999.value)) {
+        // 它是比特币专用的估值带（按 BTC 自身的历史增长曲线定标），对个股没有意义。
+        // 个股上 ma200 取不到会让它一直是空值，这里直接写明「不适用」，
+        // 而不是留一个让人以为「正在加载」的 --
+        const ahrEl = document.getElementById('ahr999Info');
+        if (ahrEl && this.currentIsStock()) {
+            ahrEl.textContent = '不适用';
+            ahrEl.className = 'text-base font-bold tabular-nums text-text-tertiary';
+            ahrEl.title = 'AHR999 是比特币专用的估值指标，对个股不适用';
+        } else if (ind.ahr999 && ind.ahr999.value !== null && !isNaN(ind.ahr999.value)) {
             this.setText('ahr999Info', ind.ahr999.value.toFixed(3));
         }
 
@@ -4521,6 +4587,9 @@ const CryptoPulseApp = {
             ma7: ind.ma7,
             ma25: ind.ma25,
             ma200: ind.ma200,
+            // 大趋势用降级后的长期均线：窗口可能不是 200（标的太年轻），
+            // 具体用哪个由 calculateIndicators 按可用根数决定
+            longMA: ind.longMA,
             currentPrice: ind.currentPrice,
             bollingerBands: ind.bollingerBands,
             vwap: ind.vwap,
