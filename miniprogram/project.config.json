@@ -1,5 +1,5 @@
 {
-  "appid": "touristappid",
+  "appid": "wx7372f26459cdcb0d",
   "projectname": "CryptoPulse",
   "description": "加密货币 + 币安美股实时分析（原生小程序版）",
   "compileType": "miniprogram",
@@ -17,7 +17,22 @@
     "nodeModules": false,
     "autoAudits": false,
     "showShadowRootInWxmlPanel": true,
-    "useCompilerPlugins": false
+    "useCompilerPlugins": false,
+    "compileWorklet": false,
+    "uglifyFileName": false,
+    "uploadWithSourceMap": true,
+    "packNpmManually": false,
+    "packNpmRelationList": [],
+    "minifyWXSS": true,
+    "minifyWXML": true,
+    "localPlugins": false,
+    "disableUseStrict": false,
+    "condition": false,
+    "babelSetting": {
+      "ignore": [],
+      "disablePlugins": [],
+      "outputPath": ""
+    }
   },
   "condition": {
     "miniprogram": {
@@ -42,5 +57,15 @@
         }
       ]
     }
-  }
+  },
+  "simulatorPluginLibVersion": {},
+  "packOptions": {
+    "ignore": [
+      { "type": "file", "value": "sync-libs.js" },
+      { "type": "folder", "value": "tests" },
+      { "type": "file", "value": "README.md" }
+    ],
+    "include": []
+  },
+  "editorSetting": {}
 }
