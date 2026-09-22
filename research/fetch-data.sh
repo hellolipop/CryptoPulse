@@ -20,11 +20,16 @@ months() {
   done
 }
 
-get() { # $1=url  $2=out
-  if [ -s "$2" ]; then return 0; fi
-  curl -s -f --max-time 60 -o "$2" "$1" || { rm -f "$2"; return 1; }
+# 下载：把 URL 与输出路径按 NUL 分隔交给 xargs。
+# 不用 `export -f get` + `xargs bash -c`：那条路径在本机实测会让子 shell 里
+# 找不到函数（错误又被 2>/dev/null 吞掉），结果 490 个任务全部静默失败。
+# 也不用 `tr '|' ' '`：仓库路径可能含空格（如 "Application Support"），
+# xargs 默认按空白分词会把一个路径拆成两段。
+# 注意 awk 里要用 %c 配 0 来输出 NUL —— 写成 "\0" 不是合法转义，会输出空串。
+download() {
+  awk -F'|' '{printf "%s%c%s%c", $1, 0, $2, 0}' "$1" \
+    | xargs -0 -n 2 -P 8 sh -c 'test -s "$1" || curl -s -f --max-time 60 -o "$1" "$0"' 2>/dev/null
 }
-export -f get
 
 task_list="$ROOT/tasks.txt"
 : > "$task_list"
@@ -49,7 +54,7 @@ done
 total=$(wc -l < "$task_list" | tr -d ' ')
 echo "任务总数: $total"
 
-cat "$task_list" | tr '|' ' ' | xargs -P 8 -n 2 bash -c 'get "$0" "$1"' 2>/dev/null
+download "$task_list"
 
 got=$(find "$DATA" -name '*.zip' | wc -l | tr -d ' ')
 echo "已下载: $got / $total"

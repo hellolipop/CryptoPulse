@@ -21,11 +21,14 @@ months() {
   done
 }
 
-get() {
-  if [ -s "$2" ]; then return 0; fi
-  curl -s -f --max-time 120 -o "$2" "$1" || { rm -f "$2"; return 1; }
+# 下载：按 NUL 分隔交给 xargs。理由同 fetch-data.sh：
+#   - `export -f get` + `xargs bash -c` 在子 shell 里找不到函数，且错误被吞
+#   - 输出路径可能含空格，`tr '|' ' '` + xargs 默认分词会把路径拆断
+#   - awk 输出 NUL 必须用 %c 配 0，写成 "\0" 不是合法转义
+download() {
+  awk -F'|' '{printf "%s%c%s%c", $1, 0, $2, 0}' "$1" \
+    | xargs -0 -n 2 -P 8 sh -c 'test -s "$1" || curl -s -f --max-time 120 -o "$1" "$0"' 2>/dev/null
 }
-export -f get
 
 # ---- 1. DVOL 日线 ----
 for s in BTC ETH; do
@@ -48,7 +51,7 @@ done
 
 total=$(wc -l < "$ROOT/tasks-vrp.txt" | tr -d ' ')
 echo "K线任务总数: $total"
-cat "$ROOT/tasks-vrp.txt" | tr '|' ' ' | xargs -P 8 -n 2 bash -c 'get "$0" "$1"' 2>/dev/null
+download "$ROOT/tasks-vrp.txt"
 
 # ---- 3. 解压 ----
 for z in "$DATA"/*.zip; do
