@@ -83,6 +83,18 @@
         mode.textContent = registering ? '已有账号？返回登录' : '没有账号？注册';
         setMessage('');
     });
+    /**
+     * 同步过程中后端判定登录失效（401）时的收尾。
+     * paper.js 清掉已失效的令牌后会调这里：把登录框重新弹出来并说明原因。
+     * 只显示「同步失败：HTTP 401」的话，看不出该做什么，像后端坏了。
+     */
+    if (typeof PaperTrader !== 'undefined') {
+        PaperTrader.onAuthExpired = () => {
+            session = null;
+            setMessage('登录已过期，请重新登录');
+            setVisible(true);
+        };
+    }
     submit.addEventListener('click', enter);
     password.addEventListener('keydown', event => { if (event.key === 'Enter') enter(); });
     try { session = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch (e) { session = null; }

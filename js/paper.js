@@ -69,6 +69,9 @@ const PaperTrader = {
     /** 同步状态变化时的回调（由 app.js 注入，用于刷新界面） */
     onSyncChange: null,
 
+    /** 登录失效时的回调（由 auth.js 注入，用于重新弹出登录框） */
+    onAuthExpired: null,
+
     // ---------------- 存储 ----------------
 
     /**
@@ -331,6 +334,8 @@ const PaperTrader = {
                 headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.token}` },
                 body,
             });
+            // 401 单独处理：这不是「同步坏了」，而是登录失效，要提示重新登录
+            if (resp.status === 401) { this.handleAuthExpired(); return null; }
             if (!resp.ok) throw new Error('HTTP ' + resp.status);
 
             const r = await resp.json();
@@ -363,6 +368,8 @@ const PaperTrader = {
         this.setSyncStatus('syncing', '正在读取后端…');
         try {
             const resp = await fetch(url, { headers: { Authorization: `Bearer ${session.token}` } });
+            // 401 同上：登录失效，交给 handleAuthExpired 提示重新登录
+            if (resp.status === 401) { this.handleAuthExpired(); return null; }
             if (!resp.ok) throw new Error('HTTP ' + resp.status);
             const r = await resp.json();
 
@@ -414,6 +421,23 @@ const PaperTrader = {
             const parsed = JSON.parse(localStorage.getItem(this.authKey) || 'null');
             return parsed && typeof parsed === 'object' ? parsed : null;
         } catch (e) { return null; }
+    },
+
+    /**
+     * 后端返回 401：缓存里的令牌已不被承认。
+     *
+     * 两种常见成因：服务端重启（会话存在内存里），或该账号已在服务端不存在。
+     *
+     * 不能只显示「同步失败：HTTP 401」—— 那句话看不出该做什么，
+     * 看着像后端坏了，实际只需要重新登录一次。所以这里清掉已失效的本地会话，
+     * 把「该重新登录」这个结论交给界面去说清楚。
+     */
+    handleAuthExpired() {
+        try { localStorage.removeItem(this.authKey); } catch (e) { /* 清不掉也只是下次再判一次 */ }
+        this.setSyncStatus('error', '登录已过期，请重新登录');
+        if (typeof this.onAuthExpired === 'function') {
+            try { this.onAuthExpired(); } catch (e) { /* 界面回调出错不影响数据 */ }
+        }
     },
 
     // ---------------- 总资金与配额 ----------------
