@@ -29,8 +29,10 @@
  * 安全边界（务必知道）：
  *   - 只监听 127.0.0.1，局域网内其它机器访问不到
  *   - 只回显本机来源（localhost / 127.0.0.1）的 CORS 头，其它来源浏览器自然拦截
- *   - 用户密码只保存 scrypt 哈希，不保存明文；会话令牌暂存在进程内存，重启服务后需要重新登录。
- *   - 当前服务仍只监听 127.0.0.1。若将来放到公网，必须补 HTTPS、持久化会话、限流和更强的登录验证。
+ *   - 用户密码只保存 scrypt 哈希，不保存明文。
+ *   - 会话随数据一起落盘，所以重启服务不会被登出。落盘的是令牌的 SHA-256 摘要而非
+ *     令牌本身，文件即使被看到也拿不到可用的令牌。会话自登录起 30 天过期。
+ *   - 当前服务仍只监听 127.0.0.1。若将来放到公网，必须补 HTTPS、限流和更强的登录验证。
  */
 
 const http = require('http');
@@ -49,13 +51,15 @@ const TMP_FILE = STORE_FILE + '.tmp';
 // 正常不会超过几百 KB；给到 2MB 是留余量，同时挡住异常大的写入。
 const MAX_BODY = 2 * 1024 * 1024;
 
-const SCHEMA_VERSION = 2;
-const sessions = new Map();
+const SCHEMA_VERSION = 3;
+
+// 会话有效期。到期后客户端会收到 401，界面提示重新登录。
+const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
 
 // ---------- 存储 ----------
 
 function emptyStore() {
-    return { schemaVersion: SCHEMA_VERSION, users: {}, accounts: {} };
+    return { schemaVersion: SCHEMA_VERSION, users: {}, accounts: {}, sessions: {} };
 }
 
 /** 读整份存储。文件不存在/损坏都回落到空存储，不让服务因此起不来。 */
@@ -67,7 +71,11 @@ function readStore() {
             const parsed = JSON.parse(raw);
             if (parsed && typeof parsed === 'object' && parsed.accounts && typeof parsed.accounts === 'object') {
                 if (!parsed.users || typeof parsed.users !== 'object') parsed.users = {};
-                if (!parsed.schemaVersion) parsed.schemaVersion = SCHEMA_VERSION;
+                // v2 及更早的文件没有 sessions 字段。这里必须补上：
+                // 否则读一次再写回，会话字段就被整段丢掉了。
+                if (!parsed.sessions || typeof parsed.sessions !== 'object') parsed.sessions = {};
+                // 读到旧版本就地升级，下次写入即变为新格式
+                if (parsed.schemaVersion !== SCHEMA_VERSION) parsed.schemaVersion = SCHEMA_VERSION;
                 if (file === BACKUP_FILE) {
                     console.warn('[存储] 主文件不可用，已从备份恢复:', BACKUP_FILE);
                 }
@@ -106,10 +114,46 @@ function bearer(req) {
     return value.startsWith('Bearer ') ? value.slice(7).trim() : '';
 }
 
+/**
+ * 令牌在存储里的键。
+ *
+ * 存摘要而不是令牌本身：令牌是 256 位随机值，不存在被爆破的可能，
+ * 所以一次 SHA-256 就够，不需要加盐或慢哈希 —— 那是为了防低熵口令被字典攻击，
+ * 与这里的情况不同。好处是数据文件即使被看到，也换不出任何一个可用的令牌。
+ */
+function tokenKey(token) {
+    const raw = String(token || '').trim();
+    if (!raw) return null;
+    return crypto.createHash('sha256').update(raw).digest('hex');
+}
+
+/** 清掉已过期的会话，避免这个表随登录次数无限增长 */
+function pruneSessions(store) {
+    const now = Date.now();
+    Object.keys(store.sessions || {}).forEach(key => {
+        const rec = store.sessions[key];
+        if (!rec || typeof rec.expiresAt !== 'number' || rec.expiresAt <= now) {
+            delete store.sessions[key];
+        }
+    });
+}
+
+/**
+ * 校验请求携带的令牌，通过则返回用户名，否则返回 null。
+ *
+ * 会话从存储里查而不是从进程内存 —— 这正是「重启服务不被登出」的关键。
+ * 过期记录在这次读取里顺手清掉，下次写入时就从文件里消失了。
+ */
 function requireUser(req, store) {
-    const token = bearer(req);
-    const username = sessions.get(token);
-    return username && store.users[username] ? username : null;
+    const key = tokenKey(bearer(req));
+    if (!key || !store.sessions) return null;
+    const rec = store.sessions[key];
+    if (!rec) return null;
+    if (typeof rec.expiresAt !== 'number' || rec.expiresAt <= Date.now()) {
+        delete store.sessions[key];
+        return null;
+    }
+    return store.users[rec.username] ? rec.username : null;
 }
 
 /**
@@ -236,15 +280,33 @@ const server = http.createServer(async (req, res) => {
                 send(res, 401, { error: '用户名或密码错误' }, origin); return;
             }
         }
-        try { writeStore(store); } catch (e) { send(res, 500, { error: '用户数据保存失败' }, origin); return; }
+        // 令牌要在写盘之前生成：它必须和用户记录一起落盘，
+        // 否则「重启服务仍保持登录」就不成立。
         const token = crypto.randomBytes(32).toString('hex');
-        sessions.set(token, username);
+        pruneSessions(store);
+        store.sessions[tokenKey(token)] = {
+            username,
+            createdAt: new Date().toISOString(),
+            expiresAt: Date.now() + SESSION_TTL_MS,
+        };
+        try { writeStore(store); } catch (e) { send(res, 500, { error: '用户数据保存失败' }, origin); return; }
         send(res, route.endsWith('/register') ? 201 : 200, { ok: true, token, user: { username } }, origin);
         return;
     }
 
     if (route === 'POST /api/auth/logout') {
-        sessions.delete(bearer(req));
+        const store = readStore();
+        const key = tokenKey(bearer(req));
+        if (key && store.sessions && store.sessions[key]) {
+            delete store.sessions[key];
+            try {
+                writeStore(store);
+            } catch (e) {
+                // 这次读取里已经删掉了，但没落盘就可能在重启后「复活」。
+                // 不因此阻断登出（用户本地已清），但必须留下痕迹。
+                console.error('[存储] 登出未能落盘，该会话重启后可能仍然有效:', e.message);
+            }
+        }
         send(res, 200, { ok: true }, origin);
         return;
     }
