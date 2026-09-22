@@ -8,6 +8,12 @@ node_modules/
 research/data/
 research/*.zip
 research/*.csv
+# 取数脚本生成的下载任务清单（中间产物）
+research/tasks.txt
+research/tasks-vrp.txt
+
+# 模拟盘持久化数据（server/store.js 写入，是你的真实记录，不该入库）
+server/data/
 
 # 微信开发者工具生成的本地文件（含本机 AppID / 编译缓存，不该入库）
 miniprogram/project.private.config.json
