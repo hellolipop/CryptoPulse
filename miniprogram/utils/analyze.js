@@ -71,7 +71,14 @@ function derivativesScoreFromFunding(fundingRatePct) {
     return Math.max(0, Math.min(100, score));
 }
 
-/** N 周期动量及其自适应死区（与网页端 buildROC 同一套算法） */
+/**
+ * N 周期动量及其自适应死区。
+ *
+ * 与网页端 app.js:buildROC 的区别：网页端还会返回一个逐根死区 scaleSeries，
+ * 供「历史K线上的买卖点标注与模拟盘回放」使用（用末尾常数套历史K线是未来函数）。
+ * 小程序这边只把 roc 交给 calculateTechnicalScore 判断**当前这一根**，
+ * 而当前这一根的逐根死区与这里的 scale 数值相同，所以不需要那份序列。
+ */
 function buildROC(closes, period, window, factor) {
     const p = period || 3;
     const win = window || 50;

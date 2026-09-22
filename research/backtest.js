@@ -373,7 +373,19 @@ function buildROC(closes, period = 3, window = 50, factor = 0.6) {
         if (series[i] !== null) { sum += Math.abs(series[i]); count++; }
     }
     const scale = count ? (sum / count) * factor : 0.005;
-    return { value: series[n - 1], scale, series };
+
+    // 逐根死区：与 app.js:buildROC 保持一致（第 i 根只吃 [i-window, i]）。
+    // 加上它之前，历史买卖点会用到「末尾 50 根」算出的常数，属未来函数。
+    const scaleSeries = new Array(n).fill(null);
+    for (let i = 0; i < n; i++) {
+        let s = 0, c = 0;
+        for (let k = Math.max(period, i - window); k <= i; k++) {
+            if (series[k] !== null) { s += Math.abs(series[k]); c++; }
+        }
+        scaleSeries[i] = c ? (s / c) * factor : 0.005;
+    }
+
+    return { value: series[n - 1], scale, series, scaleSeries };
 }
 
 const SENSITIVITY = {
@@ -413,6 +425,7 @@ function buildSignalSeries(data, ind, preset) {
     const lower = (ind.bollingerBands && ind.bollingerBands.lower) || [];
     const rocSeries = (ind.roc && ind.roc.series) || [];
     const rocScale = (ind.roc && ind.roc.scale) || 0.005;
+    const rocScaleSeries = (ind.roc && ind.roc.scaleSeries) || null;
     const rsiLine = TA.calculateRSI(closes, 14);
 
     const classify = v => {
@@ -436,8 +449,9 @@ function buildSignalSeries(data, ind, preset) {
         if (ma3[i] != null && ma7[i] != null) score += ma3[i] > ma7[i] ? W.maFast : -W.maFast;
         const roc = rocSeries[i];
         if (roc != null) {
-            if (roc > rocScale) score += W.momentum;
-            else if (roc < -rocScale) score -= W.momentum;
+            const sc = (rocScaleSeries && rocScaleSeries[i] != null) ? rocScaleSeries[i] : rocScale;
+            if (roc > sc) score += W.momentum;
+            else if (roc < -sc) score -= W.momentum;
         }
         if (stochK[i] != null && stochD[i] != null) score += stochK[i] > stochD[i] ? W.stoch : -W.stoch;
         if (kLine[i] != null && dLine[i] != null) score += kLine[i] > dLine[i] ? W.kdj : -W.kdj;
