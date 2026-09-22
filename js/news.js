@@ -64,12 +64,23 @@ const NewsAnalyzer = {
         // 三个源互不依赖，必须并行。
         // 之前是逐个 await，总耗时变成三者相加（实测约 5.6 秒）；
         // 并行后总耗时约等于最慢的那一个。
-        const names = ['cryptocurrency.cv', 'binance', '528btc'];
-        const settled = await Promise.allSettled([
-            this.sourceCryptocurrencyCv(category),
-            this.sourceBinanceAnnouncements(),
-            this.source528btc(),
-        ]);
+        //
+        // 2026-09-22 换源。原来的「币安公告（经 corsproxy.io）」和「528btc 快讯
+        // （经 allorigins / codetabs / 直连）」四条路全断，且都不是配置能修的：
+        //   - corsproxy.io 已停用无 key 的匿名代理，返回 403
+        //     「Anonymous legacy proxy URLs are no longer supported」；
+        //   - allorigins 与 codetabs 双双 522；
+        //   - 528btc 直连 200 但不带 access-control-allow-origin，浏览器读不到，
+        //     且该站有反爬滑块，经代理也只能拿到验证页；
+        //   - 币安 bapi 那条上游本身在本机就不可达（DNS 层）。
+        // 现改为两个走 rss2json 的 RSS 源，理由见 RSS_FEEDS 的注释。
+        const sources = [
+            { name: 'cryptocurrency.cv', run: () => this.sourceCryptocurrencyCv(category) },
+            { name: 'cointelegraph', run: () => this.sourceRssFeed(this.RSS_FEEDS[0]) },
+            { name: 'decrypt', run: () => this.sourceRssFeed(this.RSS_FEEDS[1]) },
+        ];
+        const settled = await Promise.allSettled(sources.map(s => s.run()));
+        const names = sources.map(s => s.name);
 
         const allNews = [];
         const errors = [];
@@ -115,13 +126,31 @@ const NewsAnalyzer = {
             // 翻译英文新闻（异步进行，不阻塞返回）
             this.translateNews(processedNews);
 
+            this.lastFailure = null;
             return processedNews;
         }
 
-        // ========== 兜底：模拟数据 ==========
-        console.warn('所有新闻源获取失败，使用模拟数据:', errors.join(', '));
-        return this.getMockNews(coinId);
+        // 所有源都没给出内容。
+        //
+        // 这里绝不再返回「模拟新闻」。之前 getMockNews 会编 6 条读起来完全像真的
+        // 标题（连来源名都是假的：CryptoNews / BlockchainDaily），并带上写死的
+        // 情感分（均分约 60，偏多），以 12% 的权重混进综合信号。
+        // 那比「没有新闻」糟得多：用户看到的是一个有理有据的消息面结论，
+        // 而它对应的输入根本不存在。
+        //
+        // 现在返回空数组，并把原因记在 lastFailure 上交给界面展示。
+        this.lastFailure = errors.length
+            ? errors.join('；')
+            : '所有新闻源都返回了空内容';
+        console.warn('[新闻] 未取到任何内容:', this.lastFailure);
+        return [];
     },
+
+    /**
+     * 上一次 fetchNews 失败的原因；成功时为 null。
+     * 界面据此区分「暂时取不到」与「确实没有新闻」。
+     */
+    lastFailure: null,
 
     /**
      * 源1：cryptocurrency.cv（免费、无需 Key、支持 CORS、多源聚合）
@@ -139,7 +168,10 @@ const NewsAnalyzer = {
                             title: item.title || '',
                             description: item.description || item.summary || '',
                             url: item.url || item.link || '#',
-                            source: item.source || item.publisher || 'CryptoNews',
+                            // 实测这个接口的 source 字段一直有（10/10），
+                            // 兜底只是防御。但不写死成「CryptoNews」——
+                            // 那会把真实文章挂到一个可能不是它的媒体名下。
+                            source: item.source || item.publisher || '来源未标注',
                             image: item.image || item.thumbnail || '',
                             publishedAt: item.publishedAt || item.date || new Date().toISOString(),
                             categories: item.categories || [cat],
@@ -161,185 +193,90 @@ const NewsAnalyzer = {
     },
 
     /**
-     * 源2：Binance 公告（经 CORS 代理）
+     * 走 rss2json 的 RSS 源清单。
+     *
+     * 为什么必须经这一层：本项目是纯前端，新闻源要同时满足「免 key」和
+     * 「允许跨域」两条硬约束。而加密媒体基本只提供 RSS、不给 CORS 头 ——
+     * 实测 528btc 直连返回 200，但响应里没有 access-control-allow-origin，
+     * 浏览器拿到响应也读不了。rss2json 把 RSS 转成 JSON 并带上
+     * `Access-Control-Allow-Origin: *`，免 key 的免费额度对本应用的调用频率
+     * （每 5 分钟一次，见 app.js 的 startAutoRefresh）足够。
+     *
+     * 这两个源都是英文，界面上的中文由 translateNews 负责翻译 —— 与
+     * cryptocurrency.cv 那条路径的处理方式一致。
+     */
+    RSS_FEEDS: [
+        { label: 'Cointelegraph', url: 'https://cointelegraph.com/rss' },
+        { label: 'Decrypt', url: 'https://decrypt.co/feed' },
+    ],
+
+    /**
+     * 源2 / 源3：RSS 源（经 rss2json 转 JSON 并补上 CORS 头）
+     * @param {{label: string, url: string}} feed
      * @returns {Promise<Array>}
      */
-    async sourceBinanceAnnouncements() {
-        const bnResp = await this.fetchWithTimeout(
-            'https://corsproxy.io/?' + encodeURIComponent(
-                'https://www.binance.com/bapi/composite/v1/public/cms/article/list/query?type=1&pageNo=1&pageSize=5'
-            ), {}, 6000
-        );
-        if (!bnResp.ok) return [];
-        const bnData = await bnResp.json();
-        const articles = (bnData.data && bnData.data.articles) || [];
-        return articles.slice(0, 5).map(item => ({
-            id: item.id || Date.now() + Math.random(),
+    async sourceRssFeed(feed) {
+        const endpoint = 'https://api.rss2json.com/v1/api.json?rss_url=' + encodeURIComponent(feed.url);
+        const resp = await this.fetchWithTimeout(endpoint, {}, 8000);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+
+        const data = await resp.json();
+        if (data.status !== 'ok' || !Array.isArray(data.items)) {
+            // rss2json 失败时返回 {status:'error', message:'...'}，
+            // 把它的原因带上去，否则排查时只剩一句「没拿到新闻」
+            throw new Error(data.message || 'rss2json 返回异常');
+        }
+
+        return data.items.slice(0, 10).map(item => ({
+            id: item.guid || item.link,
             title: item.title || '',
-            description: item.digest || item.intro || '',
-            url: `https://www.binance.com/en/support/announcement/${item.code || item.id}`,
-            source: 'Binance 公告',
-            image: '',
-            publishedAt: item.publishDate || new Date(item.publishTime).toISOString() || new Date().toISOString(),
-            categories: ['exchange', 'binance'],
-            _source: 'binance',
-            _lang: 'zh'
+            description: this.stripHtml(item.description || ''),
+            url: item.link || '#',
+            source: feed.label,
+            image: item.thumbnail || '',
+            publishedAt: this.parseRssDate(item.pubDate),
+            categories: Array.isArray(item.categories) ? item.categories : [],
+            _source: feed.label.toLowerCase(),
+            _lang: 'en'
         }));
     },
 
     /**
-     * 源3：528btc 快讯（多代理降级 + 人机验证检测）
-     * 该站有反爬滑块，被拦时主动放弃，不把验证页当新闻解析。
-     * @returns {Promise<Array>}
-     */
-    async source528btc() {
-        const result = await this.fetch528btcFlash();
-        if (result.blocked) {
-            console.warn('[528btc] 被反爬人机验证拦截，本次未获取到快讯:', result.reason);
-        } else if (result.items.length === 0) {
-            console.warn('[528btc] 未解析到快讯内容:', result.reason);
-        }
-        return result.items;
-    },
-
-    /**
-     * 获取 528btc 快讯（多代理降级 + 人机验证检测）
+     * 解析 rss2json 的时间字段。
      *
-     * 已知限制：528btc 部署了反爬虫人机验证（滑块验证码）。
-     * 浏览器直连会被 CORS 拦截；经代理访问时，站点会返回
-     * 混淆 JS 的验证页而非真实快讯内容。因此本方法在检测到
-     * 验证页时会主动放弃，避免把验证页当成新闻解析。
-     *
-     * @returns {Promise<{items: Array, blocked: boolean, reason: string}>}
+     * 它给的是「2026-09-22 04:03:00」这种不带时区标记的 UTC 字符串。
+     * 直接丢给 new Date() 在部分引擎里会被当成本地时间，排序随之错位，
+     * 所以显式补上 T 与 Z。解析不出来就回落到当前时间 ——
+     * 不让一条脏数据把整个列表的排序拖垮。
+     * @param {string} s
+     * @returns {string} ISO 时间串
      */
-    async fetch528btcFlash() {
-        const target = 'https://www.528btc.com/kx/';
-
-        // 代理降级链：注意 allorigins 必须用 /get（/raw 端点会返回 ERR_FAILED）
-        const proxies = [
-            { name: 'allorigins', build: (u) => 'https://api.allorigins.win/get?url=' + encodeURIComponent(u), extract: (txt) => { try { return JSON.parse(txt).contents || ''; } catch (e) { return ''; } } },
-            { name: 'codetabs', build: (u) => 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(u), extract: (txt) => txt },
-            { name: 'direct', build: (u) => u, extract: (txt) => txt }
-        ];
-
-        let lastReason = '未知原因';
-
-        for (const proxy of proxies) {
-            let raw = '';
-            try {
-                const resp = await this.fetchWithTimeout(proxy.build(target), {}, 5000);
-                if (!resp.ok) {
-                    lastReason = `${proxy.name} 返回 HTTP ${resp.status}`;
-                    continue;
-                }
-                raw = await resp.text();
-            } catch (e) {
-                lastReason = `${proxy.name} 请求失败 (${e.message})`;
-                continue;
-            }
-
-            if (!raw || raw.length < 200) {
-                lastReason = `${proxy.name} 返回内容过短 (${raw.length} 字节)`;
-                continue;
-            }
-
-            // 人机验证页检测
-            if (this.isVerificationPage(raw)) {
-                return {
-                    items: [],
-                    blocked: true,
-                    reason: '528btc 返回了人机验证页（滑块验证码），需在真实浏览器中通过验证后才能访问'
-                };
-            }
-
-            // 正常 HTML，尝试解析
-            const items = this.parse528btcHTML(raw);
-            if (items.length > 0) {
-                return { items, blocked: false, reason: `经 ${proxy.name} 获取成功，共 ${items.length} 条` };
-            }
-
-            lastReason = `${proxy.name} 返回的页面中未找到快讯列表结构`;
-        }
-
-        return { items: [], blocked: false, reason: lastReason };
+    parseRssDate(s) {
+        const raw = String(s || '').trim();
+        if (!raw) return new Date().toISOString();
+        const hasZone = /[Zz]$|[+-]\d{2}:?\d{2}$/.test(raw);
+        const d = new Date(raw.replace(' ', 'T') + (hasZone ? '' : 'Z'));
+        return isFinite(d.getTime()) ? d.toISOString() : new Date().toISOString();
     },
 
     /**
-     * 判断内容是否为反爬人机验证页
-     * @param {string} text - 页面内容
-     * @returns {boolean} 是否为验证页
+     * 去掉描述里的 HTML 标签。
+     * RSS 的 description 常带 <p> / <img> / 实体转义，直接送进情感分析会
+     * 把标签名当成词；参与关键词提取时也会把 "p"、"img" 混进结果。
+     * @param {string} html
+     * @returns {string}
      */
-    isVerificationPage(text) {
-        const head = text.substring(0, 5000);
-        const markers = [
-            'slide to verify',      // 滑块验证英文提示
-            '请滑动验证',            // 滑块验证中文提示
-            'complete the operation to verify',
-            'verify that you are a real person',
-            '滑块验证', '滑动验证', '人机验证',
-            'function a(a){function n()', // 典型混淆 JS 验证脚本
-            'challenge-platform',
-            'cf-browser-verification',
-            'just a moment'
-        ];
-        const lower = head.toLowerCase();
-        return markers.some(m => lower.includes(m.toLowerCase()));
-    },
-
-    /**
-     * 解析 528btc 快讯页面 HTML
-     * @param {string} html - HTML 文本
-     * @returns {Array} 新闻列表
-     */
-    parse528btcHTML(html) {
-        const items = [];
-        try {
-            // 简单的正则解析快讯列表
-            // 528btc 快讯页面通常有特定的 class 结构
-            const parser = new DOMParser();
-            const doc = parser.parseFromString(html, 'text/html');
-
-            // 尝试多种可能的选择器
-            const selectors = [
-                '.kx-list li',
-                '.news-list li',
-                '.list-item',
-                'article',
-                '.item'
-            ];
-
-            for (const selector of selectors) {
-                const elements = doc.querySelectorAll(selector);
-                if (elements.length > 0) {
-                    elements.forEach((el, idx) => {
-                        if (idx >= 10) return; // 最多取10条
-                        const titleEl = el.querySelector('a, h3, h4, .title');
-                        const timeEl = el.querySelector('.time, .date, time');
-                        const linkEl = el.querySelector('a');
-
-                        const title = titleEl?.textContent?.trim() || '';
-                        if (!title) return;
-
-                        items.push({
-                            id: '528btc-' + idx + '-' + Date.now(),
-                            title: title,
-                            description: title, // 快讯通常标题就是内容
-                            url: linkEl?.href || 'https://www.528btc.com/kx/',
-                            source: '528btc 快讯',
-                            image: '',
-                            publishedAt: timeEl?.textContent?.trim() ? new Date(timeEl.textContent).toISOString() : new Date().toISOString(),
-                            categories: ['flash', 'chinese'],
-                            _source: '528btc',
-                            _lang: 'zh'
-                        });
-                    });
-                    break;
-                }
-            }
-        } catch (e) {
-            console.warn('解析528btc HTML失败:', e.message);
-        }
-        return items;
+    stripHtml(html) {
+        return String(html || '')
+            .replace(/<[^>]*>/g, ' ')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'")
+            .replace(/\s+/g, ' ')
+            .trim();
     },
 
     /**
@@ -537,84 +474,6 @@ const NewsAnalyzer = {
                 keywords: this.extractKeywords(title + ' ' + description)
             };
         }).filter(item => item.title && item.title.length > 0);
-    },
-
-    /**
-     * 获取模拟新闻数据（备用）
-     * @param {string} coinId - 币种ID
-     * @returns {Array} 模拟新闻列表
-     */
-    getMockNews(coinId) {
-        const coinNames = {
-            'bitcoin': '比特币',
-            'ethereum': '以太坊',
-            'binancecoin': '币安币',
-            'solana': 'Solana',
-            'ripple': '瑞波币',
-            'cardano': '艾达币',
-            'dogecoin': '狗狗币',
-            'polkadot': '波卡币'
-        };
-        
-        const coinName = coinNames[coinId] || '加密货币';
-        
-        const mockNews = [
-            {
-                title: `${coinName}价格突破关键阻力位，市场情绪回暖`,
-                description: `今日${coinName}表现强劲，价格突破了近期重要阻力位，成交量明显放大，分析师认为可能开启新一轮上涨行情。`,
-                source: 'CryptoNews',
-                sentiment: 75,
-                sentimentLabel: 'positive'
-            },
-            {
-                title: `机构投资者持续增持${coinName}，长期看好`,
-                description: `最新数据显示，机构投资者在过去一个月持续增持${coinName}，表明对长期价值的认可。`,
-                source: 'BlockchainDaily',
-                sentiment: 65,
-                sentimentLabel: 'positive'
-            },
-            {
-                title: `监管动态：多国讨论加密货币监管框架`,
-                description: `全球多个国家正在积极讨论加密货币监管政策，市场对此保持关注，短期可能造成波动。`,
-                source: 'FinanceToday',
-                sentiment: 40,
-                sentimentLabel: 'neutral'
-            },
-            {
-                title: `${coinName}网络升级完成，性能大幅提升`,
-                description: `${coinName}核心开发团队宣布最新网络升级已成功部署，交易速度提升50%，手续费降低30%。`,
-                source: 'TechCrypto',
-                sentiment: 80,
-                sentimentLabel: 'positive'
-            },
-            {
-                title: ` whales大额转账引发市场担忧`,
-                description: `数据显示，近期有大额${coinName}从钱包转出至交易所，可能预示着抛售压力增加，投资者需保持谨慎。`,
-                source: 'WhaleAlert',
-                sentiment: 30,
-                sentimentLabel: 'negative'
-            },
-            {
-                title: `DeFi生态持续繁荣，${coinName}锁仓量创新高`,
-                description: `去中心化金融（DeFi）生态持续发展，${coinName}相关协议锁仓量创下历史新高，显示生态活力。`,
-                source: 'DeFiPulse',
-                sentiment: 70,
-                sentimentLabel: 'positive'
-            }
-        ];
-        
-        return mockNews.map((item, index) => ({
-            id: Date.now() + index,
-            title: item.title,
-            description: item.description,
-            url: '#',
-            source: item.source,
-            image: '',
-            publishedAt: new Date(Date.now() - index * 3600000).toISOString(),
-            sentiment: item.sentiment,
-            sentimentLabel: item.sentimentLabel,
-            categories: [coinId]
-        }));
     },
 
     /**
