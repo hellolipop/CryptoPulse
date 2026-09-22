@@ -366,3 +366,28 @@ body.chart-locked {
 .auth-mode { width: 100%; margin-top: 10px; border: 0; background: transparent; color: #876900; font-size: 12px; }
 .auth-message { min-height: 18px; margin-top: 10px; color: #d14343; font-size: 12px; }
 .auth-footnote { margin-top: 16px; color: #a0a7b3; font-size: 11px; line-height: 1.5; }
+
+/* ==================== 图表标注的悬停说明 ====================
+   Lightweight Charts 的标注本身不可交互（setMarkers 画出来的图形没有事件），
+   所以这里用一个绝对定位的气泡叠在图表容器上，位置由十字光标坐标换算。
+   chart.js 会确保容器不是 static，否则气泡会跑到页面别处去。
+   pointer-events:none 是必须的：气泡盖在图表上，若能接收事件会打断十字光标。 */
+.chart-hover-tip {
+    position: absolute;
+    z-index: 30;
+    max-width: 240px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: rgba(26, 26, 26, .94);
+    color: #fff;
+    font-size: 12px;
+    line-height: 18px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .12s ease;
+}
+
+.chart-hover-tip.is-visible { opacity: 1; }
+.chart-hover-tip .tip-title { display: block; margin-bottom: 4px; font-weight: 600; }
+.chart-hover-tip .tip-line { display: block; color: rgba(255, 255, 255, .82); }
+.chart-hover-tip .tip-hint { display: block; margin-top: 4px; color: rgba(255, 255, 255, .55); }

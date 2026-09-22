@@ -19,6 +19,9 @@ const ChartManager = {
     _firstTime: 0,
     _markers: [],
     _onMarkerClick: null,
+    _onMarkerHover: null,
+    _hoverTipEl: null,
+    _hoverKey: null,
 
     /**
      * 初始化图表 - 白色主题（币安风格）
@@ -155,6 +158,15 @@ const ChartManager = {
             // 绑定图表点击事件
             this.chart.subscribeClick((param) => {
                 this._handleChartClick(param);
+            });
+
+            // 标注悬停说明。
+            // Lightweight Charts 的标注没有自己的事件，所以借十字光标判断
+            // 「当前停在哪根K线上」，命中标注时再由上层决定要不要给说明
+            // （目前只有「待确认」会给，其余标注点一下已有完整弹窗）。
+            this._ensureHoverTip();
+            this.chart.subscribeCrosshairMove((param) => {
+                this._handleCrosshairMove(param);
             });
 
             return this.chart;
@@ -316,6 +328,7 @@ const ChartManager = {
 
     clearMarkers() {
         this._markers = [];
+        this._hideHoverTip();
         try {
             if (this.candlestickSeries && typeof this.candlestickSeries.setMarkers === 'function') {
                 this.candlestickSeries.setMarkers([]);
@@ -362,6 +375,105 @@ const ChartManager = {
         this._onMarkerClick = callback;
     },
 
+    /**
+     * 注册「标注悬停要显示什么」。
+     *
+     * 回调收到命中的标注对象，返回 {title, lines, hint} 就弹气泡，
+     * 返回 null 表示这个标注不需要悬停说明 —— 语义判断留在上层，
+     * 图表模块只负责把气泡画出来。
+     */
+    setMarkerHoverProvider(callback) {
+        this._onMarkerHover = callback;
+    },
+
+    /** 建一次气泡，并确保容器是它的定位锚点 */
+    _ensureHoverTip() {
+        if (!this.container || this._hoverTipEl) return;
+        // 容器默认是 static，那样绝对定位的气泡会跑到页面别处去
+        if (getComputedStyle(this.container).position === 'static') {
+            this.container.style.position = 'relative';
+        }
+        const tip = document.createElement('div');
+        tip.className = 'chart-hover-tip';
+        this.container.appendChild(tip);
+        this._hoverTipEl = tip;
+    },
+
+    _handleCrosshairMove(param) {
+        if (!param || !param.time || !this._onMarkerHover) {
+            this._hideHoverTip();
+            return;
+        }
+        const marker = (this._markers || []).find(m => m.time === param.time);
+        if (!marker) {
+            this._hideHoverTip();
+            return;
+        }
+
+        let tip = null;
+        try { tip = this._onMarkerHover(marker); } catch (e) { tip = null; }
+        if (!tip) {
+            this._hideHoverTip();
+            return;
+        }
+
+        // 内容没变就只挪位置：十字光标一动就重建 DOM 是白费的
+        const key = `${marker.time}|${tip.title || ''}`;
+        if (key !== this._hoverKey) {
+            this._hoverKey = key;
+            this._fillHoverTip(tip);
+        }
+        this._placeHoverTip(param);
+    },
+
+    _fillHoverTip(tip) {
+        const el = this._hoverTipEl;
+        if (!el) return;
+        el.textContent = '';
+
+        const add = (text, className) => {
+            const span = document.createElement('span');
+            span.className = className;
+            span.textContent = text;
+            el.appendChild(span);
+        };
+
+        if (tip.title) add(tip.title, 'tip-title');
+        (tip.lines || []).forEach(line => add(line, 'tip-line'));
+        if (tip.hint) add(tip.hint, 'tip-hint');
+    },
+
+    _placeHoverTip(param) {
+        const el = this._hoverTipEl;
+        if (!el || !this.container) return;
+
+        el.classList.add('is-visible');
+
+        // 先让浏览器算出尺寸再定位，否则贴右/下边缘时会被裁掉
+        const box = this.container.getBoundingClientRect();
+        const w = el.offsetWidth;
+        const h = el.offsetHeight;
+        const point = param.point || { x: box.width / 2, y: box.height / 2 };
+        const pad = 12;
+        const edge = 4;
+        const clamp = (v, max) => Math.max(edge, Math.min(v, Math.max(edge, max)));
+
+        // 默认放在光标右上方；右侧不够就翻到左边，上方不够就翻到下方
+        let left = point.x + pad;
+        if (left + w > box.width - edge) left = point.x - pad - w;
+
+        let top = point.y - h - pad;
+        if (top < edge) top = point.y + pad;
+
+        el.style.left = clamp(left, box.width - w - edge) + 'px';
+        el.style.top = clamp(top, box.height - h - edge) + 'px';
+    },
+
+    _hideHoverTip() {
+        this._hoverKey = null;
+        if (this._hoverTipEl) this._hoverTipEl.classList.remove('is-visible');
+    },
+
     _handleChartClick(param) {
         if (!this._onMarkerClick || !this._markers || this._markers.length === 0) return;
         if (!param || !param.time) return;
@@ -386,5 +498,12 @@ const ChartManager = {
         this.ma99Series = null;
         this.resistanceLines = [];
         this.supportLines = [];
+        // 悬停气泡是我们自己加进容器的，chart.remove() 不管它，得自己收掉
+        if (this._hoverTipEl && this._hoverTipEl.parentNode) {
+            this._hoverTipEl.parentNode.removeChild(this._hoverTipEl);
+        }
+        this._hoverTipEl = null;
+        this._hoverKey = null;
+        this._markers = [];
     }
 };

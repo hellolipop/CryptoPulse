@@ -13,7 +13,7 @@
          版本：Tailwind 3.4.17、Lightweight Charts 3.8.0（换版本时直接替换文件即可）。 -->
     <script src="vendor/tailwind.js"></script>
     <script src="vendor/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="css/style.css?v=58">
+    <link rel="stylesheet" href="css/style.css?v=59">
     <script>
         // 依赖自检。
         //
@@ -1323,6 +1323,12 @@
                 </button>
             </div>
             <div class="px-5 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
+                <!-- 待确认提示：只在那根还没收盘的K线上点开时才显示 -->
+                <div id="signalDetailPending" class="hidden p-3 rounded-xl bg-amber-50 border border-amber-200">
+                    <p class="text-xs text-amber-700 leading-relaxed">
+                        <span class="font-semibold">待确认</span> · 这个信号出现在还没收盘的K线上，随时可能翻转或消失；要等它收盘才成立，届时按下一根K线开盘价执行。模拟盘不会执行待确认的信号。
+                    </p>
+                </div>
                 <div class="flex items-center justify-between p-3 rounded-xl bg-gray-50 border border-border-light">
                     <span class="text-sm text-text-secondary">信号强度</span>
                     <div class="flex items-center gap-2">
@@ -1377,8 +1383,8 @@
     <script src="js/binance.js?v=58"></script>
     <script src="js/coingecko.js?v=58"></script>
     <script src="js/stocks.js?v=58"></script>
-    <script src="js/chart.js?v=58"></script>
-    <script src="js/app.js?v=58"></script>
+    <script src="js/chart.js?v=59"></script>
+    <script src="js/app.js?v=59"></script>
     <script src="js/auth.js?v=3"></script>
 </body>
 </html>

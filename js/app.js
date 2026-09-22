@@ -94,6 +94,11 @@ const CryptoPulseApp = {
         'MAGIC': 'Magic', 'ID': 'SPACE ID', 'ARKM': 'Arkham', 'CYBER': 'CyberConnect'
     },
 
+    // 图上「还没收盘的K线」标注用的前缀。
+    // 生成与解析都走这一个常量：此前两处各写一遍字面量，一旦改动不一致
+    // 就会出现「点标注没反应」这种静默故障（signalInfoMap 查不到就 return）。
+    pendingPrefix: '待确认·',
+
     // 信号详细解释字典
     signalInfoMap: {
         '强烈买入': {
@@ -1959,6 +1964,9 @@ const CryptoPulseApp = {
         ChartManager.setMarkerClickCallback((signalText, price, time) => {
             this.showSignalDetail(signalText, price, time);
         });
+        // 悬停说明只给「待确认」用。已成立的信号点一下就有完整弹窗，
+        // 若每个标注都弹气泡，看图时反而一直被挡住。
+        ChartManager.setMarkerHoverProvider((marker) => this.markerHoverTip(marker));
     },
 
     // ===== Tab 切换 =====
@@ -4040,10 +4048,38 @@ const CryptoPulseApp = {
                 position: s.side === 'buy' ? 'belowBar' : 'aboveBar',
                 color: pending ? faded : solid,
                 shape: s.side === 'buy' ? 'arrowUp' : 'arrowDown',
-                text: pending ? `待确认·${s.label}` : s.label,
+                text: pending ? `${this.pendingPrefix}${s.label}` : s.label,
                 size: pending ? 1 : (s.strong ? 2 : 1),
             };
         }).slice(-40);
+    },
+
+    /**
+     * 图表标注的悬停说明内容。
+     *
+     * 只给「待确认」标注返回内容，其余返回 null（即不弹气泡）。
+     * 因为「待确认」的实际含义从标注本身看不出来，而它恰好最容易被误读 ——
+     * 看上去像「已经卖了」，其实还没成立，模拟盘也不会执行。
+     * 已成立的信号点一下就有完整弹窗，所以不需要悬停再来一遍。
+     *
+     * @param {Object} marker - 图上命中的标注
+     * @returns {{title: string, lines: string[], hint: string}|null}
+     */
+    markerHoverTip(marker) {
+        const text = String((marker && marker.text) || '');
+        if (text.indexOf(this.pendingPrefix) !== 0) return null;
+
+        const label = text.slice(this.pendingPrefix.length);
+        const isBuy = marker.shape === 'arrowUp';
+        return {
+            title: text,
+            lines: [
+                '信号落在还没收盘的这根K线上，随时可能翻转或消失。',
+                `要等它收盘才成立，届时按下一根K线开盘价${isBuy ? '买入' : '卖出'}。`,
+                '模拟盘不执行待确认的信号。',
+            ],
+            hint: `点击可查看「${label}」的完整说明`,
+        };
     },
 
     /**
@@ -4840,7 +4876,13 @@ const CryptoPulseApp = {
         const modal = document.getElementById('signalDetailModal');
         if (!modal) return;
 
-        const info = this.signalInfoMap[signalText];
+        // 图上「待确认」的标注文本带了前缀，查字典前必须去掉：
+        // 字典的键是纯信号名，带前缀查不到，表现为「点上去没反应」。
+        const raw = String(signalText || '');
+        const pending = raw.indexOf(this.pendingPrefix) === 0;
+        const signalName = pending ? raw.slice(this.pendingPrefix.length) : raw;
+
+        const info = this.signalInfoMap[signalName];
         if (!info) return;
 
         const isBuy = info.type === 'buy';
@@ -4866,7 +4908,7 @@ const CryptoPulseApp = {
             typeEl.className = 'text-xs text-fall-red mb-0.5';
             nameEl.className = 'text-lg font-bold text-fall-red';
         }
-        nameEl.textContent = signalText;
+        nameEl.textContent = signalName;
 
         // 信号强度
         const strengthTextEl = document.getElementById('signalDetailStrengthText');
@@ -4888,6 +4930,11 @@ const CryptoPulseApp = {
         document.getElementById('signalDetailDesc').textContent = info.desc;
         document.getElementById('signalDetailCondition').textContent = info.condition;
         document.getElementById('signalDetailAdvice').textContent = info.advice;
+
+        // 待确认才显示那条说明。信号本身的解释是一样的，
+        // 差别只在「成没成立」，所以复用同一个弹窗、只多一条提示。
+        const pendingEl = document.getElementById('signalDetailPending');
+        if (pendingEl) pendingEl.classList.toggle('hidden', !pending);
 
         modal.classList.remove('hidden');
         modal.classList.add('flex');
