@@ -327,3 +327,42 @@ body.chart-locked {
     border: 0;
     cursor: pointer;
 }
+
+/* ==================== 依赖加载失败提示 ====================
+   Tailwind 等依赖走 CDN，拿不到时页面会失去全部样式。
+   这条提示刻意只依赖本地 CSS、不做任何 Tailwind class 依赖 ——
+   否则最需要它显示的时候，它自己也一起失效了。
+   配色沿用主题里的金色告警，不引入新语义色。 */
+.dep-notice {
+    padding: 12px 16px;
+    background: #fff8e1;
+    border-bottom: 1px solid #f0b90b;
+    color: #1a1a1a;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.dep-notice strong {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #8a6d00;
+}
+
+.dep-notice span {
+    color: #6b5a1e;
+}
+
+.auth-gate { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(245,245,245,.96); }
+.auth-gate[hidden] { display: none; }
+.auth-card { width: min(100%, 360px); padding: 24px; border: 1px solid #eaecef; border-radius: 16px; background: #fff; box-shadow: 0 18px 60px rgba(20,30,40,.14); }
+.auth-label { display: grid; gap: 6px; margin-top: 12px; color: #707a8a; font-size: 12px; }
+.auth-label input { width: 100%; padding: 11px 12px; border: 1px solid #dfe3e8; border-radius: 9px; outline: none; }
+.auth-label input:focus { border-color: #f0b90b; box-shadow: 0 0 0 3px rgba(240,185,11,.14); }
+.auth-submit { width: 100%; margin-top: 18px; padding: 11px; border: 0; border-radius: 9px; background: #f0b90b; color: #1a1a1a; font-weight: 600; }
+.auth-submit:disabled { opacity: .55; }
+.auth-mode { width: 100%; margin-top: 10px; border: 0; background: transparent; color: #876900; font-size: 12px; }
+.auth-message { min-height: 18px; margin-top: 10px; color: #d14343; font-size: 12px; }
+.auth-footnote { margin-top: 16px; color: #a0a7b3; font-size: 11px; line-height: 1.5; }

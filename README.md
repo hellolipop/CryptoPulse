@@ -71,6 +71,34 @@ npx serve .
 ### 方式三：部署到静态网站
 可直接部署到 Vercel、Netlify、GitHub Pages 等静态网站托管服务。
 
+### 方式四：把模拟盘记录到本地后端（可选）
+
+模拟盘（交易页 → 模拟盘）默认只存在浏览器的 `localStorage` 里：清一次缓存、换个浏览器、
+换台设备，总资金、配额、持仓与成交记录就都没了。下面这个本地服务把它们落到磁盘：
+
+```bash
+node server/store.js
+# → 监听 http://127.0.0.1:8788
+```
+
+然后在应用里打开「交易 → 模拟盘 → 记录到后端」，地址填 `http://127.0.0.1:8788` 并保存。
+保存时会自动连一次：绿色角标表示已连通，也可以随时点「立即同步」手动推一次。
+
+首次打开页面时注册或登录即可。服务端会在 `server/data/paper-state.json` 中保存用户和模拟盘数据；密码只保存为 scrypt 哈希，服务重启后需要重新登录。当前登录接口适合本机开发和自用，后续可继续接入验证码、微信登录、持久化会话和限流。
+
+**这不是必需服务。** 不启动它模拟盘照常使用，但用户登录和跨设备同步需要启动该服务。
+数据落在 `server/data/paper-state.json`（已在 `.gitignore` 中，是你的真实记录，不会入库）。
+
+几点设计取舍：
+
+- **浏览器里那份仍是权威副本。** 后端只是镜像，写入有 2 秒防抖，所以后端读到的可能比本机稍晚。
+- **冲突按时间戳取新**：两边都有数据时，谁的时间戳更晚用谁的，不做字段级合并。
+  模拟盘只有一台设备在写，这个策略够用且可解释。
+- **它只监听 `127.0.0.1`**，登录后的模拟盘数据按用户名隔离。若要暴露到网络，必须先补 HTTPS、持久化会话、限流和更强的登录验证。
+- 它与 `server/proxy.js`（币安签名代理）是**两个独立进程**：签名代理的端点白名单收得很紧
+  （只有账户查询与下单撤单），往里加文件读写路由会破坏那个前提；
+  而且持久化模拟盘并不需要密钥，不该因此逼你去配币安 API Key。
+
 ## 📱 小程序版（个人主体也能用）
 
 `miniprogram/` 是一份**原生微信小程序**，用微信开发者工具导入后在手机上预览即可自己使用，
@@ -95,6 +123,9 @@ crypto-analyzer/
 ├── index.html          # 主页面
 ├── css/
 │   └── style.css       # 自定义样式
+├── vendor/             # 第三方库（本地引入，不走 CDN）
+│   ├── tailwind.js                      # Tailwind CSS 3.4.17（Play 版，运行时编译）
+│   └── lightweight-charts.standalone.production.js   # Lightweight Charts 3.8.0
 ├── js/
 │   ├── app.js          # 主应用逻辑（含数据源路由）
 │   ├── chart.js        # 图表渲染模块
@@ -107,7 +138,8 @@ crypto-analyzer/
 │   ├── coingecko.js    # CoinGecko 数据源
 │   └── stocks.js       # 币安美股（USDT-M 合约）数据源
 ├── server/
-│   └── proxy.js        # 本地签名代理（密钥不入浏览器）
+│   ├── proxy.js        # 本地签名代理（密钥不入浏览器）
+│   └── store.js        # 模拟盘持久化服务（落盘到 server/data/，可选）
 ├── tests/              # 单元测试（node tests/xxx.test.js）
 │   ├── technical.test.js
 │   ├── binance.test.js
@@ -127,9 +159,9 @@ crypto-analyzer/
 | 技术 | 说明 |
 |------|------|
 | HTML5 | 页面结构 |
-| Tailwind CSS | 样式框架（CDN引入） |
+| Tailwind CSS 3.4.17 | 样式框架（**本地 `vendor/`，不走 CDN**） |
 | JavaScript (ES6+) | 核心逻辑 |
-| Lightweight Charts | K线图表库（TradingView出品） |
+| Lightweight Charts 3.8.0 | K线图表库（TradingView 出品，**本地 `vendor/`**） |
 | CoinGecko API | 加密货币数据源 |
 | LocalStorage | 本地数据存储 |
 

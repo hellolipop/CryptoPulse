@@ -6,36 +6,108 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="theme-color" content="#ffffff">
     <title>CryptoPulse - 虚拟货币实时分析</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="stylesheet" href="css/style.css?v=53">
+    <!-- 外部依赖全部放在本地 vendor/，不走 CDN。
+         原因：CDN 在部分网络下取不到，而这两个库决定页面能不能正常显示 ——
+         Tailwind 负责全部样式，lightweight-charts 负责K线图。
+         放本地后启动只依赖本机文件，不再受外网与 DNS 影响。
+         版本：Tailwind 3.4.17、Lightweight Charts 3.8.0（换版本时直接替换文件即可）。 -->
+    <script src="vendor/tailwind.js"></script>
+    <script src="vendor/lightweight-charts.standalone.production.js"></script>
+    <link rel="stylesheet" href="css/style.css?v=58">
     <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        'page-bg': '#f5f5f5',
-                        'card-bg': '#ffffff',
-                        'text-primary': '#1a1a1a',
-                        'text-secondary': '#707a8a',
-                        'text-tertiary': '#a0a7b3',
-                        'border-light': '#eaecef',
-                        'rise-green': '#089981',
-                        'fall-red': '#f23645',
-                        'golden': '#f0b90b',
-                        'tab-active': '#f0b90b',
-                        'btn-buy': '#089981',
-                        'btn-sell': '#f23645',
-                    },
-                    fontFamily: {
-                        'sans': ['-apple-system', 'BlinkMacSystemFont', 'PingFang SC', 'Helvetica Neue', 'sans-serif'],
-                    },
+        // 依赖自检。
+        //
+        // 换成本地文件后不再受外网影响，但守卫仍然要留着：文件缺失、路径写错、
+        // 部署时漏拷 vendor/ 目录，都会让依赖静默失效 ——
+        // 表现是整页失去样式、或K线区域一片空白，而控制台只有一句很难定位的报错。
+        //
+        // 所以：拿不到就登记下来，等 DOM 就绪后挂一条提示条，把缺什么直接写出来。
+        // 提示样式写在本地 css/style.css 里，不使用任何 Tailwind class ——
+        // 否则最需要它显示的时候，它自己也会跟着失效。
+        if (typeof tailwind !== 'undefined') {
+            tailwind.config = {
+                theme: {
+                    extend: {
+                        colors: {
+                            'page-bg': '#f5f5f5',
+                            'card-bg': '#ffffff',
+                            'text-primary': '#1a1a1a',
+                            'text-secondary': '#707a8a',
+                            'text-tertiary': '#a0a7b3',
+                            'border-light': '#eaecef',
+                            'rise-green': '#089981',
+                            'fall-red': '#f23645',
+                            'golden': '#f0b90b',
+                            'tab-active': '#f0b90b',
+                            'btn-buy': '#089981',
+                            'btn-sell': '#f23645',
+                        },
+                        fontFamily: {
+                            'sans': ['-apple-system', 'BlinkMacSystemFont', 'PingFang SC', 'Helvetica Neue', 'sans-serif'],
+                        },
+                    }
                 }
             }
+        } else {
+            // 用数组是为了把多个缺失项一次列全，而不是只报第一个
+            window.__cpMissingDeps = ['Tailwind 样式库（vendor/tailwind.js）'];
         }
+
+        // 图表库单独查一遍：它缺失时K线区域整块空白，但页面其余部分看着正常，
+        // 很容易被当成「今天没行情」而不是「依赖没加载」。
+        if (typeof LightweightCharts === 'undefined') {
+            window.__cpMissingDeps = (window.__cpMissingDeps || [])
+                .concat('K线图表库（vendor/lightweight-charts.standalone.production.js）');
+        }
+
+        // 依赖缺失提示条：只依赖本地 CSS，不依赖任何被判定为「可能缺失」的资源
+        (function () {
+            var missing = window.__cpMissingDeps;
+            if (!missing || !missing.length) return;
+
+            function render() {
+                if (!document.body) return;
+
+                var bar = document.createElement('div');
+                bar.className = 'dep-notice';
+                bar.setAttribute('role', 'alert');
+
+                var title = document.createElement('strong');
+                title.textContent = '页面依赖没有加载成功';
+
+                var detail = document.createElement('span');
+                detail.textContent = '取不到：' + missing.join('、')
+                    + '。缺 Tailwind 页面会完全没有样式，缺图表库则K线区域空白。'
+                    + '请确认 vendor/ 目录存在且文件完整，然后刷新页面。';
+
+                bar.appendChild(title);
+                bar.appendChild(detail);
+                document.body.insertBefore(bar, document.body.firstChild);
+            }
+
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', render);
+            } else {
+                render();
+            }
+        })();
     </script>
 </head>
 <body class="bg-page-bg text-text-primary min-h-screen font-sans pb-20">
+    <div id="authGate" class="auth-gate" hidden>
+        <div class="auth-card">
+            <div class="text-center mb-5">
+                <h2 class="text-xl font-bold">CryptoPulse 登录</h2>
+                <p class="text-xs text-text-secondary mt-1">登录后模拟盘、偏好和交易记录按用户隔离</p>
+            </div>
+            <label class="auth-label">用户名<input id="authUsername" autocomplete="username" placeholder="2-32 位用户名"></label>
+            <label class="auth-label">密码<input id="authPassword" type="password" autocomplete="current-password" placeholder="至少 6 位"></label>
+            <p id="authMessage" class="auth-message" role="alert"></p>
+            <button id="authSubmit" class="auth-submit" type="button">登录</button>
+            <button id="authMode" class="auth-mode" type="button">没有账号？注册</button>
+            <p class="auth-footnote">当前使用用户名和密码登录，后续可接入验证码、微信或其他验证方式。</p>
+        </div>
+    </div>
     <!-- 顶部导航栏 -->
     <header class="bg-white sticky top-0 z-50 border-b border-border-light">
         <div class="max-w-4xl mx-auto px-3 py-3 flex items-center justify-between">
@@ -94,6 +166,21 @@
         <div class="max-w-4xl mx-auto">
             <p class="text-[11px] font-semibold text-blue-800">美股标的 · 币安 USDT-M 合约（TradFi）</p>
             <p id="stockNoticeBody" class="text-[10px] text-blue-700 mt-1 leading-relaxed"></p>
+        </div>
+    </div>
+
+    <!-- 行情取不到时的提示条（仅当实时数据拉取失败时显示）
+         取不到就直说，不再拿随机数顶替成一份看起来完整的行情 -->
+    <div id="dataNotice" class="hidden bg-amber-50 border-b border-amber-200 px-4 py-2.5">
+        <div class="max-w-4xl mx-auto flex items-start justify-between gap-3">
+            <div class="min-w-0">
+                <p class="text-[11px] font-semibold text-amber-800">实时行情获取失败</p>
+                <p id="dataNoticeBody" class="text-[10px] text-amber-700 mt-1 leading-relaxed"></p>
+            </div>
+            <button id="dataNoticeRetry"
+                class="flex-shrink-0 px-2.5 py-1 rounded-lg bg-amber-500 text-white text-[11px] font-medium hover:opacity-90 transition-opacity">
+                重试
+            </button>
         </div>
     </div>
 
@@ -721,7 +808,7 @@
                             <span id="paperStatusTag" class="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-text-secondary">未开启</span>
                         </div>
                         <p class="text-[11px] text-text-tertiary mt-1 leading-relaxed">
-                            各币种独立运行，成交依据是K线图上标注的买卖点，与图示完全一致。
+                            各币种独立运行，成交依据是K线图上标注的买卖点：信号要等该K线收盘才成立，按下一根K线开盘价成交。
                         </p>
                         <p id="paperStrategyTf" class="text-[10px] text-text-tertiary mt-1">--</p>
                     </div>
@@ -841,7 +928,40 @@
                     <li>· 修改本币配额会用新的本金重算该币种账户。</li>
                     <li>· 买入用本币账户全部可用资金，卖出清空全部持仓；不计手续费与滑点。</li>
                     <li>· 「完成轮次」按卖出笔数计算；「同期买入持有」以首次买入价为基准。</li>
+                    <li>· 后端同步是<b>镜像</b>：本机浏览器里那份始终是权威副本，后端只是磁盘上的备份，可能比本机稍晚（写入有 2 秒防抖）。</li>
                 </ul>
+            </section>
+
+            <!-- 后端同步（把模拟盘记录落到磁盘） -->
+            <section class="mt-2 bg-white px-4 py-3">
+                <div class="flex items-center justify-between mb-1.5">
+                    <h3 class="text-sm font-semibold">记录到后端</h3>
+                    <span id="paperSyncTag" class="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-text-secondary">未启用</span>
+                </div>
+                <p class="text-[11px] text-text-tertiary leading-relaxed mb-2.5">
+                    模拟盘默认只存在本机浏览器里，清一次缓存、换个浏览器或换台设备就没了。
+                    填上本地服务地址后，总资金、各币种配额、持仓与成交记录会同步一份到磁盘。
+                    <span class="text-text-secondary">后端没启动不影响使用</span>，只是不同步。
+                </p>
+                <div class="flex items-center gap-2">
+                    <label class="text-[11px] text-text-secondary flex-shrink-0">地址</label>
+                    <input id="paperSyncUrl" type="text" inputmode="url" placeholder="http://127.0.0.1:8788"
+                        class="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-gray-50 border border-border-light text-xs placeholder-gray-400 focus:outline-none focus:border-golden/60 transition-colors">
+                    <button id="paperSyncSaveBtn"
+                        class="flex-shrink-0 px-3 py-1.5 rounded-lg bg-golden text-white text-xs font-medium hover:opacity-90 transition-opacity">
+                        保存
+                    </button>
+                </div>
+                <div class="flex items-center gap-2 mt-2">
+                    <label class="text-[11px] text-text-secondary flex-shrink-0">账号标识</label>
+                    <input id="paperSyncAccount" type="text" placeholder="default"
+                        class="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-gray-50 border border-border-light text-xs placeholder-gray-400 focus:outline-none focus:border-golden/60 transition-colors">
+                    <button id="paperSyncPushBtn"
+                        class="flex-shrink-0 px-3 py-1.5 rounded-lg border border-border-light text-text-secondary text-xs font-medium hover:border-golden/60 transition-colors">
+                        立即同步
+                    </button>
+                </div>
+                <p id="paperSyncHint" class="text-[10px] text-text-tertiary mt-1.5 leading-relaxed">--</p>
             </section>
             </div><!-- /tradePanePaper -->
 
@@ -1249,15 +1369,16 @@
     <!-- 轻提示 -->
     <div id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-24 z-[60] px-4 py-2.5 rounded-xl bg-gray-900/90 text-white text-sm shadow-lg opacity-0 pointer-events-none transition-opacity duration-200 hidden"></div>
 
-    <script src="js/technical.js?v=53"></script>
-    <script src="js/news.js?v=53"></script>
-    <script src="js/signals.js?v=53"></script>
-    <script src="js/prediction.js?v=53"></script>
-    <script src="js/paper.js?v=53"></script>
-    <script src="js/binance.js?v=53"></script>
-    <script src="js/coingecko.js?v=53"></script>
-    <script src="js/stocks.js?v=53"></script>
-    <script src="js/chart.js?v=53"></script>
-    <script src="js/app.js?v=53"></script>
+    <script src="js/technical.js?v=58"></script>
+    <script src="js/news.js?v=58"></script>
+    <script src="js/signals.js?v=58"></script>
+    <script src="js/prediction.js?v=58"></script>
+    <script src="js/paper.js?v=58"></script>
+    <script src="js/binance.js?v=58"></script>
+    <script src="js/coingecko.js?v=58"></script>
+    <script src="js/stocks.js?v=58"></script>
+    <script src="js/chart.js?v=58"></script>
+    <script src="js/app.js?v=58"></script>
+    <script src="js/auth.js?v=2"></script>
 </body>
 </html>

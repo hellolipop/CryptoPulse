@@ -42,6 +42,24 @@ const CryptoPulseApp = {
         tradeMode: 'paper',     // 交易页模式：paper 模拟盘 | live 币安测试网
         fundingHistory: null,   // 资金费率历史缓存 { coinId, fetchedAt, list }
         fundingPercentile: null,// 逐根K线的资金费率滚动分位
+        /**
+         * 实时行情取不到时的记录：{ coinId, price, klines }
+         * price / klines 为 null 表示该项正常，否则是给用户看的原因文案。
+         * 只要有一项非空，界面就按「行情不可用」渲染 —— 见 applyQuoteUnavailable。
+         */
+        quoteUnavailable: null,
+        /**
+         * 新闻取不到时的原因文案；正常时为 null。
+         * 用来区分「新闻源暂时挂了」与「这个币确实没有相关报道」——
+         * 两者都表现为空列表，但该给用户的提示完全不同。
+         */
+        newsUnavailable: null,
+        /**
+         * 衍生品数据取不到时的原因文案；正常时为 null。
+         * 资金费率缺失会让衍生品因子退化成常数 50，评分里必须剔除，
+         * 界面上也要把这一格显示成「—」而不是一个看似中性的 50。
+         */
+        derivativesUnavailable: null,
     },
 
     // 常见币种的中文名（联网币种若无中文名则显示符号）
@@ -436,23 +454,26 @@ const CryptoPulseApp = {
      * 只有资金费率不处于极端拥挤时才允许成交
      * （多头拥挤时不追多，空头拥挤时不追空）。
      *
-     * 实测（BTC/ETH，2023-09~2026-08，1小时，已扣双边 20bp）：
-     *   不过滤  ：2024 轮 · 胜率 28.4% · 单笔 −16.8bp · 累计约 −97%
-     *   费率闸门：128 轮 · 胜率 50.3% · 单笔 +17.5bp · 累计 −0.6% ~ +8.3%
+     * 实测（BTC/ETH，2023-09~2026-08，1小时，已扣双边 20bp；下方数字为两币均值）：
+     *   不过滤  ：1997 轮 · 胜率 28.1% · 单笔 −16.9bp · 累计约 −97%
+     *   费率闸门： 128 轮 · 胜率 51.1% · 单笔 +18.3bp · 累计 +2.4% ~ +8.4%
      * 注意：这是把「必亏」拉回「大致打平」，不是把它变成赚钱策略。
+     *
+     * 2026-09-21 用修正未来函数后的代码重跑（见 research/README.md 方案二），
+     * 结论方向不变；另外该闸门只在 1 小时上成立，4 小时/日线不适用。
      */
     paperGates: {
         off: {
             key: 'off',
             label: '不过滤',
             desc: '买卖点全部执行，不加任何额外条件。',
-            stats: { trips: 2024, win: 28.4, perTrip: -16.8, total: '约 -97%' },
+            stats: { trips: 1997, win: 28.1, perTrip: -16.9, total: '约 -97%' },
         },
         funding: {
             key: 'funding',
             label: '费率闸门',
             desc: '只在资金费率不拥挤时执行：买入需费率分位 ≤33%，卖出需 ≥67%。',
-            stats: { trips: 128, win: 50.3, perTrip: 17.5, total: '-0.6% ~ +8.3%' },
+            stats: { trips: 128, win: 51.1, perTrip: 18.3, total: '+2.4% ~ +8.4%' },
         },
     },
 
@@ -795,7 +816,106 @@ const CryptoPulseApp = {
             });
         }
 
+        // ---- 后端同步 ----
+        const syncUrl = document.getElementById('paperSyncUrl');
+        const syncAccount = document.getElementById('paperSyncAccount');
+        const syncCfg = PaperTrader.getSyncConfig();
+        if (syncUrl) syncUrl.value = syncCfg.url || '';
+        if (syncAccount) syncAccount.value = syncCfg.account || 'default';
+
+        const syncSaveBtn = document.getElementById('paperSyncSaveBtn');
+        if (syncSaveBtn) {
+            syncSaveBtn.addEventListener('click', async () => {
+                const res = PaperTrader.setSyncConfig(
+                    syncUrl ? syncUrl.value : '',
+                    syncAccount ? syncAccount.value.trim() : ''
+                );
+                if (!res.ok) {
+                    this.showToast(res.message);
+                    return;
+                }
+
+                const cfg = PaperTrader.getSyncConfig();
+                if (syncUrl) syncUrl.value = cfg.url;
+                if (syncAccount) syncAccount.value = cfg.account;
+
+                if (!cfg.url) {
+                    this.renderPaperSync();
+                    this.showToast('已关闭后端同步');
+                    return;
+                }
+
+                // 存完立刻探一次后端：地址填错了要当场知道，而不是等下一次自动推送
+                await PaperTrader.pullFromBackend();
+                PaperTrader.schedulePush();
+                this.renderPaperSync();
+                this.showToast(PaperTrader.sync.status === 'ok' ? '后端已连接' : '连接失败，见下方状态');
+            });
+        }
+
+        const syncPushBtn = document.getElementById('paperSyncPushBtn');
+        if (syncPushBtn) {
+            syncPushBtn.addEventListener('click', async () => {
+                if (!PaperTrader.getSyncConfig().url) {
+                    this.showToast('请先填写后端地址并保存');
+                    return;
+                }
+                const r = await PaperTrader.pushToBackend();
+                this.renderPaperSync();
+                this.showToast(r ? '已同步到后端' : '同步失败：' + PaperTrader.sync.message);
+            });
+        }
+
+        // PaperTrader 在后台完成同步后会回调这里刷新角标
+        PaperTrader.onSyncChange = () => this.renderPaperSync();
+        this.renderPaperSync();
+
+        // 启动时拉一次后端。不 await —— 拉不到就用本机数据，界面不该等它。
+        PaperTrader.initSync().catch(() => {});
+
         this.renderPaperTab();
+    },
+
+    /**
+     * 渲染后端同步状态。
+     *
+     * 角标四种状态：未启用（灰）/ 同步中（灰）/ 已连接（绿）/ 未连接（红）。
+     * 连不上时把启动命令一起写在提示里 —— 这个功能唯一的失败原因就是服务没起。
+     */
+    renderPaperSync() {
+        const tag = document.getElementById('paperSyncTag');
+        if (!tag) return;
+
+        const s = PaperTrader.sync || { status: 'off', message: '', lastSyncAt: null };
+        const labels = { off: '未启用', ok: '已连接', syncing: '同步中', error: '未连接' };
+
+        tag.textContent = labels[s.status] || s.status;
+        tag.className = 'text-[10px] px-1.5 py-0.5 rounded-full ' + (
+            s.status === 'ok' ? 'bg-green-100 text-rise-green'
+                : s.status === 'error' ? 'bg-red-100 text-fall-red'
+                    : 'bg-gray-200 text-text-secondary');
+
+        const hint = document.getElementById('paperSyncHint');
+        if (!hint) return;
+
+        const cfg = PaperTrader.getSyncConfig();
+        const parts = [];
+
+        if (!cfg.url) {
+            parts.push('未启用。启动服务后把 http://127.0.0.1:8788 填到上面并保存');
+            parts.push('启动命令：node server/store.js');
+        } else {
+            if (s.message) parts.push(s.message);
+            if (s.lastSyncAt) {
+                const d = new Date(s.lastSyncAt);
+                parts.push('最后同步 ' + (isNaN(d.getTime()) ? s.lastSyncAt
+                    : [d.getHours(), d.getMinutes(), d.getSeconds()]
+                        .map(n => String(n).padStart(2, '0')).join(':')));
+            }
+            parts.push(`${cfg.url} · 账号 ${cfg.account}`);
+        }
+
+        hint.textContent = parts.filter(Boolean).join('　·　');
     },
 
     /**
@@ -815,14 +935,18 @@ const CryptoPulseApp = {
         }
 
         if (on) {
-            // 开启后立刻按历史买卖点回放，把已经出现过的信号补上
+            // 开启后立刻回放一次，把「开启之后才成交的买卖点」补上。
+            //
+            // 注意这里不是「把历史上出现过的信号都补记」—— PaperTrader.setEnabled
+            // 会把 enabledAt 设成此刻，而回放只认成交时刻晚于 enabledAt 的点。
+            // 所以刚开启时账户通常还是空的，得等下一个买卖点收盘成交。
             this.syncPaperAccount();
         }
 
         this.renderPaperTab();
         const tfLabel = this.getTimeframeConfig(this.state.currentTimeframe).label;
         this.showToast(on
-            ? `${coin.symbol} 已开始模拟，按 ${tfLabel} 的买卖点回放`
+            ? `${coin.symbol} 已开始模拟：${tfLabel}的信号收盘后，按下一根开盘价成交`
             : `${coin.symbol} 已停止模拟`);
     },
 
@@ -1009,12 +1133,14 @@ const CryptoPulseApp = {
             }
         }
 
-        // 成交依据就是图上当前周期标注的买卖点，切周期会按新周期重算
+        // 成交依据就是图上当前周期标注的买卖点，切周期会按新周期重算。
+        // 执行时点必须写清楚：图上正在走的那根K线上的信号只是「待确认」，
+        // 要等它收盘才成立，成交价取下一根K线的开盘价。
         const stratTf = PaperTrader.getAccount(coinId).strategyTimeframe;
         const hasTf = stratTf !== undefined && stratTf !== null;
         this.setText('paperStrategyTf', (enabled && hasTf)
-            ? `按 ${this.getTimeframeConfig(stratTf).label} 的K线买卖点成交，与图上标注一致`
-            : '开启后按当前所选周期的K线买卖点成交');
+            ? `按 ${this.getTimeframeConfig(stratTf).label} 的K线买卖点成交 · 图上「待确认」的信号要等收盘后才执行`
+            : '开启后按当前所选周期成交 · 信号收盘成立后，按下一根K线开盘价成交');
 
         // 开关外观
         const toggle = document.getElementById('paperToggle');
@@ -1194,7 +1320,8 @@ const CryptoPulseApp = {
             if (!allocation) {
                 emptyText = '本币尚未配额，先在上方填写金额并应用';
             } else if (enabled) {
-                emptyText = '已开启，等待下一次信号方向变化';
+                // 说清为什么可能「开着却一笔都没有」：信号要等收盘，且成交价取下一根开盘
+                emptyText = '已开启，暂无成交。信号要等该K线收盘才成立，按下一根K线开盘价成交，等下一次方向变化';
             } else {
                 emptyText = '本币已停止运行，打开开关后开始记录';
             }
@@ -1215,8 +1342,13 @@ const CryptoPulseApp = {
             const tfLabel = (t.timeframe !== undefined && t.timeframe !== null)
                 ? this.getTimeframeConfig(t.timeframe).label
                 : '';
+            // 成交时刻 = 信号K线收盘 = 下一根K线开盘，比图上箭头所在的那根K线晚一格。
+            // 两个时间都列出来，免得看记录时以为「成交时间和图上箭头对不上」。
+            const whenText = (typeof t.signalTime === 'number' && t.signalTime !== t.time)
+                ? `信号 ${this.formatPredictionTime(t.signalTime)} → 成交 ${this.formatPredictionTime(t.time)}`
+                : this.formatPredictionTime(t.time);
             const meta = [
-                this.formatPredictionTime(t.time),
+                whenText,
                 tfLabel,
                 t.signalText || '--'
             ].filter(Boolean).join(' · ');
@@ -1501,6 +1633,16 @@ const CryptoPulseApp = {
         if (refreshNewsBtn) {
             refreshNewsBtn.addEventListener('click', () => {
                 this.loadNews(this.state.currentCoin);
+            });
+        }
+
+        // 行情提示条上的「重试」：重新拉一次当前币种的价格与K线。
+        // 传参与顶部刷新按钮保持一致 —— loadCoinData 的第二个参数目前没有被函数体
+        // 使用（属既有约定），这里不另起一套写法，免得两处行为分叉。
+        const dataNoticeRetry = document.getElementById('dataNoticeRetry');
+        if (dataNoticeRetry) {
+            dataNoticeRetry.addEventListener('click', () => {
+                this.loadCoinData(this.state.currentCoin, true);
             });
         }
 
@@ -2952,6 +3094,11 @@ const CryptoPulseApp = {
         this.state.stockDepthNotice = null;
         this.renderStockNotice();
 
+        // 换币种时先清掉上一个币种的「行情不可用」记录与提示条，
+        // 否则新币种会顶着上一个币种的失败提示，或者反过来把提示吞掉
+        this.state.quoteUnavailable = null;
+        this.renderDataNotice(false);
+
         try {
             // 关键路径只等「价格 + K线」——这两项决定首屏能看到什么。
             //
@@ -2995,8 +3142,7 @@ const CryptoPulseApp = {
             //
             // 另外两个因子对个股是**错的**，不能凑数：
             //   - 恐慌贪婪指数是加密市场的指标，跟苹果股价没有关系；
-            //   - 新闻源（cryptocurrency.cv / 币安公告 / 528btc）全是加密资讯，
-            //     拿它们给个股打消息分会得到一个纯噪声的分数。
+            //   - 新闻源全是加密资讯，拿它们给个股打消息分会得到一个纯噪声的分数。
             // 因此股票跳过这两项，综合评分里也相应去掉这两个权重（见 updateSignal）。
             if (this.isStock(coinId)) {
                 this.state.newsList = [];
@@ -3027,10 +3173,173 @@ const CryptoPulseApp = {
         if (el) el.classList.toggle('hidden', !pending);
     },
 
+    // ==================== 行情不可用状态 ====================
+    //
+    // 背景：以前现货价格/K线拉取失败会调用 useMockPriceData / useMockCandleData，
+    // 用内置基准价 × 随机数写进 state.coinInfo，界面上不做任何标记。
+    // 结果是价格、涨跌幅、K线、指标、综合信号一整套都照常显示，
+    // 但全是编的 —— 这比直接报错更糟，因为从界面上看不出来。
+    //
+    // 同一个项目里另外两条路径早就不是这么做的：
+    //   - 美股（loadStockPriceData）写明「失败时不降级成模拟数据」；
+    //   - CoinGecko 币种会显示「数据受限」，并列出缺了哪些因子。
+    // 只有现货这条在偷偷造数，现在改成与它们一致：如实说取不到。
+
+    /**
+     * 把取数异常翻译成用户看得懂、且能据以行动的原因。
+     *
+     * `TypeError: Failed to fetch` 是最常见的一种，它其实打包了多种情况
+     * （断网 / DNS 污染 / 代理或防火墙拦截 / CORS），所以文案要把这些列出来，
+     * 而不是笼统写一句「网络错误」让用户无从下手。
+     */
+    quoteFailureReason(error) {
+        const msg = (error && error.message) ? String(error.message) : '';
+        if (/Failed to fetch|NetworkError|Load failed|ERR_/i.test(msg)) {
+            return '网络请求被中断或拦截（可能断网、DNS 解析被污染，或代理与防火墙拦了 data-api.binance.vision）';
+        }
+        if (/HTTP \d{3}/i.test(msg)) {
+            return '币安接口返回错误：' + msg;
+        }
+        return msg || '未知错误';
+    },
+
+    /** 标记某一项行情取不到（part: 'price' | 'klines'） */
+    markQuoteFailed(coinId, part, reason) {
+        if (this.state.currentCoin !== coinId) return;
+
+        const cur = this.state.quoteUnavailable;
+        const rec = (cur && cur.coinId === coinId)
+            ? cur
+            : { coinId: coinId, price: null, klines: null };
+        rec[part] = reason || '请求失败';
+        this.state.quoteUnavailable = rec;
+
+        this.applyQuoteUnavailable(rec);
+    },
+
+    /** 标记某一项恢复正常；两项都好了才收起提示条 */
+    markQuoteOk(coinId, part) {
+        const rec = this.state.quoteUnavailable;
+        if (!rec || rec.coinId !== coinId) return;
+
+        rec[part] = null;
+        if (!rec.price && !rec.klines) {
+            this.state.quoteUnavailable = null;
+            this.renderDataNotice(false);
+        } else {
+            this.applyQuoteUnavailable(rec);
+        }
+    },
+
+    /**
+     * 按「行情不可用」重画界面。
+     *
+     * 关键：按部件分别处理，不能一律清空。
+     * 曾经这里无条件清掉 coinInfo，结果是「价格恢复了、K线还没恢复」时，
+     * 刚取到的价格又被抹掉 —— 表现为点重试后价格闪一下又变回 --。
+     */
+    applyQuoteUnavailable(rec) {
+        if (rec.price) {
+            // 价格取不到：清掉数值，避免留着上一个币种的价格
+            this.state.coinInfo = null;
+            this.clearPriceUI();
+        }
+
+        if (rec.klines) {
+            // K线取不到：指标无从计算，图表也不能留着上一次的曲线
+            this.state.candleData = [];
+            this.state.indicators = null;
+            if (typeof ChartManager !== 'undefined') {
+                ChartManager.clearCandlestickData();
+            }
+        }
+
+        const failed = [];
+        if (rec.price) failed.push('实时价格（' + rec.price + '）');
+        if (rec.klines) failed.push('K线（' + rec.klines + '）');
+        this.renderDataNotice(true, failed.join('；'));
+
+        // 只要有一项缺，综合信号就没有可信输入，统一按不可用显示
+        this.renderUnavailableSignalState();
+    },
+
+    /**
+     * 价格区清空。
+     *
+     * 必须真的清掉：切币种时若新币种取不到，界面上会留着上一个币种的价格，
+     * 用户很容易把它当成当前币种的行情。
+     */
+    clearPriceUI() {
+        this.setText('currentPrice', '--');
+        this.setText('cnyPrice', '≈ ¥--');
+        this.setText('high24h', '$--');
+        this.setText('low24h', '$--');
+        this.setText('volume24h', '--');
+        this.setText('quoteVolume24h', '$--');
+
+        const priceEl = document.getElementById('currentPrice');
+        if (priceEl) priceEl.className = 'text-3xl font-bold text-text-tertiary tabular-nums';
+
+        const cnyEl = document.getElementById('cnyPrice');
+        if (cnyEl) cnyEl.className = 'text-sm text-text-tertiary';
+
+        const badge = document.getElementById('priceChangeBadge');
+        if (badge) {
+            badge.textContent = '--';
+            badge.className = 'text-xs font-medium px-2 py-0.5 rounded bg-gray-100 text-text-tertiary';
+        }
+    },
+
+    /** 行情不可用提示条：给出原因与重试入口 */
+    renderDataNotice(show, reason) {
+        const el = document.getElementById('dataNotice');
+        if (!el) return;
+        el.classList.toggle('hidden', !show);
+        if (!show) return;
+
+        const body = document.getElementById('dataNoticeBody');
+        if (!body) return;
+
+        body.innerHTML = [
+            reason ? this.esc(reason) + '。' : '',
+            '这一屏不会再用随机数顶替行情 —— 那样你会看到一份看着完整、实际是编的分析结果。',
+            '价格、K线与综合信号暂不可用，请确认网络或代理后点「重试」。',
+        ].join('');
+    },
+
+    /** 行情不可用时的信号卡状态 */
+    renderUnavailableSignalState() {
+        const scoreEl = document.getElementById('signalMainText');
+        const descEl = document.getElementById('signalMainDesc');
+        const scoreTextEl = document.getElementById('signalScoreText');
+        const barEl = document.getElementById('signalScoreBar');
+        const tagEl = document.getElementById('signalStrengthTag');
+        const iconEl = document.getElementById('signalMainIcon');
+
+        if (scoreEl) {
+            scoreEl.textContent = '数据不可用';
+            scoreEl.className = 'text-xl font-bold text-text-secondary';
+        }
+        if (tagEl) {
+            tagEl.textContent = '未取到数据';
+            tagEl.className = 'text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 font-medium';
+        }
+        if (descEl) {
+            descEl.textContent = '实时行情没能取到，暂不生成买卖信号。点上方「重试」重新拉取。';
+        }
+        if (scoreTextEl) scoreTextEl.textContent = '--';
+        if (barEl) {
+            barEl.style.width = '0%';
+            barEl.className = 'h-full rounded-full bg-gray-200';
+        }
+        if (iconEl) {
+            iconEl.className = 'w-14 h-14 rounded-2xl flex items-center justify-center bg-gray-100 flex-shrink-0';
+        }
+    },
+
     // 加载价格数据（币安 API）
     async loadPriceData(coinId) {
-        // CoinGecko 币种绝不能走这里：getBinanceSymbol 返回空会触发「模拟数据」兜底，
-        // 而自动刷新每 30 秒就会调一次，等于把真实行情反复覆盖成随机数。
+        // CoinGecko 币种走自己的价格接口，不能落到下面任何一条兜底路径上
         if (this.getDataSource(coinId) === 'coingecko') {
             await this.refreshCgPrice(coinId);
             return;
@@ -3038,55 +3347,59 @@ const CryptoPulseApp = {
 
         const binanceSymbol = this.getBinanceSymbol(coinId);
         if (!binanceSymbol) {
-            this.useMockPriceData(coinId);
+            this.markQuoteFailed(coinId, 'price', '该币种没有对应的币安现货交易对');
             return;
         }
 
-        // 美股在 USDT-M 合约市场，报价要换 fapi 端点；
-        // 拿现货接口去问 AAPLUSDT 会直接报错，然后落到模拟数据兜底。
+        // 美股在 USDT-M 合约市场，报价要换 fapi 端点
         if (this.isStock(coinId)) {
             await this.loadStockPriceData(coinId, binanceSymbol);
             return;
         }
 
+        // try 只包住「取数」本身。后面解析与渲染若出错，那是程序问题，
+        // 不该被报成「行情取不到」—— 那会给出完全错误的排查方向。
+        let payload;
         try {
             const response = await fetch(
                 `${this.binanceApiBase}/ticker/24hr?symbol=${binanceSymbol}`
             );
 
-            if (!response.ok) throw new Error('Binance API error');
+            // 带上状态码：出问题时能直接看出是 4xx 还是 5xx，
+            // 而不是一句没有信息量的「Binance API error」
+            if (!response.ok) throw new Error('HTTP ' + response.status);
 
-            const data = await response.json();
-
-            if (this.state.currentCoin !== coinId) return;
-
-            const coinInfo = this.getCoinInfo(coinId);
-            this.state.coinInfo = {
-                id: coinId,
-                symbol: coinInfo.symbol,
-                name: coinInfo.name,
-                image: coinInfo.image || '',
-                current_price: parseFloat(data.lastPrice),
-                price_change_24h: parseFloat(data.priceChange),
-                price_change_percentage_24h: parseFloat(data.priceChangePercent),
-                high_24h: parseFloat(data.highPrice),
-                low_24h: parseFloat(data.lowPrice),
-                open_24h: parseFloat(data.openPrice),
-                weighted_avg_price: parseFloat(data.weightedAvgPrice),
-                trade_count: parseInt(data.count, 10),
-                total_volume: parseFloat(data.volume),       // 成交量（币数量）
-                quote_volume: parseFloat(data.quoteVolume),  // 成交额（USDT）
-                market_cap: 0,
-            };
-
-            this.updatePriceUI();
-
+            payload = await response.json();
         } catch (error) {
             console.error('获取价格数据失败:', error);
-            if (this.state.currentCoin === coinId) {
-                this.useMockPriceData(coinId);
-            }
+            // 不再用随机数顶替。取不到就如实说取不到，理由交给界面展示。
+            this.markQuoteFailed(coinId, 'price', this.quoteFailureReason(error));
+            return;
         }
+
+        if (this.state.currentCoin !== coinId) return;
+
+        const coinInfo = this.getCoinInfo(coinId);
+        this.state.coinInfo = {
+            id: coinId,
+            symbol: coinInfo.symbol,
+            name: coinInfo.name,
+            image: coinInfo.image || '',
+            current_price: parseFloat(payload.lastPrice),
+            price_change_24h: parseFloat(payload.priceChange),
+            price_change_percentage_24h: parseFloat(payload.priceChangePercent),
+            high_24h: parseFloat(payload.highPrice),
+            low_24h: parseFloat(payload.lowPrice),
+            open_24h: parseFloat(payload.openPrice),
+            weighted_avg_price: parseFloat(payload.weightedAvgPrice),
+            trade_count: parseInt(payload.count, 10),
+            total_volume: parseFloat(payload.volume),       // 成交量（币数量）
+            quote_volume: parseFloat(payload.quoteVolume),  // 成交额（USDT）
+            market_cap: 0,
+        };
+
+        this.updatePriceUI();
+        this.markQuoteOk(coinId, 'price');
     },
 
     /**
@@ -3121,41 +3434,6 @@ const CryptoPulseApp = {
         }
     },
 
-    // 使用模拟价格数据
-    useMockPriceData(coinId) {
-        const basePrices = {
-            'bitcoin': 65000,
-            'ethereum': 3500,
-            'binancecoin': 580,
-            'solana': 145,
-            'ripple': 0.52,
-            'cardano': 0.45,
-            'dogecoin': 0.12,
-            'polkadot': 7.2,
-        };
-        
-        const basePrice = basePrices[coinId] || 100;
-        const change = (Math.random() - 0.5) * 0.1;
-        const currentPrice = basePrice * (1 + change);
-        
-        this.state.coinInfo = {
-            id: coinId,
-            symbol: this.getCoinInfo(coinId).symbol,
-            name: this.getCoinInfo(coinId).name,
-            image: '',
-            current_price: currentPrice,
-            price_change_24h: currentPrice * change,
-            price_change_percentage_24h: change * 100,
-            high_24h: currentPrice * 1.05,
-            low_24h: currentPrice * 0.95,
-            total_volume: basePrice * 10000,
-            quote_volume: basePrice * 500000,
-            market_cap: basePrice * 20000000,
-        };
-        
-        this.updatePriceUI();
-    },
-
     // 获取币安K线间隔参数
     getBinanceInterval(tf) {
         const { interval } = this.getTimeframeConfig(tf);
@@ -3164,13 +3442,12 @@ const CryptoPulseApp = {
 
     // 加载K线数据（币安 API）
     async loadCandleData(coinId) {
-        // CoinGecko 币种的K线由 loadCoinDataFromCoinGecko 负责。
-        // 这里的 getBinanceSymbol 返回空会落到「模拟K线」兜底，把真实数据覆盖掉。
+        // CoinGecko 币种的K线由 loadCoinDataFromCoinGecko 负责
         if (this.getDataSource(coinId) === 'coingecko') return;
 
         const binanceSymbol = this.getBinanceSymbol(coinId);
         if (!binanceSymbol) {
-            this.useMockCandleData(coinId);
+            this.markQuoteFailed(coinId, 'klines', '该币种没有对应的币安现货交易对');
             return;
         }
 
@@ -3180,21 +3457,20 @@ const CryptoPulseApp = {
             return;
         }
 
+        // try 只包住「取数 + 解析」。后面的指标计算与渲染若出错，
+        // 那是程序问题，不该报成「K线取不到」。
+        let candleData;
         try {
             const { interval, limit } = this.getBinanceInterval(this.state.currentTimeframe);
             const response = await fetch(
                 `${this.binanceApiBase}/klines?symbol=${binanceSymbol}&interval=${interval}&limit=${limit}`
             );
 
-            if (!response.ok) throw new Error('Binance Kline API error');
+            if (!response.ok) throw new Error('HTTP ' + response.status);
 
             const data = await response.json();
 
-            // 切币后才回来的响应必须丢弃，否则会把新币种的K线覆盖成旧币种的。
-            // 之前这里没有这道判断，切到 CoinGecko 币种时会被在途的币安请求污染。
-            if (this.state.currentCoin !== coinId) return;
-
-            const candleData = data.map(item => ({
+            candleData = data.map(item => ({
                 time: Math.floor(item[0] / 1000),
                 open: parseFloat(item[1]),
                 high: parseFloat(item[2]),
@@ -3202,21 +3478,28 @@ const CryptoPulseApp = {
                 close: parseFloat(item[4]),
                 volume: parseFloat(item[5]),
             }));
-
-            this.state.candleData = candleData;
-            this.state.candleSource = 'binance';
-            this.evaluatePredictions();
-            this.calculateIndicators();
-            // 闸门需要按K线时间对齐的资金费率分位，必须在K线就绪后计算
-            await this.ensureFundingHistory(coinId);
-            this.computeFundingPercentile();
-            this.updateChart();
-            this.updateSignal();
-
         } catch (error) {
             console.error('获取K线数据失败:', error);
-            this.useMockCandleData(coinId);
+            // 不再生成随机K线顶替。取不到就如实说取不到。
+            this.markQuoteFailed(coinId, 'klines', this.quoteFailureReason(error));
+            return;
         }
+
+        // 切币后才回来的响应必须丢弃，否则会把新币种的K线覆盖成旧币种的。
+        // 之前这里没有这道判断，切到 CoinGecko 币种时会被在途的币安请求污染。
+        if (this.state.currentCoin !== coinId) return;
+
+        this.state.candleData = candleData;
+        this.state.candleSource = 'binance';
+        this.evaluatePredictions();
+        this.calculateIndicators();
+        // 闸门需要按K线时间对齐的资金费率分位，必须在K线就绪后计算
+        await this.ensureFundingHistory(coinId);
+        this.computeFundingPercentile();
+        this.updateChart();
+        // 先销掉「不可用」标记再刷信号，否则 updateSignal 会走不可用分支
+        this.markQuoteOk(coinId, 'klines');
+        this.updateSignal();
     },
 
     /**
@@ -3314,7 +3597,7 @@ const CryptoPulseApp = {
     async loadDerivativesData(coinId) {
         const binanceSymbol = this.getBinanceSymbol(coinId);
         if (!binanceSymbol) {
-            this.useMockDerivativesData(coinId);
+            this.setDerivativesUnavailable('该币种没有对应的币安合约交易对');
             return;
         }
 
@@ -3324,7 +3607,7 @@ const CryptoPulseApp = {
                 { signal: AbortSignal.timeout(5000) }
             );
 
-            if (!response.ok) throw new Error('Futures API error');
+            if (!response.ok) throw new Error('HTTP ' + response.status);
 
             const data = await response.json();
 
@@ -3333,6 +3616,7 @@ const CryptoPulseApp = {
                 nextFundingTime: data.nextFundingTime,
                 openInterest: null
             };
+            this.state.derivativesUnavailable = null;
 
             try {
                 const oiResponse = await fetch(
@@ -3344,88 +3628,33 @@ const CryptoPulseApp = {
                     this.state.derivatives.openInterest = parseFloat(oiData.openInterest);
                 }
             } catch (e) {
-                console.warn('获取OI失败:', e);
+                // 持仓量取不到不影响资金费率，保持 null
+                console.warn('获取OI失败:', e.message);
             }
 
             this.updateDerivativesUI();
 
         } catch (error) {
-            console.warn('获取衍生品数据失败:', error);
-            this.useMockDerivativesData(coinId);
+            console.error('获取衍生品数据失败:', error);
+            this.setDerivativesUnavailable(this.quoteFailureReason(error));
         }
     },
 
-    useMockDerivativesData(coinId) {
-        const basePrices = {
-            'bitcoin': 78000, 'ethereum': 3500, 'binancecoin': 580,
-            'solana': 145, 'ripple': 0.52, 'cardano': 0.45,
-            'dogecoin': 0.12, 'polkadot': 7.2,
-        };
-        const basePrice = basePrices[coinId] || 100;
-
-        const fundingRate = (Math.random() - 0.3) * 0.1;
-        const openInterest = basePrice * 1000 * (0.8 + Math.random() * 0.4);
-
-        this.state.derivatives = {
-            fundingRate,
-            openInterest,
-            isMock: true
-        };
-
+    /**
+     * 标记衍生品数据取不到。
+     *
+     * 为什么不再造数：原来失败时会用 `(Math.random()-0.3)*0.1` 生成资金费率、
+     * 再用随机数生成持仓量，还带一个从头到尾没有任何地方读取的 isMock 标记。
+     * 资金费率是 calculateDerivativesScore 的唯一输入，随机值直接决定
+     * 12% 权重的衍生品因子 —— 而这个因子要衡量的是「杠杆是否拥挤」，
+     * 塞随机数等于给出一个随机的结论，且界面上看不出来。
+     *
+     * 现在置空：界面显示「—」并注明原因，评分里把这一项剔除、按剩余权重重算。
+     */
+    setDerivativesUnavailable(reason) {
+        this.state.derivatives = null;
+        this.state.derivativesUnavailable = reason || '取不到资金费率';
         this.updateDerivativesUI();
-    },
-
-    // 使用模拟K线数据
-    useMockCandleData(coinId) {
-        const basePrices = {
-            'bitcoin': 65000,
-            'ethereum': 3500,
-            'binancecoin': 580,
-            'solana': 145,
-            'ripple': 0.52,
-            'cardano': 0.45,
-            'dogecoin': 0.12,
-            'polkadot': 7.2,
-        };
-        
-        const basePrice = basePrices[coinId] || 100;
-        const candleCount = 200;
-        const candleData = [];
-        let price = basePrice;
-        
-        const now = Math.floor(Date.now() / 1000);
-        // 用所选周期的真实K线间隔生成模拟数据，避免周期切换后时间轴错乱
-        const interval = this.getTimeframeConfig(this.state.currentTimeframe).seconds;
-        
-        for (let i = candleCount - 1; i >= 0; i--) {
-            const time = now - i * interval;
-            const volatility = 0.02;
-            const trend = Math.sin(i / 20) * 0.005;
-            
-            const open = price;
-            const change = (Math.random() - 0.5 + trend) * volatility * price;
-            const close = open + change;
-            const high = Math.max(open, close) * (1 + Math.random() * volatility * 0.5);
-            const low = Math.min(open, close) * (1 - Math.random() * volatility * 0.5);
-            const volume = basePrice * 1000 * (0.5 + Math.random());
-            
-            candleData.push({
-                time: Math.floor(time),
-                open,
-                high,
-                low,
-                close,
-                volume
-            });
-            
-            price = close;
-        }
-        
-        this.state.candleData = candleData;
-        this.evaluatePredictions();
-        this.calculateIndicators();
-        this.updateChart();
-        this.updateSignal();
     },
 
     // 计算技术指标
@@ -3528,11 +3757,22 @@ const CryptoPulseApp = {
      * 死区取近 window 根K线涨幅绝对值的均值乘以 factor，
      * 这样不同周期、不同币种都能自动获得合适的灵敏度阈值。
      *
+     * 返回值里同时给出两个死区：
+     *   scale        —— 只看「最后 window 根」，用于判断当前这一根
+     *   scaleSeries  —— 逐根死区，第 i 根只用 [i-window+1, i] 的数据，
+     *                   用于判断历史K线（K线上的买卖点标注与模拟盘回放）
+     *
+     * 为什么必须分开：判断「当前这一根」时两者数值相同（取样窗口都落在末尾），
+     * 但一旦拿末尾的常数去套历史K线，历史信号就偷看了它之后 50 根K线的波动 ——
+     * 这是未来函数。实测（ETH 200 根K线）会让 1 小时回放的每轮收益从 0.384%
+     * 虚高到 0.535%、累计虚高约 1.8 个百分点，4 小时虚高约 0.5 个百分点。
+     * 实时综合信号（calculateTechnicalScore）只用当前这一根，不受影响。
+     *
      * @param {Array} closes - 收盘价序列
      * @param {number} period - 动量周期
      * @param {number} window - 自适应取样窗口
      * @param {number} factor - 死区系数
-     * @returns {{value: number, scale: number, series: Array}}
+     * @returns {{value: number, scale: number, series: Array, scaleSeries: Array}}
      */
     buildROC(closes, period = 3, window = 50, factor = 0.6) {
         const n = closes.length;
@@ -3552,10 +3792,27 @@ const CryptoPulseApp = {
         }
         const scale = count ? (sum / count) * factor : 0.005;
 
+        // 逐根死区：第 i 根只吃 [i-window, i] 的数据，不含未来。
+        // 区间取法与上面的全局版完全一致，只是把「末尾」换成第 i 根 ——
+        // 这样 scaleSeries[n-1] 恒等于 scale，判断当前这一根时两者不分叉。
+        const scaleSeries = new Array(n).fill(null);
+        for (let i = 0; i < n; i++) {
+            let s = 0;
+            let c = 0;
+            for (let k = Math.max(period, i - window); k <= i; k++) {
+                if (series[k] !== null) {
+                    s += Math.abs(series[k]);
+                    c++;
+                }
+            }
+            scaleSeries[i] = c ? (s / c) * factor : 0.005;
+        }
+
         return {
             value: series[n - 1],
             scale,
             series,
+            scaleSeries,
         };
     },
 
@@ -3640,6 +3897,9 @@ const CryptoPulseApp = {
         const lower = (ind.bollingerBands && ind.bollingerBands.lower) || [];
         const rocSeries = (ind.roc && ind.roc.series) || [];
         const rocScale = (ind.roc && ind.roc.scale) || 0.005;
+        // 逐根死区（无未来函数）。老调用方只给 roc.scale 时退回单一常数，
+        // 但那条路径会让历史信号偷看未来，实测会虚高收益，只作兼容保留。
+        const rocScaleSeries = (ind.roc && ind.roc.scaleSeries) || null;
         const rsiLine = TechnicalAnalysis.calculateRSI(closes, 14);
 
         const classify = (v) => {
@@ -3689,8 +3949,11 @@ const CryptoPulseApp = {
             // 领先因子：3周期动量（死区随波动自适应）
             const roc = rocSeries[i];
             if (roc != null) {
-                if (roc > rocScale) score += W.momentum;
-                else if (roc < -rocScale) score -= W.momentum;
+                const sc = (rocScaleSeries && rocScaleSeries[i] != null)
+                    ? rocScaleSeries[i]
+                    : rocScale;
+                if (roc > sc) score += W.momentum;
+                else if (roc < -sc) score -= W.momentum;
             }
 
             // 领先因子：StochRSI 方向
@@ -3759,16 +4022,28 @@ const CryptoPulseApp = {
      * 直接由 buildSignalSeries 的结果转换而来，与模拟交易同源。
      * 只保留最近的标记，小屏不至于糊成一片；
      * 上限设为40：灵敏档信号较多（约30个），过低会把它裁到和均衡档一样多。
+     *
+     * 正在走形的那根K线（最后一根）还没收盘，它上面的信号随时可能翻掉甚至消失，
+     * 模拟盘也明确不执行它 —— 实测这就是「图上看到箭头、模拟却没动作」的主因。
+     * 所以这里给它浅色 + 「待确认」前缀，与已成立的信号区分开。
      */
     generateSignalMarkers(data, ind) {
-        return this.buildSignalSeries(data, ind).map(s => ({
-            time: s.time,
-            position: s.side === 'buy' ? 'belowBar' : 'aboveBar',
-            color: s.side === 'buy' ? '#089981' : '#f23645',
-            shape: s.side === 'buy' ? 'arrowUp' : 'arrowDown',
-            text: s.label,
-            size: s.strong ? 2 : 1,
-        })).slice(-40);
+        const lastIndex = data.length - 1;
+
+        return this.buildSignalSeries(data, ind).map(s => {
+            const pending = s.index === lastIndex;
+            const solid = s.side === 'buy' ? '#089981' : '#f23645';
+            const faded = s.side === 'buy' ? '#7fd4bb' : '#f8a0a8';
+
+            return {
+                time: s.time,
+                position: s.side === 'buy' ? 'belowBar' : 'aboveBar',
+                color: pending ? faded : solid,
+                shape: s.side === 'buy' ? 'arrowUp' : 'arrowDown',
+                text: pending ? `待确认·${s.label}` : s.label,
+                size: pending ? 1 : (s.strong ? 2 : 1),
+            };
+        }).slice(-40);
     },
 
     /**
@@ -4156,24 +4431,33 @@ const CryptoPulseApp = {
     // 更新衍生品数据UI（Mini版）
     updateDerivativesUI() {
         const deriv = this.state.derivatives;
-        if (!deriv) return;
+        const fr = deriv ? deriv.fundingRate : null;
 
-        // 资金费率 Mini
         const frMiniEl = document.getElementById('fundingRateMini');
-        if (frMiniEl && deriv.fundingRate !== null && deriv.fundingRate !== undefined) {
-            frMiniEl.textContent = deriv.fundingRate.toFixed(4) + '%';
-            frMiniEl.className = `text-lg font-bold tabular-nums ${deriv.fundingRate > 0 ? 'text-rise-green' : 'text-fall-red'}`;
+        if (!frMiniEl) return;
+
+        if (Number.isFinite(fr)) {
+            frMiniEl.textContent = fr.toFixed(4) + '%';
+            frMiniEl.className = `text-lg font-bold tabular-nums ${fr > 0 ? 'text-rise-green' : 'text-fall-red'}`;
+            frMiniEl.title = '';
 
             let frStatus = '正常';
             let frStatusColor = 'gold';
-            if (deriv.fundingRate > 0.1) {
+            if (fr > 0.1) {
                 frStatus = '过高';
                 frStatusColor = 'red';
-            } else if (deriv.fundingRate < -0.05) {
+            } else if (fr < -0.05) {
                 frStatus = '负费率';
                 frStatusColor = 'green';
             }
             this.setStatusBadge('fundingStatusMini', frStatus, frStatusColor);
+        } else {
+            // 取不到就清成 -- 并标出来。不能留着上一次的值 ——
+            // 切币种时那会变成「拿 A 的资金费率显示成 B 的」。
+            frMiniEl.textContent = '--';
+            frMiniEl.className = 'text-lg font-bold tabular-nums text-text-tertiary';
+            frMiniEl.title = this.state.derivativesUnavailable || '取不到资金费率';
+            this.setStatusBadge('fundingStatusMini', '未取到', 'gray');
         }
     },
 
@@ -4301,10 +4585,12 @@ const CryptoPulseApp = {
             this.setText('ahr999Info', ind.ahr999.value.toFixed(3));
         }
 
-        // OI
-        if (deriv && deriv.openInterest) {
-            this.setText('oiInfo', TechnicalAnalysis.formatLargeNumber(deriv.openInterest));
-        }
+        // OI（持仓量）。取不到时显式清成 --，不要留着上一次的值 ——
+        // 原来的写法是只在有值时 setText，于是切到取不到持仓量的币种时，
+        // 界面上会继续显示上一个币种的持仓量。
+        this.setText('oiInfo', (deriv && deriv.openInterest)
+            ? TechnicalAnalysis.formatLargeNumber(deriv.openInterest)
+            : '--');
     },
 
     setText(id, text) {
@@ -4319,6 +4605,7 @@ const CryptoPulseApp = {
         // 综合评分那边虽然已经不计消息面，但没必要每 5 分钟白打三个外部接口。
         if (this.isStock(coinId || this.state.currentCoin)) {
             this.state.newsList = [];
+            this.state.newsUnavailable = null;
             this._newsReady = true;
             this.renderNews();
             return;
@@ -4326,14 +4613,55 @@ const CryptoPulseApp = {
         try {
             const news = await NewsAnalyzer.fetchNews(coinId);
             this.state.newsList = news;
+            // fetchNews 取不到内容时返回空数组、把原因写在 lastFailure 上。
+            // 拿到非空内容就说明这次成功，清掉上一次的失败记录。
+            this.state.newsUnavailable = news.length > 0
+                ? null
+                : (NewsAnalyzer.lastFailure || null);
             this.renderNews();
             this.updateSignal();
         } catch (error) {
             console.error('获取新闻失败:', error);
+            // 异常也要落到界面上，否则用户看到的是「暂无新闻数据」，
+            // 会以为抓取成功、只是真的没新闻
+            this.state.newsList = [];
+            this.state.newsUnavailable = (error && error.message) ? error.message : '请求失败';
+            this.renderNews();
+            this.updateSignal();
         } finally {
             // 无论成功或降级，标记新闻已就绪，此后才允许记录预测
             this._newsReady = true;
         }
+    },
+
+    /**
+     * 资讯源名称列表，用于界面说明。
+     *
+     * 从 NewsAnalyzer 的实际配置里取，而不是在文案里手写一份 ——
+     * 之前那段说明写死了「cryptocurrency.cv、币安公告、528btc」，
+     * 换源之后就再也没对上过。文案跟着配置走，就不会再出现这种漂移。
+     */
+    newsSourceLabel() {
+        if (typeof NewsAnalyzer === 'undefined') return '第三方资讯源';
+        const names = ['cryptocurrency.cv'];
+        (NewsAnalyzer.RSS_FEEDS || []).forEach(f => {
+            if (f && f.label) names.push(f.label);
+        });
+        return names.join('、');
+    },
+
+    /**
+     * 设置资讯区的情绪徽章。
+     * 抽出来是因为它现在有五种状态（偏多/偏空/中性/不适用/未取到），
+     * 每处都手写一遍文字与 className 很容易写岔。
+     * @param {string} text
+     * @param {string} cls - 颜色类（拼在基础类之后）
+     */
+    setNewsBadge(text, cls) {
+        const badge = document.getElementById('newsSentimentBadge');
+        if (!badge) return;
+        badge.textContent = text;
+        badge.className = 'text-xs px-2 py-0.5 rounded-full ' + cls;
     },
 
     // 渲染新闻（白色主题）
@@ -4346,15 +4674,11 @@ const CryptoPulseApp = {
         // 美股：新闻源里根本没有个股资讯，这时候渲染「暂无新闻数据」会让用户
         // 以为是抓取失败，反复点刷新。所以直接说明这个板块对个股不适用。
         if (this.currentIsStock()) {
-            const badge = document.getElementById('newsSentimentBadge');
-            if (badge) {
-                badge.textContent = '不适用';
-                badge.className = 'text-xs px-2 py-0.5 rounded-full bg-gray-100 text-text-secondary';
-            }
+            this.setNewsBadge('不适用', 'bg-gray-100 text-text-secondary');
             container.innerHTML = `<div class="py-8 px-4 text-center">
                 <p class="text-sm text-text-secondary">个股资讯暂未接入</p>
                 <p class="text-xs text-text-tertiary mt-2 leading-relaxed">
-                    当前资讯源是加密货币媒体（cryptocurrency.cv、币安公告、528btc），
+                    当前的资讯源都是加密媒体（${this.newsSourceLabel()}），
                     对个股没有可用内容。与其拿加密新闻给个股凑一个情绪分，这里选择留空，
                     综合评分也不计入消息面（见顶部说明）。
                 </p>
@@ -4363,24 +4687,36 @@ const CryptoPulseApp = {
         }
 
         if (!newsList || newsList.length === 0) {
+            const reason = this.state.newsUnavailable;
+
+            // 取不到就说取不到。不能写「暂无新闻数据」——
+            // 那句话读起来像「这个币确实没什么可报道的」，会让用户以为抓取是成功的，
+            // 从而把消息面 0 分当成真实结论。
+            if (reason) {
+                this.setNewsBadge('未取到', 'bg-amber-50 text-amber-700');
+                container.innerHTML = `<div class="py-8 px-4 text-center">
+                    <p class="text-sm text-text-secondary">新闻源暂时取不到内容</p>
+                    <p class="text-xs text-text-tertiary mt-2 leading-relaxed">
+                        ${this.esc(reason)}<br>
+                        消息面暂不参与综合评分（因子面板里显示为「—」），点右上角「刷新」可重试。
+                    </p>
+                </div>`;
+                return;
+            }
+
+            this.setNewsBadge('暂无', 'bg-gray-100 text-text-secondary');
             container.innerHTML = '<p class="text-text-secondary text-sm text-center py-8">暂无新闻数据</p>';
             return;
         }
-        
+
         // 更新情感标签
         const newsScore = NewsAnalyzer.calculateNewsScore(newsList);
-        const badge = document.getElementById('newsSentimentBadge');
-        if (badge) {
-            if (newsScore.label === 'positive') {
-                badge.textContent = `情绪偏多 ${newsScore.score}分`;
-                badge.className = 'text-xs px-2 py-0.5 rounded-full bg-rise-green/10 text-rise-green';
-            } else if (newsScore.label === 'negative') {
-                badge.textContent = `情绪偏空 ${newsScore.score}分`;
-                badge.className = 'text-xs px-2 py-0.5 rounded-full bg-fall-red/10 text-fall-red';
-            } else {
-                badge.textContent = `情绪中性 ${newsScore.score}分`;
-                badge.className = 'text-xs px-2 py-0.5 rounded-full bg-gray-100 text-text-secondary';
-            }
+        if (newsScore.label === 'positive') {
+            this.setNewsBadge(`情绪偏多 ${newsScore.score}分`, 'bg-rise-green/10 text-rise-green');
+        } else if (newsScore.label === 'negative') {
+            this.setNewsBadge(`情绪偏空 ${newsScore.score}分`, 'bg-fall-red/10 text-fall-red');
+        } else {
+            this.setNewsBadge(`情绪中性 ${newsScore.score}分`, 'bg-gray-100 text-text-secondary');
         }
         
         container.innerHTML = newsList.slice(0, 6).map((news, index) => {
@@ -4578,6 +4914,15 @@ const CryptoPulseApp = {
             return;
         }
 
+        // 行情取不到时不出信号。
+        // 同样放在这里统一拦截：新闻、恐慌指数回来时都会再调一次 updateSignal，
+        // 不拦的话后到的调用会把「数据不可用」重新覆盖成一个看起来正常的信号。
+        const uq = this.state.quoteUnavailable;
+        if (uq && uq.coinId === this.state.currentCoin) {
+            this.renderUnavailableSignalState();
+            return;
+        }
+
         const ind = this.state.indicators;
 
         const techScoreResult = TechnicalAnalysis.calculateTechnicalScore({
@@ -4623,9 +4968,23 @@ const CryptoPulseApp = {
         // 去掉三项后按剩余权重重新归一（技术面:量能 = 2:1），
         // 这样分值的量纲与加密币一致，阈值档位也还能沿用。
         const isStock = this.isStock(this.state.currentCoin);
+
+        // 输入缺失的因子一律剔除并按剩余权重重算，而不是让它以常数 50 参与 ——
+        // 界面上这些格子会显示「—」，若分值里还悄悄带着一个 50，
+        // 用户按展示出来的因子根本复现不出这个总分（与美股剔除不适用因子同理）：
+        //   - news 缺失：三个新闻源都没返回内容；
+        //   - derivatives 缺失：fapi 取不到资金费率，calculateDerivativesScore
+        //     在这种情况下恒定返回 50，那不是「中性」而是「没有输入」。
+        const newsAvailable = !isStock && (this.state.newsList || []).length > 0;
+        const derivAvailable = !isStock && this.hasFundingRate();
+
         const rawWeights = isStock
             ? { technical: 40, volume: 20, sentiment: 0, news: 0, derivatives: 0 }
-            : { technical: 40, volume: 20, sentiment: 16, news: 12, derivatives: 12 };
+            : {
+                technical: 40, volume: 20, sentiment: 16,
+                news: newsAvailable ? 12 : 0,
+                derivatives: derivAvailable ? 12 : 0,
+            };
         const wSum = rawWeights.technical + rawWeights.volume + rawWeights.sentiment +
             rawWeights.news + rawWeights.derivatives;
 
@@ -4633,13 +4992,13 @@ const CryptoPulseApp = {
             techScoreResult.score * rawWeights.technical +
             volumeResult.score * rawWeights.volume +
             (isStock ? 0 : sentimentScore * rawWeights.sentiment) +
-            (isStock ? 0 : newsScoreResult.score * rawWeights.news) +
-            (isStock ? 0 : derivativesScore * rawWeights.derivatives)
+            (newsAvailable ? newsScoreResult.score * rawWeights.news : 0) +
+            (derivAvailable ? derivativesScore * rawWeights.derivatives : 0)
         ) / wSum);
 
         const signal = SignalGenerator.generateSignal(
             { ...techScoreResult, score: techScoreResult.score },
-            isStock
+            (isStock || !newsAvailable)
                 ? { score: null, topNews: [], label: 'na', positiveCount: 0, negativeCount: 0 }
                 : { ...newsScoreResult, score: newsScoreResult.score },
             {
@@ -4656,16 +5015,18 @@ const CryptoPulseApp = {
                 breakdown: {
                     technical: techScoreResult.score,
                     volume: volumeResult.score,
-                    // 股票把不适用的因子显式标成 null，界面据此显示「不适用」，
-                    // 而不是显示一个看似有意义的 50 分。
-                    news: isStock ? null : newsScoreResult.score,
+                    // 股票把不适用的因子显式标成 null，界面据此显示「—」，
+                    // 而不是显示一个看似有意义的 50 分。新闻与衍生品取不到时同理。
+                    news: (isStock || !newsAvailable) ? null : newsScoreResult.score,
                     sentiment: isStock ? null : sentimentScore,
-                    derivatives: isStock ? null : derivativesScore,
+                    derivatives: derivAvailable ? derivativesScore : null,
                 }
             }
         );
 
-        if (isStock) signal.newsScore = null;
+        // generateSignal 内部是 `newsData.score || 50`，传 null 进去也会被兜成 50，
+        // 所以这里显式改写回 null，界面才会显示「—」而不是一个假的 50 分。
+        if (isStock || !newsAvailable) signal.newsScore = null;
 
         this.state.signal = signal;
         this.state.signal.totalScore = totalScore;
@@ -4692,7 +5053,10 @@ const CryptoPulseApp = {
      * 因此不会再出现「图上标了买入、模拟却没有任何动作」的情况。
      *
      * 只回放已收盘的K线：最后一根是正在走的那根，信号会随价格摆动，
-     * 拿它成交会让记录反复出现又消失。
+     * 拿它成交会让记录反复出现又消失。图上给这类信号标了「待确认」。
+     *
+     * 成交价不是信号K线自己的收盘价，而是它收盘之后、下一根K线的开盘价：
+     * 信号要等收盘才成立，按收盘价成交等于要求同一瞬间完成下单。
      */
     syncPaperAccount() {
         if (typeof PaperTrader === 'undefined') return;
@@ -4716,6 +5080,27 @@ const CryptoPulseApp = {
         // 闸门：买卖点负责触发，独立因子决定这次要不要真的成交
         const allow = this.buildPaperGateFilter();
         if (allow) series = series.filter(s => allow(s));
+
+        // 成交口径：信号K线收盘后、按下一根K线的开盘价成交。
+        //
+        // 为什么不按信号K线自己的收盘价成交：信号要等那根K线走完才成立，
+        // 按它的收盘价成交等于要求你在信号成立的同一瞬间完成下单。
+        // 实测（ETH）两个价差 0.00bp、最差 0.12bp，所以改口径不改变结论，
+        // 但口径本身站得住。
+        //
+        // 这里统一算出成交时刻与成交价再交给 PaperTrader：
+        // series 的 index 就是 data 的下标（closed 是 data 的前缀），
+        // 所以下一根K线就是 data[index + 1]，只有一个地方定义成交价。
+        series = series
+            // 最后一根已收盘K线的下一根就是正在走的那根，它的开盘价是
+            // 已经确定的真实价（就是信号成立那一刻的价），可以成交。
+            // 真取不到下一根的（理论上不会）直接跳过，不能拿信号价顶上。
+            .filter(s => data[s.index + 1])
+            .map(s => ({
+                ...s,
+                execTime: data[s.index + 1].time,
+                execPrice: data[s.index + 1].open,
+            }));
 
         const acc = PaperTrader.replay(coinId, series, this.state.currentTimeframe);
         if (!acc || !acc.trades.length) return;
@@ -5340,6 +5725,19 @@ const CryptoPulseApp = {
         return adjustedScore;
     },
 
+    /**
+     * 资金费率是否可用。
+     *
+     * 取不到时 calculateDerivativesScore 会恒定返回 50 —— 那不是「中性」，
+     * 是「没有输入」。必须把它从权重里剔除并按剩余权重重算，否则这个常数
+     * 会以 12% 的权重把所有其它因子往 50 拉，而界面上这一格又会显示成「—」，
+     * 用户按展示出来的因子复现不出总分。这与美股剔除同一因子的理由完全一致。
+     */
+    hasFundingRate() {
+        const d = this.state.derivatives;
+        return !!(d && Number.isFinite(d.fundingRate));
+    },
+
     calculateDerivativesScore() {
         const deriv = this.state.derivatives;
         if (!deriv || deriv.fundingRate === null || deriv.fundingRate === undefined) return 50;
@@ -5461,9 +5859,13 @@ const CryptoPulseApp = {
         setMini('sentimentScoreMini', signal.breakdown?.sentiment ?? null,
             '恐慌贪婪指数是加密市场指标，对个股不适用');
         setMini('newsScoreMini', signal.newsScore,
-            '当前新闻源只有加密资讯，对个股不适用');
+            this.currentIsStock()
+                ? '当前资讯源只有加密资讯，对个股不适用'
+                : '新闻源暂时取不到内容，该因子本次不参与评分');
         setMini('derivScoreMini', signal.breakdown?.derivatives ?? null,
-            '合约资金费率对美股长期贴近 0，该因子不可用');
+            this.currentIsStock()
+                ? '合约资金费率对美股长期贴近 0，该因子不可用'
+                : '取不到资金费率（fapi.binance.com 不可达），该因子本次不参与评分');
     },
 
     // 渲染预测Tab

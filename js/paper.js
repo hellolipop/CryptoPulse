@@ -17,7 +17,12 @@
  *   - 买入点 → 用该币种配额内的全部可用资金买入
  *   - 卖出点 → 清空该币种全部持仓
  *   - 仅在方向发生变化时成交，同一方向的连续信号不重复下单
- *   - 以K线收盘价成交，不计手续费与滑点
+ *   - 成交价用「信号确认后真正能成交的价」：信号K线收盘、即下一根K线的开盘价。
+ *     信号要等那根K线走完才成立，按它自己的收盘价成交等于要求你在信号成立的
+ *     同一瞬间完成下单，做不到。实测（ETH）这两个价差 0.00bp、最差 0.12bp
+ *     （加密 7×24 连续交易，一根K线的收盘就是下一根的开盘），
+ *     所以换口径不改变结论，但口径本身变得站得住。
+ *   - 不计手续费与滑点
  *
  * 之所以改为「回放K线买卖点」而不是听实时信号：
  *   图上画出的买卖点和右侧的实时信号是两套不同算法算出来的，
@@ -29,6 +34,7 @@
 const PaperTrader = {
     // v2：账户改为按币种独立，并新增总资金与配额，故换用新的存储键
     storageKey: 'cryptoPulse_paperV2',
+    baseStorageKey: 'cryptoPulse_paperV2',
 
     // 单账户保留的成交记录上限
     maxTrades: 200,
@@ -38,7 +44,115 @@ const PaperTrader = {
 
     data: null,
 
+    setUserStorage(username) {
+        const safe = String(username || '').trim().replace(/[^A-Za-z0-9_\u4e00-\u9fff-]/g, '_').slice(0, 64);
+        if (!safe) return;
+        const userKey = `${this.baseStorageKey}_${safe}`;
+        try {
+            if (!localStorage.getItem(userKey) && localStorage.getItem(this.baseStorageKey)) {
+                localStorage.setItem(userKey, localStorage.getItem(this.baseStorageKey));
+            }
+        } catch (e) { /* 本地缓存不可用时仍可使用后端 */ }
+        this.storageKey = userKey;
+        this.data = null;
+        this._syncCfg = null;
+        this._lastPushed = '';
+    },
+
+    /** 后端同步配置的存储键。与模拟盘数据分开存，换后端不会动手上的账 */
+    syncKey: 'cryptoPulse_paperSync',
+    authKey: 'cryptoPulse_authSession',
+
+    /** 同步状态快照，供界面展示 */
+    sync: { status: 'off', message: '未启用', lastSyncAt: null },
+
+    /** 同步状态变化时的回调（由 app.js 注入，用于刷新界面） */
+    onSyncChange: null,
+
     // ---------------- 存储 ----------------
+
+    /**
+     * 将 v1 的按「币种+周期」账户迁移到 v2 的按币种账户。
+     * 旧版本没有迁移逻辑，升级后会误显示成空账户；这里仅在 v2 不存在时执行一次。
+     */
+    migrateLegacy() {
+        let legacyAccounts = null;
+        let legacyEnabled = false;
+        try {
+            const raw = localStorage.getItem('cryptoPulse_paperAccounts');
+            legacyAccounts = raw ? JSON.parse(raw) : null;
+            legacyEnabled = localStorage.getItem('cryptoPulse_paperEnabled') === '1';
+        } catch (e) {
+            console.warn('[模拟] 读取旧账户失败:', e.message);
+        }
+
+        if (!legacyAccounts || typeof legacyAccounts !== 'object' || Array.isArray(legacyAccounts)) {
+            return null;
+        }
+
+        const migrated = {
+            totalCapital: this.defaultTotalCapital,
+            allocations: {},
+            enabled: {},
+            accounts: {},
+        };
+
+        Object.values(legacyAccounts).forEach((legacy) => {
+            if (!legacy || typeof legacy !== 'object' || !legacy.coinId) return;
+            const coinId = legacy.coinId;
+            const capital = Number(legacy.initialCapital);
+            const existing = migrated.accounts[coinId];
+
+            // 多周期旧账户无法在新模型中同时作为一个持仓运行，优先保留成交最多、
+            // 时间更新的账户；其余周期的成交记录也合并，避免历史明细消失。
+            if (!existing || (legacy.trades || []).length > (existing.trades || []).length) {
+                migrated.accounts[coinId] = {
+                    coinId,
+                    initialCapital: capital > 0 ? capital : this.defaultTotalCapital,
+                    cash: Number.isFinite(Number(legacy.cash)) ? Number(legacy.cash) : (capital > 0 ? capital : this.defaultTotalCapital),
+                    holdings: Number(legacy.holdings) || 0,
+                    avgCost: Number(legacy.avgCost) || 0,
+                    trades: Array.isArray(legacy.trades) ? legacy.trades.slice(-this.maxTrades) : [],
+                    lastSide: legacy.lastSide || null,
+                    firstBuyPrice: legacy.firstBuyPrice || null,
+                    lastTimeframe: legacy.timeframe ?? null,
+                    enabledAt: legacy.createdAt || null,
+                    strategyTimeframe: legacy.timeframe ?? null,
+                    createdAt: legacy.createdAt || Date.now(),
+                };
+            }
+            migrated.allocations[coinId] = Math.max(migrated.allocations[coinId] || 0, capital > 0 ? capital : 0);
+            migrated.enabled[coinId] = legacyEnabled;
+        });
+
+        const allocated = Object.values(migrated.allocations).reduce((sum, value) => sum + Number(value || 0), 0);
+        migrated.totalCapital = Math.max(this.defaultTotalCapital, allocated);
+        try {
+            localStorage.setItem(this.storageKey, JSON.stringify(migrated));
+            localStorage.setItem('cryptoPulse_paperMigration_v2', new Date().toISOString());
+        } catch (e) {
+            console.warn('[模拟] 保存迁移账户失败:', e.message);
+        }
+        return migrated;
+    },
+
+    /**
+     * 把任意来源的原始数据规整成本模块认得的形状。
+     * localStorage、后端、旧版迁移三条路径共用同一份逻辑 —— 各写一遍迟早走样。
+     */
+    normalize(parsed) {
+        const p = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+        return {
+            totalCapital: (typeof p.totalCapital === 'number' && p.totalCapital > 0)
+                ? p.totalCapital
+                : this.defaultTotalCapital,
+            allocations: (p.allocations && typeof p.allocations === 'object') ? p.allocations : {},
+            enabled: (p.enabled && typeof p.enabled === 'object') ? p.enabled : {},
+            accounts: (p.accounts && typeof p.accounts === 'object') ? p.accounts : {},
+            // 上次落盘时间。后端同步靠它判断本地与远端哪一份更新。
+            savedAt: typeof p.savedAt === 'string' ? p.savedAt : null,
+        };
+    },
 
     /**
      * 读取全部数据（含总资金、配额、开关、各币种账户）
@@ -53,25 +167,253 @@ const PaperTrader = {
         } catch (e) {
             console.warn('[模拟] 读取数据失败:', e.message);
         }
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) parsed = {};
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            parsed = this.migrateLegacy() || {};
+        }
 
-        this.data = {
-            totalCapital: (typeof parsed.totalCapital === 'number' && parsed.totalCapital > 0)
-                ? parsed.totalCapital
-                : this.defaultTotalCapital,
-            allocations: (parsed.allocations && typeof parsed.allocations === 'object') ? parsed.allocations : {},
-            enabled: (parsed.enabled && typeof parsed.enabled === 'object') ? parsed.enabled : {},
-            accounts: (parsed.accounts && typeof parsed.accounts === 'object') ? parsed.accounts : {},
-        };
+        this.data = this.normalize(parsed);
         return this.data;
     },
 
     save() {
+        // 落盘时间戳：既是本地记录，也是后端同步判断新旧的依据
+        if (this.data) this.data.savedAt = new Date().toISOString();
+
         try {
             localStorage.setItem(this.storageKey, JSON.stringify(this.data || {}));
         } catch (e) {
             console.warn('[模拟] 保存失败:', e.message);
         }
+
+        // 顺手排一次后端同步。它是尽力而为的增强：后端没开、地址没配，
+        // 都不影响模拟盘本身，所以这里不 await、也不把异常抛给调用方。
+        this.schedulePush();
+    },
+
+    // ---------------- 后端同步 ----------------
+    //
+    // 为什么需要它：模拟盘状态（总资金、配额、持仓、成交记录）原本只躺在
+    // localStorage 里 —— 清一次缓存、换个浏览器、换台设备就全没了。
+    // 这里把它镜像到本地后端（server/store.js），磁盘上留一份。
+    //
+    // 设计取舍：
+    //   - **localStorage 仍是本机权威副本**，所有读写保持同步，
+    //     不把 async 引进渲染链路（渲染每帧都在读 load()）。
+    //   - 后端不可用时全部功能照常，只是状态角标显示「未连接」。
+    //   - 推送做了防抖与去重：replay() 每次刷新信号都会 save()，
+    //     加上每 30 秒的自动刷新，直接推会把后端打爆。
+    //   - 冲突按 savedAt 取新：谁的时间戳更晚用谁的，不做合并。
+    //     模拟盘只有一台设备在写，这个策略够用且可解释。
+
+    /** 推送防抖定时器与上次已推送的内容（内容没变就不重复推） */
+    _pushTimer: null,
+    _lastPushed: '',
+    pushDebounceMs: 2000,
+
+    /** 读取同步配置（地址与账号标识），带内存缓存 */
+    getSyncConfig() {
+        if (!this._syncCfg) {
+            let parsed = null;
+            try {
+                parsed = JSON.parse(localStorage.getItem(this.syncKey) || 'null');
+            } catch (e) { /* 配置损坏按未配置处理 */ }
+
+            this._syncCfg = {
+                url: (parsed && typeof parsed.url === 'string')
+                    ? parsed.url.trim().replace(/\/+$/, '')
+                    : '',
+                account: (parsed && typeof parsed.account === 'string' && parsed.account)
+                    ? parsed.account
+                    : 'default',
+            };
+        }
+        return this._syncCfg;
+    },
+
+    /**
+     * 设置后端地址与账号标识。
+     * @param {string} url - 留空表示关闭同步
+     * @param {string} [account] - 账号标识，用于同一后端区分不同浏览器/设备
+     * @returns {{ok: boolean, message?: string}}
+     */
+    setSyncConfig(url, account) {
+        const clean = String(url || '').trim().replace(/\/+$/, '');
+        if (clean && !/^https?:\/\//.test(clean)) {
+            return { ok: false, message: '地址需以 http:// 或 https:// 开头' };
+        }
+        if (account !== undefined && account !== null && account !== '') {
+            if (!/^[A-Za-z0-9_-]{1,64}$/.test(String(account))) {
+                return { ok: false, message: '账号标识只允许字母、数字、下划线、短横线（1-64 位）' };
+            }
+        }
+
+        const cfg = this.getSyncConfig();
+        cfg.url = clean;
+        if (account) cfg.account = String(account);
+
+        try {
+            localStorage.setItem(this.syncKey, JSON.stringify(cfg));
+        } catch (e) {
+            return { ok: false, message: '配置保存失败：' + e.message };
+        }
+
+        // 地址清空等于关掉同步；顺手把「已推送内容」也清掉，
+        // 否则重新启用时内容没变会跳过首次推送
+        this._lastPushed = '';
+        if (!clean) this.setSyncStatus('off', '未启用');
+
+        return { ok: true };
+    },
+
+    setSyncStatus(status, message, at) {
+        this.sync = {
+            status,
+            message: message || '',
+            lastSyncAt: at || this.sync.lastSyncAt || null,
+        };
+        if (typeof this.onSyncChange === 'function') {
+            try { this.onSyncChange(this.sync); } catch (e) { /* 界面回调出错不影响数据 */ }
+        }
+    },
+
+    /** 排一次防抖推送 */
+    schedulePush() {
+        if (!this.getSyncConfig().url) return;
+        clearTimeout(this._pushTimer);
+        this._pushTimer = setTimeout(() => this.pushToBackend(), this.pushDebounceMs);
+    },
+
+    /**
+     * 去掉易变字段后的数据签名，用于「内容没变就不重复推」的判断。
+     *
+     * 不直接拿 this.data 比对：savedAt 每次推送都要更新，
+     * 让它参与比对等于每次都不相等，去重会彻底失效。
+     * 用固定字面量顺序重建，保证同一份内容的序列化结果稳定。
+     */
+    contentSnapshot() {
+        const d = this.data || {};
+        return {
+            totalCapital: d.totalCapital,
+            allocations: d.allocations,
+            enabled: d.enabled,
+            accounts: d.accounts,
+        };
+    },
+
+    /**
+     * 把本机状态推到后端。
+     * 失败只改状态角标，不抛异常、不回滚本地数据 —— 本地那份始终是有效的。
+     */
+    async pushToBackend() {
+        const cfg = this.getSyncConfig();
+        if (!cfg.url) return null;
+        const session = this.getAuthSession();
+        if (!session || !session.token) {
+            this.setSyncStatus('error', '请先登录');
+            return null;
+        }
+
+        // 先按「内容」判重，再盖时间戳
+        const content = JSON.stringify(this.contentSnapshot());
+        if (content === this._lastPushed) {
+            this.setSyncStatus('ok', '已是最新');
+            return null;
+        }
+
+        if (this.data) this.data.savedAt = new Date().toISOString();
+        const body = JSON.stringify(this.data || {});
+
+        const url = `${cfg.url}/api/paper/state?account=${encodeURIComponent(cfg.account)}`;
+        this.setSyncStatus('syncing', '正在同步…');
+        try {
+            const resp = await fetch(url, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.token}` },
+                body,
+            });
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+
+            const r = await resp.json();
+            this._lastPushed = content;
+            // 后端会盖自己的时间戳，回写本地，让两边一致
+            if (this.data && r.savedAt) this.data.savedAt = r.savedAt;
+            this.setSyncStatus('ok', `已同步（rev ${r.rev}）`, r.savedAt);
+            return r;
+        } catch (e) {
+            this.setSyncStatus('error', '同步失败：' + e.message);
+            return null;
+        }
+    },
+
+    /**
+     * 从后端拉状态。
+     * 只在远端比本地新时才覆盖本地 —— 避免把本机未推送的改动冲掉。
+     * @returns {Object|null} 采纳的远端数据；未采纳时返回 null
+     */
+    async pullFromBackend() {
+        const cfg = this.getSyncConfig();
+        if (!cfg.url) return null;
+        const session = this.getAuthSession();
+        if (!session || !session.token) {
+            this.setSyncStatus('error', '请先登录');
+            return null;
+        }
+
+        const url = `${cfg.url}/api/paper/state?account=${encodeURIComponent(cfg.account)}`;
+        this.setSyncStatus('syncing', '正在读取后端…');
+        try {
+            const resp = await fetch(url, { headers: { Authorization: `Bearer ${session.token}` } });
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const r = await resp.json();
+
+            if (r.empty || !r.data) {
+                // 后端还是空的：把本地这份推上去，作为初始快照
+                this.setSyncStatus('ok', '后端暂无数据，正在上传本地');
+                await this.pushToBackend();
+                return null;
+            }
+
+            const local = this.load();
+            const localAt = Date.parse(local.savedAt || '') || 0;
+            const remoteAt = Date.parse(r.savedAt || '') || 0;
+
+            if (remoteAt > localAt) {
+                this.data = this.normalize(r.data);
+                this.data.savedAt = r.savedAt || null;
+                try {
+                    localStorage.setItem(this.storageKey, JSON.stringify(this.data));
+                } catch (e) { /* 本地缓存写不进去也不影响已采纳的后端数据 */ }
+                this._lastPushed = JSON.stringify(this.contentSnapshot());
+                this.setSyncStatus('ok', '已从后端恢复', r.savedAt);
+                return this.data;
+            }
+
+            this.setSyncStatus('ok', '本地较新，无需恢复');
+            return null;
+        } catch (e) {
+            this.setSyncStatus('error', '读取失败：' + e.message);
+            return null;
+        }
+    },
+
+    /**
+     * 启动时调用一次：配了后端就拉一次，并把结果交给回调。
+     * 整个过程不阻塞界面 —— 拉不到就用本机数据，功能不受影响。
+     */
+    async initSync() {
+        const cfg = this.getSyncConfig();
+        if (!cfg.url) {
+            this.setSyncStatus('off', '未启用');
+            return null;
+        }
+        return this.pullFromBackend();
+    },
+
+    getAuthSession() {
+        try {
+            const parsed = JSON.parse(localStorage.getItem(this.authKey) || 'null');
+            return parsed && typeof parsed === 'object' ? parsed : null;
+        } catch (e) { return null; }
     },
 
     // ---------------- 总资金与配额 ----------------
@@ -317,7 +659,17 @@ const PaperTrader = {
      *
      * @param {string} coinId
      * @param {Array} series - 买卖点序列（按时间升序）
-     *        [{ time(秒), price, side:'buy'|'sell', label, score }]
+     *        [{ time(秒), price, side:'buy'|'sell', label, score,
+     *           execTime(秒)?, execPrice? }]
+     *
+     *        time / price   = 产生信号的那根K线的开盘时间与收盘价
+     *        execTime / execPrice = 信号确认后真正能成交的时刻与价格
+     *                          （即信号K线收盘，也就是下一根K线的开盘）
+     *
+     *        为什么成交价由调用方传而非这里自取：回放是纯重算函数，
+     *        不持有K线数组。成交口径只应在 app.js 定义一处，否则两边
+     *        各算一套价、对不上还查不出来。未提供时退化为按信号K线
+     *        收盘价成交（旧行为，仅用于兼容老调用方）。
      * @param {string|number} [timeframe] - 本次回放所用的K线周期，仅用于展示
      * @returns {Object|null} 重建后的账户，未配额返回 null
      */
@@ -359,8 +711,21 @@ const PaperTrader = {
             const side = p.side;
             if (side !== 'buy' && side !== 'sell') continue;
 
-            // 只回放开启模拟之后的买卖点，开启前的历史不补记
-            if (enabledAt && p.time * 1000 < enabledAt) continue;
+            // 成交价与成交时刻：优先用调用方给的「信号确认后能成交」的值，
+            // 拿不到才退回信号K线自身的收盘价
+            const fillPrice = (typeof p.execPrice === 'number' && p.execPrice > 0)
+                ? p.execPrice
+                : p.price;
+            const fillTime = (typeof p.execTime === 'number' && isFinite(p.execTime))
+                ? p.execTime
+                : p.time;
+            if (!(fillPrice > 0)) continue;
+
+            // 只回放开启模拟之后的成交。
+            // 判据用「成交时刻」而不是「信号时刻」：信号要等那根K线收盘才成立，
+            // 若你在K线走完之前就开启了模拟，这根K线的信号是你开启之后才确认的，
+            // 应该算数，否则会出现「明明开着却一笔都不做」。
+            if (enabledAt && fillTime * 1000 < enabledAt) continue;
 
             // 同向不重复下单；买卖点序列本身已是多空交替
             if (acc.lastSide === side) continue;
@@ -369,14 +734,18 @@ const PaperTrader = {
             if (side === 'buy' && acc.cash <= 1) { acc.lastSide = side; continue; }
             if (side === 'sell' && acc.holdings <= 0) { acc.lastSide = side; continue; }
 
-            const now = p.time * 1000;
+            const now = fillTime * 1000;
             const trade = {
                 id: `${coinId}-${p.time}`,
                 time: now,
                 coinId,
                 timeframe: acc.strategyTimeframe,
                 side,
-                price: p.price,
+                // price 是实际成交价；signalPrice 是信号K线自己的收盘价。
+                // 两个都留档，才能核对「延迟成交」究竟差了多少。
+                price: fillPrice,
+                signalPrice: p.price,
+                signalTime: p.time * 1000,
                 signalText: p.label || '',
                 signalType: side,
                 score: typeof p.score === 'number' ? p.score : null,
@@ -389,7 +758,7 @@ const PaperTrader = {
             };
 
             if (side === 'buy') {
-                const qty = acc.cash / p.price;
+                const qty = acc.cash / fillPrice;
                 const cost = acc.cash;
 
                 const prevQty = acc.holdings;
@@ -401,16 +770,16 @@ const PaperTrader = {
                 trade.qty = qty;
                 trade.amount = cost;
 
-                if (acc.firstBuyPrice === null) acc.firstBuyPrice = p.price;
+                if (acc.firstBuyPrice === null) acc.firstBuyPrice = fillPrice;
             } else {
                 const qty = acc.holdings;
-                const proceeds = qty * p.price;
+                const proceeds = qty * fillPrice;
 
                 trade.qty = qty;
                 trade.amount = proceeds;
                 trade.avgCost = acc.avgCost;
-                trade.pnl = (p.price - acc.avgCost) * qty;
-                trade.pnlPct = acc.avgCost > 0 ? (p.price / acc.avgCost - 1) : 0;
+                trade.pnl = (fillPrice - acc.avgCost) * qty;
+                trade.pnlPct = acc.avgCost > 0 ? (fillPrice / acc.avgCost - 1) : 0;
 
                 acc.cash += proceeds;
                 acc.holdings = 0;
@@ -420,7 +789,7 @@ const PaperTrader = {
             // 成交后的账户快照，用于权益曲线与最大回撤
             trade.cashAfter = acc.cash;
             trade.holdingsAfter = acc.holdings;
-            trade.equityAfter = acc.cash + acc.holdings * p.price;
+            trade.equityAfter = acc.cash + acc.holdings * fillPrice;
 
             acc.trades.push(trade);
             if (acc.trades.length > this.maxTrades) {

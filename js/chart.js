@@ -323,6 +323,27 @@ const ChartManager = {
         } catch (e) { /* 忽略 */ }
     },
 
+    /**
+     * 清空图上全部行情数据（K线 / 成交量 / 均线 / 支撑压力 / 买卖点标注）。
+     *
+     * 行情取不到时用它。不能只靠 updateCandlestickData([]) ——
+     * 那个方法遇到空数组会直接 return，图上会留着上一次（甚至上一个币种）
+     * 的曲线，看上去「数据还在」，实际已经和当前标的无关了。
+     */
+    clearCandlestickData() {
+        try {
+            if (this.candlestickSeries) this.candlestickSeries.setData([]);
+            if (this.volumeSeries) this.volumeSeries.setData([]);
+            if (this.ma7Series) this.ma7Series.setData([]);
+            if (this.ma25Series) this.ma25Series.setData([]);
+            if (this.ma99Series) this.ma99Series.setData([]);
+        } catch (e) {
+            console.warn('清空图表数据失败:', e.message);
+        }
+        this.clearSupportResistanceLines();
+        this.clearMarkers();
+    },
+
     changeTimeframe(timeframe) {
         this.clearSupportResistanceLines();
         this.clearMarkers();
