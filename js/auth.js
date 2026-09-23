@@ -1,6 +1,8 @@
 /* 用户登录：第一版只收用户名和密码，后续可替换为验证码或第三方身份提供商。 */
 (function () {
-    const API = localStorage.getItem('cryptoPulse_authApi') || 'http://127.0.0.1:8788';
+    const defaultApiHost = window.location.hostname && window.location.hostname !== 'localhost'
+        && window.location.hostname !== '127.0.0.1' ? window.location.hostname : '127.0.0.1';
+    const API = localStorage.getItem('cryptoPulse_authApi') || `http://${defaultApiHost}:8788`;
     const SESSION_KEY = 'cryptoPulse_authSession';
     const gate = document.getElementById('authGate');
     const username = document.getElementById('authUsername');

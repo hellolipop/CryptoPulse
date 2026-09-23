@@ -47,6 +47,8 @@ const crypto = require('crypto');
 const { URL } = require('url');
 
 const PORT = parseInt(process.env.PORT || '8788', 10);
+const HOST = process.env.HOST || '127.0.0.1';
+const LAN_MODE = HOST !== '127.0.0.1' && HOST !== '::1' && HOST !== 'localhost';
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = process.env.STORE_FILE || path.join(DATA_DIR, 'paper-state.json');
 const BACKUP_FILE = STORE_FILE + '.bak';
@@ -289,7 +291,7 @@ function isLocalOrigin(origin) {
 }
 
 function corsHeaders(origin) {
-    if (!isLocalOrigin(origin)) return {};
+    if (!origin || (!LAN_MODE && !isLocalOrigin(origin))) return {};
     return {
         'Access-Control-Allow-Origin': origin,
         'Access-Control-Allow-Methods': 'GET,PUT,POST,OPTIONS',
@@ -599,13 +601,13 @@ const server = http.createServer(async (req, res) => {
     send(res, 404, { error: '未知路径：' + url.pathname }, origin);
 });
 
-server.listen(PORT, '127.0.0.1', () => {
+server.listen(PORT, HOST, () => {
     console.log('─'.repeat(58));
     console.log('模拟盘持久化服务已启动');
-    console.log(`  监听    http://127.0.0.1:${PORT}`);
+    console.log(`  监听    http://${HOST}:${PORT}`);
     console.log(`  数据文件 ${STORE_FILE}`);
     console.log(`  接口    GET/PUT /api/paper/state?account=<id>`);
-    console.log('  安全    仅监听本机、登录后按用户隔离；公网部署前仍需 HTTPS、限流与更强验证');
+    console.log(`  安全    ${LAN_MODE ? '局域网模式：已绑定外部网卡，登录后按用户隔离；请勿直接暴露公网' : '仅监听本机'}；公网部署前仍需 HTTPS、限流与更强验证`);
     console.log('─'.repeat(58));
 });
 
