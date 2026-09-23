@@ -15,10 +15,15 @@
  *   这些原本只躺在浏览器的 localStorage 里：清一次缓存、换一个浏览器、
  *   换一台设备就全没了。这个服务把它们落到磁盘上。
  *
+ *   此外还存预测记录（买卖点 + 当时的因子快照 + 复盘结果），并按用户维护一份
+ *   CSV 表格，用于长期分析「算法因子要不要调整」。预测记录按 id 合并、只增不删：
+ *   客户端本地只保留最近若干条，若按整体覆盖，本地裁剪会把后端的历史样本删掉。
+ *
  * 存在哪：
  *   server/data/paper-state.json（已在 .gitignore 中）。
  *   写入采用「临时文件 + rename」保证原子性，并保留一份上一版备份，
  *   避免写到一半断电/被杀进程导致整个文件损坏。
+ *   预测记录的表格另存为 server/data/predictions.csv（同样在 .gitignore 中）。
  *
  * 启动：
  *   node server/store.js
@@ -46,12 +51,14 @@ const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = process.env.STORE_FILE || path.join(DATA_DIR, 'paper-state.json');
 const BACKUP_FILE = STORE_FILE + '.bak';
 const TMP_FILE = STORE_FILE + '.tmp';
+// 预测记录的表格产物（供分析用）。维护逻辑见下方 writePredictionsCsv。
+const PREDICTIONS_CSV = path.join(DATA_DIR, 'predictions.csv');
 
 // 请求体上限。模拟盘状态里成交记录是有上限的（每账户 200 笔），
 // 正常不会超过几百 KB；给到 2MB 是留余量，同时挡住异常大的写入。
 const MAX_BODY = 2 * 1024 * 1024;
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 // 会话有效期。到期后客户端会收到 401，界面提示重新登录。
 const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
@@ -59,7 +66,7 @@ const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
 // ---------- 存储 ----------
 
 function emptyStore() {
-    return { schemaVersion: SCHEMA_VERSION, users: {}, accounts: {}, sessions: {} };
+    return { schemaVersion: SCHEMA_VERSION, users: {}, accounts: {}, sessions: {}, predictions: {} };
 }
 
 /** 读整份存储。文件不存在/损坏都回落到空存储，不让服务因此起不来。 */
@@ -74,6 +81,9 @@ function readStore() {
                 // v2 及更早的文件没有 sessions 字段。这里必须补上：
                 // 否则读一次再写回，会话字段就被整段丢掉了。
                 if (!parsed.sessions || typeof parsed.sessions !== 'object') parsed.sessions = {};
+                // v3 及更早的文件没有 predictions 字段。同样必须补上：
+                // 否则读一次再写回，预测记录就被整段丢掉了。
+                if (!parsed.predictions || typeof parsed.predictions !== 'object') parsed.predictions = {};
                 // 读到旧版本就地升级，下次写入即变为新格式
                 if (parsed.schemaVersion !== SCHEMA_VERSION) parsed.schemaVersion = SCHEMA_VERSION;
                 if (file === BACKUP_FILE) {
@@ -182,6 +192,92 @@ function writeStore(store) {
     fs.renameSync(TMP_FILE, STORE_FILE);
 }
 
+// ---------- 预测记录表格 ----------
+//
+// 为什么另存一份 CSV：JSON 适合存，不适合分析。要回答「哪个因子需要调整」，
+// 得能直接在表格里筛选、按分组算准确率。
+//
+// 每次推送整份重写，而不是追加 —— 记录会被复盘就地更新（evalPrice/correct），
+// 追加会产生重复行，重复行会让准确率算错。
+
+const PREDICTION_COLUMNS = [
+    '用户名', '记录ID', '币种', '币种符号', '周期', '信号', '算法版本', '灵敏度档',
+    '预测时间', '预测价格', '复盘时间点', '复盘价格', '涨跌幅%', '是否正确',
+    '综合分', '技术分', '量能分', '消息分', '情绪分', '衍生品分',
+    // 技术面的子因子得分。技术面在总分里权重最高（40），拆开才能看出
+    // 到底是 RSI 判错了还是均线判错了 —— 这是「该调哪个因子」的直接线索。
+    '技术_rsi', '技术_macd', '技术_ma', '技术_momentum', '技术_bollinger',
+    '技术_vwap', '技术_stochRSI', '技术_kdj', '技术_obv',
+    '权重_技术', '权重_量能', '权重_消息', '权重_情绪', '权重_衍生品',
+    'RSI', 'MACD_DIF', 'MACD_DEA', 'MACD柱', 'KDJ_K', 'KDJ_D', 'KDJ_J',
+    'MA7', 'MA25', 'MA200', 'StochRSI_K', 'ROC', 'ROC死区', '量比', '资金费率分位',
+    '方向阈值', '观望阈值', '复盘窗口(小时)',
+];
+
+/** CSV 单元格：一律引号包裹并转义内部引号（信号名、币种符号都可能含逗号） */
+function csvCell(value) {
+    if (value === null || value === undefined) return '';
+    return '"' + String(value).replace(/"/g, '""') + '"';
+}
+
+function predictionRow(username, rec) {
+    const f = rec.factors || {};
+    const b = f.breakdown || {};
+    const tb = f.technicalBreakdown || {};
+    const w = f.weights || {};
+    const ind = f.indicators || {};
+    const macd = ind.macd || {};
+    const kdj = ind.kdj || {};
+    const stoch = ind.stochRSI || {};
+    const c = rec.criteria || {};
+    const iso = ms => (typeof ms === 'number' && ms > 0) ? new Date(ms).toISOString() : '';
+    const hours = ms => (typeof ms === 'number' && ms > 0) ? (ms / 3600000).toFixed(2) : '';
+    return [
+        username, rec.id, rec.coinId, rec.coinSymbol, rec.timeframe,
+        rec.signalText || rec.signalType, rec.algoVersion, f.sensitivity,
+        iso(rec.predictedAt), rec.price, iso(rec.resolveAt), rec.evalPrice,
+        (rec.changePct === null || rec.changePct === undefined) ? '' : (rec.changePct * 100).toFixed(2),
+        // 三态：未复盘留空，不能写成 false —— 那会被当成「判错」参与统计。
+        // 分析时用「是否正确 非空」筛选出已复盘样本即可。
+        (rec.correct === null || rec.correct === undefined) ? '' : (rec.correct ? '正确' : '错误'),
+        rec.score, b.technical, b.volume, b.news, b.sentiment, b.derivatives,
+        tb.rsi, tb.macd, tb.ma, tb.momentum, tb.bollinger, tb.vwap, tb.stochRSI, tb.kdj, tb.obv,
+        w.technical, w.volume, w.news, w.sentiment, w.derivatives,
+        ind.rsi, macd.macd, macd.signal, macd.histogram,
+        kdj.k, kdj.d, kdj.j, ind.ma7, ind.ma25, ind.ma200,
+        stoch.k, ind.roc, ind.rocScale,
+        (f.volumeMetrics || {}).ratio, f.fundingPercentile,
+        c.directionThreshold, c.holdThreshold, hours(c.horizonMs),
+    ];
+}
+
+/**
+ * 重写预测表格，返回写入的行数。
+ *
+ * 走「临时文件 + rename」：这个文件是拿来分析的，读到半截会得出错误结论。
+ */
+function writePredictionsCsv(store) {
+    const rows = [];
+    Object.keys(store.predictions || {}).sort().forEach(username => {
+        (store.predictions[username] || []).forEach(rec => {
+            if (rec && rec.id) rows.push([username, rec]);
+        });
+    });
+    rows.sort((a, b) => (a[1].predictedAt || 0) - (b[1].predictedAt || 0));
+
+    const lines = [PREDICTION_COLUMNS.map(csvCell).join(',')];
+    rows.forEach(item => {
+        lines.push(predictionRow(item[0], item[1]).map(csvCell).join(','));
+    });
+
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const tmp = PREDICTIONS_CSV + '.tmp';
+    // 开头加 BOM：否则 Excel 打开中文表头会乱码
+    fs.writeFileSync(tmp, '\ufeff' + lines.join('\r\n') + '\r\n');
+    fs.renameSync(tmp, PREDICTIONS_CSV);
+    return rows.length;
+}
+
 // ---------- HTTP 工具（与 proxy.js 保持一致的做法） ----------
 
 function isLocalOrigin(origin) {
@@ -196,7 +292,7 @@ function corsHeaders(origin) {
     if (!isLocalOrigin(origin)) return {};
     return {
         'Access-Control-Allow-Origin': origin,
-        'Access-Control-Allow-Methods': 'GET,PUT,OPTIONS',
+        'Access-Control-Allow-Methods': 'GET,PUT,POST,OPTIONS',
         // Authorization 不是 CORS 安全列表头，带上它会触发预检；
         // 预检响应里不列出它，浏览器就会直接拦掉后续的真实请求。
         'Access-Control-Allow-Headers': 'Content-Type, Authorization',
@@ -326,7 +422,103 @@ const server = http.createServer(async (req, res) => {
             service: 'paper-store',
             schemaVersion: SCHEMA_VERSION,
             file: STORE_FILE,
+            csv: PREDICTIONS_CSV,
         }, origin);
+        return;
+    }
+
+    // ---------- 预测记录 ----------
+    //
+    // 与模拟盘状态的两点关键差异：
+    //   1. 按 id 合并、只增不删 —— 客户端本地只留最近 150 条，
+    //      若像模拟盘那样整体覆盖，本地裁剪会把后端的历史样本删掉；
+    //   2. 每次都重写一份 CSV 表格，供长期分析因子是否需要调整。
+
+    if (url.pathname === '/api/predictions' || url.pathname === '/api/predictions.csv') {
+        const store = readStore();
+        const username = requireUser(req, store);
+        if (!username) { send(res, 401, { error: '请先登录' }, origin); return; }
+
+        if (url.pathname.endsWith('.csv')) {
+            if (req.method !== 'GET') { send(res, 405, { error: '只支持 GET' }, origin); return; }
+            try {
+                writePredictionsCsv(store);
+                // 必须按 Buffer 读、按 Buffer 写。指定 'utf8' 时 Node 会吞掉开头的
+                // BOM，而 BOM 正是 Excel 正确识别中文表头所依赖的东西 ——
+                // 少了它，用户打开看到的是一堆乱码。
+                const body = fs.readFileSync(PREDICTIONS_CSV);
+                res.writeHead(200, Object.assign({
+                    'Content-Type': 'text/csv; charset=utf-8',
+                    'Content-Disposition': 'attachment; filename="predictions.csv"',
+                }, corsHeaders(origin)));
+                res.end(body);
+            } catch (e) {
+                send(res, 500, { error: '生成表格失败：' + e.message }, origin);
+            }
+            return;
+        }
+
+        if (req.method === 'GET') {
+            const records = (store.predictions[username] || []).slice()
+                .sort((a, b) => (a.predictedAt || 0) - (b.predictedAt || 0));
+            send(res, 200, { ok: true, account: username, total: records.length, records }, origin);
+            return;
+        }
+
+        if (req.method === 'POST') {
+            let payload;
+            try {
+                payload = JSON.parse(await readBody(req));
+            } catch (e) {
+                send(res, 400, { error: '请求体不是合法 JSON' }, origin);
+                return;
+            }
+            const incoming = Array.isArray(payload && payload.records) ? payload.records : null;
+            if (!incoming) { send(res, 400, { error: 'records 必须是数组' }, origin); return; }
+
+            const list = store.predictions[username] || (store.predictions[username] = []);
+            const index = new Map();
+            list.forEach((rec, i) => { if (rec && rec.id) index.set(rec.id, i); });
+
+            let added = 0;
+            let updated = 0;
+            incoming.forEach(rec => {
+                if (!rec || typeof rec !== 'object' || !rec.id) return;
+                const at = index.get(rec.id);
+                if (at === undefined) {
+                    index.set(rec.id, list.length);
+                    list.push(rec);
+                    added++;
+                } else {
+                    // 同 id 覆盖：客户端是复盘结果的产生方，它那份更新。
+                    // 载荷里没有的 id 一律保留 —— 这正是「只增不删」。
+                    list[at] = rec;
+                    updated++;
+                }
+            });
+
+            // 按时间排序后再落盘：表格要按时间读，文件内容也稳定、便于比对
+            list.sort((a, b) => (a.predictedAt || 0) - (b.predictedAt || 0));
+
+            try {
+                writeStore(store);
+                writePredictionsCsv(store);
+            } catch (e) {
+                send(res, 500, { error: '保存失败：' + e.message }, origin);
+                return;
+            }
+            send(res, 200, {
+                ok: true,
+                account: username,
+                total: list.length,
+                added,
+                updated,
+                savedAt: new Date().toISOString(),
+            }, origin);
+            return;
+        }
+
+        send(res, 405, { error: '只支持 GET 与 POST' }, origin);
         return;
     }
 

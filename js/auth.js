@@ -20,6 +20,11 @@
             PaperTrader.setUserStorage(next.user.username);
             PaperTrader.setSyncConfig(API, next.user.username);
         }
+        // 预测记录同样要切到该用户的存储键：它原先用的是固定的全局键，
+        // 不切的话会把上一个账号的预测当成自己的显示出来（也写进同一个地方）。
+        if (typeof PredictionTracker !== 'undefined') {
+            PredictionTracker.setUserStorage(next.user.username);
+        }
     }
     async function request(path, body) {
         const response = await fetch(`${API}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -59,6 +64,10 @@
             await PaperTrader.initSync();
             if (typeof CryptoPulseApp !== 'undefined') CryptoPulseApp.renderPaperTab();
         }
+        if (typeof PredictionTracker !== 'undefined') {
+            await PredictionTracker.initSync();
+            if (typeof CryptoPulseApp !== 'undefined') CryptoPulseApp.renderPredictTab();
+        }
     }
     async function enter() {
         const name = username.value.trim();
@@ -73,6 +82,10 @@
             if (typeof PaperTrader !== 'undefined') {
                 await PaperTrader.initSync();
                 if (typeof CryptoPulseApp !== 'undefined') CryptoPulseApp.renderPaperTab();
+            }
+            if (typeof PredictionTracker !== 'undefined') {
+                await PredictionTracker.initSync();
+                if (typeof CryptoPulseApp !== 'undefined') CryptoPulseApp.renderPredictTab();
             }
         } catch (error) { setMessage(error instanceof Error ? error.message : '登录失败'); }
         finally { submit.disabled = false; }

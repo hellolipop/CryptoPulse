@@ -5125,7 +5125,45 @@ const CryptoPulseApp = {
         // 记录本次预测（仅在方向变化或上一轮已复盘时才会新增）
         // 切换灵敏度档位时跳过记录，避免频繁切换污染准确率统计
         if (!skipTrack) {
-            this.trackPrediction(signal);
+            this.trackPrediction(signal, {
+                // 算法版本：改因子后能按版本分组对比准确率，见 ALGORITHM-CHANGELOG.md
+                algoVersion: SignalGenerator.ALGORITHM_VERSION,
+                // 因子快照：把「当时各因子读到什么」一起留档。
+                //
+                // 只存最终评分的话，事后无法回答「是哪个因子把方向带偏了」，
+                // 而那正是这份记录要服务的问题。所以这里把参与加权的每个分项得分、
+                // 当时用的权重、技术面内部的子因子拆分、关键指标读数，
+                // 以及费率闸门状态，全部原样存下来。
+                factors: {
+                    breakdown: {
+                        technical: techScoreResult.score,
+                        volume: volumeResult.score,
+                        news: (isStock || !newsAvailable) ? null : newsScoreResult.score,
+                        sentiment: isStock ? null : sentimentScore,
+                        derivatives: derivAvailable ? derivativesScore : null,
+                    },
+                    // 权重会随数据可得性变化（缺失因子被剔除后重新归一），
+                    // 不存下来就无法还原总分是怎么算出来的
+                    weights: rawWeights,
+                    // 技术面内部拆解：能区分是 RSI 判错了还是均线判错了
+                    technicalBreakdown: techScoreResult.breakdown || null,
+                    volumeMetrics: volumeResult.metrics || null,
+                    indicators: this.snapshotIndicators(ind),
+                    sensitivity: this.state.sensitivity,
+                    thresholds: this.getSensitivity().thresholds,
+                    // 费率闸门：信号成立但被闸门拦下时，这里能看出原因
+                    fundingPercentile: this.state.fundingPercentile,
+                    gate: this.state.paperGate || null,
+                    inputsAvailable: { news: newsAvailable, derivatives: derivAvailable, isStock: !!isStock },
+                },
+                criteria: {
+                    directionThreshold: PredictionTracker.directionThreshold,
+                    holdThreshold: PredictionTracker.holdThreshold,
+                    horizonMs: PredictionTracker.getHorizonMs(
+                        this.getTimeframeConfig(this.state.currentTimeframe).seconds
+                    ),
+                },
+            });
         }
 
         // 买卖点会随灵敏度档位、K线周期变化，每次都重放一遍模拟账户
@@ -5762,9 +5800,63 @@ const CryptoPulseApp = {
     },
 
     /**
-     * 记录本次预测，用于后续统计准确率
+     * 挑出要留档的指标读数。
+     *
+     * 不把整个 indicators 对象存进去：它带着大量中间序列（均线数组、布林带历史等），
+     * 一条记录就能撑到几十 KB，150 条会把 localStorage 塞满。这里只留事后分析
+     * 真正会用到的标量 —— 判断方向时各因子的读数就是这几个。
+     *
+     * @param {Object} ind - this.state.indicators
+     * @returns {Object|null}
      */
-    trackPrediction(signal) {
+    snapshotIndicators(ind) {
+        if (!ind) return null;
+        // 必须兼容数组。state.indicators 里这些指标存的是**整段序列**：
+        //   - ma7 / ma25 / ma200 本身是数组
+        //   - macd 的 macd/signal/histogram、kdj 的 k/d/j、stochRSI、bollingerBands
+        //     每一项也都是数组（buildROC 同理，标量在 .value 上）
+        // 只有 rsi / currentPrice / ahr999.value / roc.value 是标量。
+        //
+        // 这一点最初写错了（按标量取），结果 MACD、KDJ、均线全部记成 null ——
+        // 而它们正是权重最高的几个因子，等于让整套因子留档在最关键处失效。
+        const num = v => {
+            const last = Array.isArray(v) ? v[v.length - 1] : v;
+            return (typeof last === 'number' && isFinite(last)) ? last : null;
+        };
+        const macd = ind.macd || {};
+        const kdj = ind.kdj || {};
+        const stoch = ind.stochRSI || {};
+        const boll = ind.bollingerBands || {};
+        const roc = ind.roc || {};
+        return {
+            currentPrice: num(ind.currentPrice),
+            rsi: num(ind.rsi),
+            macd: {
+                // ind.macd 上同时有 value（标量）和 macd（数组），两者是同一个数
+                macd: num(macd.value !== undefined ? macd.value : macd.macd),
+                signal: num(macd.signal),
+                histogram: num(macd.histogram),
+            },
+            kdj: { k: num(kdj.k), d: num(kdj.d), j: num(kdj.j) },
+            stochRSI: { k: num(stoch.k), d: num(stoch.d) },
+            ma7: num(ind.ma7),
+            ma25: num(ind.ma25),
+            ma200: num(ind.ma200),
+            bollinger: { upper: num(boll.upper), middle: num(boll.middle), lower: num(boll.lower) },
+            ahr999: ind.ahr999 ? num(ind.ahr999.value) : null,
+            roc: num(roc.value),
+            // 死区基准也留档：roc 因子是「超过死区才算信号」，不记死区就无法解释它的读数
+            rocScale: num(roc.scale),
+        };
+    },
+
+    /**
+     * 记录一次方向性预测
+     *
+     * @param {Object} signal - 信号对象
+     * @param {Object} [extra] - { algoVersion, factors, criteria }：因子快照与复盘口径
+     */
+    trackPrediction(signal, extra) {
         if (!signal || !this.state.coinInfo) return;
         // coinInfo 必须是当前币种那一份。
         //
@@ -5790,6 +5882,9 @@ const CryptoPulseApp = {
             score: signal.totalScore,
             price,
             intervalSeconds: this.getTimeframeConfig(this.state.currentTimeframe).seconds,
+            algoVersion: (extra && extra.algoVersion) || null,
+            factors: (extra && extra.factors) || null,
+            criteria: (extra && extra.criteria) || null,
         });
 
         if (added) {
