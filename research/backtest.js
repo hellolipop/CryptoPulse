@@ -158,6 +158,37 @@ function alignAsOf(series, candles) {
     return res;
 }
 
+/**
+ * 把多个标的的同一口径结果合并成一组。
+ *
+ * 三条都不能省，否则合并值会是错的：
+ *   1. 命中率与扣费收益按**样本数加权**，不是两个比例取平均 ——
+ *      两个标的样本数不同时（例如 BTC 日线 159 条、ETH 156 条），
+ *      直接平均会给出错误的整体命中率。
+ *   2. 中位滞后必须由**两边的原始 lead 序列重新求中位数** ——
+ *      中位数不是可加统计量，把两个中位数平均没有统计含义。
+ *   3. 零假设同样加权，否则 edge（超额）会连锁出错。
+ */
+function poolByHorizon(ds) {
+    const n = ds.reduce((s, d) => s + d.n, 0);
+    const hits = ds.reduce((s, d) => s + d.hits, 0);
+    const netSum = ds.reduce((s, d) => s + d.netSum, 0);
+    const useful = ds.reduce((s, d) => s + d.useful, 0);
+    const nullSum = ds.reduce((s, d) => s + d.n * d.nullRate, 0);
+    const leads = [].concat.apply([], ds.map(d => d.leads || []));
+    const hitRate = n ? hits / n : NaN;
+    const nullRate = n ? nullSum / n : NaN;
+    return {
+        n,
+        hitRate,
+        nullRate,
+        edge: hitRate - nullRate,
+        avgNet: n ? netSum / n : NaN,
+        medianLead: median(leads),
+        usefulShare: n ? useful / n : NaN,
+    };
+}
+
 /** 高频序列对齐到K线：取最后一根落在该K线区间内的样本 */
 function alignLastIn(candles, series, tfSec) {
     const res = new Array(candles.length).fill(null);
@@ -244,6 +275,12 @@ function evaluate(candles, signals, opt) {
         const nullRate = tot ? (nBuy * pUp[h] + nSell * (1 - pUp[h])) / sig.length : NaN;
         res.byHorizon[h] = {
             n: tot,
+            // 原始量一并返回：合并多个标的时，比例与中位数都不能直接平均
+            // （中位数不是可加统计量），必须用这些原始量重算，见 poolByHorizon
+            hits: hit,
+            netSum,
+            useful,
+            leads,
             hitRate: tot ? hit / tot : NaN,
             baseRate: pUp[h],
             nullRate,
@@ -332,29 +369,77 @@ function buildIndicators(candles) {
     };
 }
 
-/** 应用自带技术面评分，作为基准因子（真实线上逻辑） */
-function technicalScoreSeries(candles, ind) {
+/**
+ * 应用自带技术面评分，作为基准因子。
+ *
+ * 这里刻意做成「逐根只用最后 200 根K线重算全部指标」，为的是与线上逐字一致：
+ * 线上 getBinanceInterval 固定 limit=200，K线与全部指标都是在 200 根上算出来的。
+ * 这个 200 不是随手取的，它是线上口径的一部分 ——
+ *   - MACD 是 EMA 递推、RSI 是 Wilder 平滑、KDJ 的 D 从 50 起递推、
+ *     VWAP 是窗口内累积量价比：窗口长度会改变它们的取值；
+ *   - 用全历史去算，得到的分数与用户屏幕上看到的不是同一个东西。
+ *
+ * 同时必须把线上传入的全部因子喂进去。此前这里只传了 rsi/macd/均线/布林带，
+ * 其余（vwap / obv / stochRSI / kdj / ahr999 / roc / longMA）全被传成 null，
+ * 那些评分块合计摆幅可达 ±43 分，等于基准因子测的是另一个模型。
+ */
+const SCORE_WINDOW = 200;
+
+function technicalScoreSeries(candles) {
     const out = new Array(candles.length).fill(NaN);
-    for (let i = 200; i < candles.length; i++) {
-        const r = TA.calculateTechnicalScore({
-            rsi: ind.rsi[i],
-            macd: {
-                macd: ind.macd.macd.slice(0, i + 1),
-                signal: ind.macd.signal.slice(0, i + 1),
-            },
-            ma3: ind.ma3.slice(0, i + 1),
-            ma7: ind.ma7.slice(0, i + 1),
-            ma25: ind.ma25.slice(0, i + 1),
-            ma200: ind.ma200.slice(0, i + 1),
-            currentPrice: candles[i].c,
-            bollingerBands: {
-                upper: ind.boll.upper.slice(0, i + 1),
-                lower: ind.boll.lower.slice(0, i + 1),
-                middle: ind.boll.middle.slice(0, i + 1),
-            },
-            vwap: NaN, obv: NaN, stochRSI: null, kdj: null, ahr999: null, roc: null,
-        });
-        out[i] = r.score;
+    for (let i = SCORE_WINDOW - 1; i < candles.length; i++) {
+        // 只看 [i-199, i]：与浏览器加载 200 根K线后所见的完全一致
+        const win = candles.slice(i - SCORE_WINDOW + 1, i + 1);
+        const closes = win.map(x => x.c);
+        const highs = win.map(x => x.h);
+        const lows = win.map(x => x.l);
+        const vols = win.map(x => x.v);
+
+        const ma3 = TA.calculateSMA(closes, 3);
+        const ma7 = TA.calculateSMA(closes, 7);
+        const ma25 = TA.calculateSMA(closes, 25);
+        const ma200 = TA.calculateSMA(closes, 200);
+        const rsi = TA.calculateRSI(closes, 14);
+        const macd = TA.calculateMACD(closes);
+        const boll = TA.calculateBollingerBands(closes, 20);
+        const stochRSI = TA.calculateStochasticRSI(closes);
+        const kdj = TA.calculateKDJ(highs, lows, closes);
+        const vwap = TA.calculateVWAP(highs, lows, closes, vols);
+        const obv = TA.calculateOBV(closes, vols);
+        const currentPrice = closes[closes.length - 1];
+
+        // 长期均线的降级窗口，与 app.js 的 pickLongMAWindow 一致
+        const longWindow = TA.pickLongMAWindow(win.length);
+        const longMA = {
+            window: longWindow,
+            series: longWindow === null ? null
+                : longWindow === 200 ? ma200
+                    : TA.calculateSMA(closes, longWindow),
+            substituted: longWindow !== null && longWindow !== 200,
+            bars: win.length,
+        };
+
+        // roc 用同一个 200 根窗口算：buildROC 的自适应死区只取窗口末尾 50 根的平均
+        // 波动，在窗口内取值天然因果，不含未来数据。
+        const roc = buildROC(closes, 3, 50, 0.6);
+
+        out[i] = TA.calculateTechnicalScore({
+            rsi: rsi[rsi.length - 1],
+            macd,
+            ma3,
+            ma7,
+            ma25,
+            ma200,
+            longMA,
+            currentPrice,
+            bollingerBands: boll,
+            vwap,
+            obv,
+            stochRSI,
+            kdj,
+            ahr999: TA.calculateAHR999(currentPrice, ma200[ma200.length - 1]),
+            roc,
+        }).score;
     }
     return out;
 }
@@ -548,6 +633,29 @@ function tripStats(trips) {
 }
 
 /**
+ * 确定性伪随机数（mulberry32）。
+ *
+ * 为什么不能用 Math.random：闸门的「分位」是对「随机保留同样多买卖点」做蒙特卡洛
+ * 得到的统计量，未播种的 Math.random 会让同一份代码每次跑出不同数字。
+ * 后果有两个，都很要命：
+ *   1. 无法回答「这次改动到底改变了什么」—— 改动前后的差异里混着随机抖动；
+ *   2. 与「可复现回测」的承诺不符，历史结论无法重新验证。
+ * 固定种子后，同输入必然同输出。
+ */
+function makeRng(seed) {
+    let a = seed >>> 0;
+    return function () {
+        a = (a + 0x6D2B79F5) >>> 0;
+        let t = a;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+// 改动闸门逻辑时刻意不动这个种子：只有同一随机序列下的对比才有意义
+const GATE_SEED = 20260923;
+
+/**
  * 闸门筛选能力的检验
  *
  * 返回：真实闸门保留 k 个买卖点时的成绩，在「随机保留 k 个」的成绩分布中的分位。
@@ -562,11 +670,12 @@ function gateSignificance(candles, markers, allow, iterations) {
     const passed = markers.filter(allow).length;
     const rand = [];
     const n = markers.length;
+    const rng = makeRng(GATE_SEED);
     for (let it = 0; it < iterations; it++) {
         const idx = [];
         for (let i = 0; i < n; i++) idx.push(i);
         for (let i = n - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
+            const j = Math.floor(rng() * (i + 1));
             const tmp = idx[i]; idx[i] = idx[j]; idx[j] = tmp;
         }
         const keep = new Set(idx.slice(0, passed));
@@ -1118,7 +1227,9 @@ function runSymbol(sym, tfSec, label) {
     factors['账户多空比分位(反向)'] = dedupeSide(thresholdEvents(acctPct, 0.10, 0.90, true));
 
     // ---- 基准：应用自带技术面评分 ----
-    const techScore = technicalScoreSeries(candles, ind);
+    // 注意：这里不再接收外部 ind —— 该函数内部按线上口径（200 根窗口）自算全部指标，
+    // 见其函数注释。传入全历史 ind 会与线上口径不一致。
+    const techScore = technicalScoreSeries(candles);
     factors['【基准】技术面评分'] = dedupeSide(thresholdEvents(techScore.map(s => s / 100), 0.30, 0.70, true));
 
     // ---- 对照：随机信号 ----
@@ -1185,9 +1296,11 @@ function main() {
     console.log('\n标的/周期      档位     信号数    H=6命中率   零假设    超额      H=6扣费后   中位提前  有效提前');
     console.log('-'.repeat(104));
     for (const [tfSec, tfName] of tfs) {
+        const collected = [];
         for (const sym of syms) {
             const rep = appMarkerReport(sym, tfSec, tfName);
             if (!rep) continue;
+            collected.push(rep);
             for (const [label, v] of Object.entries(rep)) {
                 const d = v.d;
                 if (!d || !d.n) continue;
@@ -1203,6 +1316,28 @@ function main() {
                     pct(d.usefulShare).padStart(6)
                 );
             }
+        }
+
+        // 合并 BTC+ETH 的一行：界面上显示的就是这一行。
+        // 合并的理由是单标的样本量只有一半；但两个标的的表现差异不小
+        // （日线尤其：BTC 扣费后 −3.7bp、ETH −20.7bp），
+        // 所以界面上会同时保留单标的数字，避免合并值把差异藏起来。
+        if (collected.length < 2) continue;
+        for (const label of Object.keys(collected[0])) {
+            const ds = collected.map(rep => rep[label] && rep[label].d).filter(d => d && d.n);
+            if (ds.length < 2) continue;
+            const p = poolByHorizon(ds);
+            console.log(
+                `BTC+ETH/${tfName}`.padEnd(15) +
+                label.padEnd(8) +
+                String(p.n).padStart(6) + '  ' +
+                pct(p.hitRate).padStart(9) + '  ' +
+                pct(p.nullRate).padStart(7) + '  ' +
+                pct(p.edge).padStart(7) + '  ' +
+                bp(p.avgNet).padStart(10) + '  ' +
+                String(p.medianLead).padStart(7) + '   ' +
+                pct(p.usefulShare).padStart(6)
+            );
         }
     }
 
