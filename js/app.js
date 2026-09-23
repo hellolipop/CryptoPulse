@@ -375,13 +375,32 @@ const CryptoPulseApp = {
             desc: '趋势项权重最高、阈值最严，信号最少、滞后最大，但假信号最少，适合波段操作。',
             thresholds: { strongBuy: 74, buy: 63, sell: 37, strongSell: 26 },
             minGap: 6,
-            // 实测值：2023-09-01 ~ 2026-08-31，BTC/ETH 各 3 年，信号后 6 根K线的方向命中率，
+            // 实测值：2023-09-01 ~ 2026-08-31，BTC+ETH 各约 3 年，信号后 6 根K线的方向命中率，
             // 已计双边 10bp 成本。零假设（混合买卖信号下瞎猜）= 50%。
-            // 复现脚本见 research/backtest.js。
+            //
+            // 顶层 hit/lead/netBp/n 是 **BTC+ETH 合并**后的值，界面主行显示的就是它；
+            // symbols 下保留各标单单列 —— 合并会把差异平均掉：日线上 BTC 扣费后 −3.7bp
+            // 而 ETH −20.7bp，只显示合并值等于把这个风险藏起来。
+            //
+            // 合并口径：命中率与扣费收益按信号数加权；中位滞后由两边原始 lead 序列
+            // 重新求中位数（中位数不是可加统计量，两个中位数取平均没有统计含义）。
+            // 复现：`node research/backtest.js`，取输出第一部分的 `BTC+ETH/` 行。
+            //
+            // 2026-09-23 重算：此前这里存的是**单标的 BTC**、且来自 2026-09-16 一次中间运行，
+            // 09-21 修正 buildROC 未来函数后没有同步，日线一度相差 4.2pp（47.4% vs 51.57%）。
             statsByTf: {
-                '1':  { hit: 48.1, lead: -3, netBp: -22.1, n: 2246 },
-                '4':  { hit: 47.6, lead: -3, netBp: -39.1, n: 562 },
-                '24': { hit: 46.5, lead: -3, netBp: -36.0, n: 89 },
+                '1': {
+                    hit: 48.02, lead: -3, netBp: -21.8, n: 4459,
+                    symbols: { BTC: { hit: 48.23, netBp: -21.3, n: 2237 }, ETH: { hit: 47.79, netBp: -22.2, n: 2222 } },
+                },
+                '4': {
+                    hit: 47.06, lead: -3, netBp: -39.2, n: 1122,
+                    symbols: { BTC: { hit: 46.48, netBp: -38.9, n: 568 }, ETH: { hit: 47.65, netBp: -39.4, n: 554 } },
+                },
+                '24': {
+                    hit: 46.89, lead: -4, netBp: -20.2, n: 177,
+                    symbols: { BTC: { hit: 43.01, netBp: -56.9, n: 93 }, ETH: { hit: 51.19, netBp: 20.5, n: 84 } },
+                },
             },
             weights: {
                 macdPos: 6, macdHist: 5, maCross: 6, priceMa25: 5,
@@ -395,11 +414,20 @@ const CryptoPulseApp = {
             desc: '信号数量与滞后折中，默认档位。',
             thresholds: { strongBuy: 70, buy: 58, sell: 42, strongSell: 30 },
             minGap: 2,
-            // 实测值，口径同保守档
+            // 实测值，口径同保守档（顶层为 BTC+ETH 合并，symbols 为单标的）
             statsByTf: {
-                '1':  { hit: 48.2, lead: -2, netBp: -20.9, n: 4047 },
-                '4':  { hit: 48.6, lead: -2, netBp: -29.5, n: 1006 },
-                '24': { hit: 47.4, lead: -2, netBp: -24.5, n: 161 },
+                '1': {
+                    hit: 48.29, lead: -2, netBp: -21.0, n: 7987,
+                    symbols: { BTC: { hit: 48.33, netBp: -21.4, n: 4024 }, ETH: { hit: 48.25, netBp: -20.6, n: 3963 } },
+                },
+                '4': {
+                    hit: 48.82, lead: -2, netBp: -30.3, n: 1956,
+                    symbols: { BTC: { hit: 48.04, netBp: -30.1, n: 945 }, ETH: { hit: 49.55, netBp: -30.3, n: 1011 } },
+                },
+                '24': {
+                    hit: 48.25, lead: -2, netBp: -12.1, n: 315,
+                    symbols: { BTC: { hit: 51.57, netBp: -3.7, n: 159 }, ETH: { hit: 44.87, netBp: -20.7, n: 156 } },
+                },
             },
             weights: {
                 macdPos: 5, macdHist: 5, maCross: 4, priceMa25: 3,
@@ -413,11 +441,20 @@ const CryptoPulseApp = {
             desc: '领先因子权重最高、阈值最松，信号最多也最早，但假信号最多。',
             thresholds: { strongBuy: 66, buy: 54, sell: 46, strongSell: 34 },
             minGap: 1,
-            // 实测值，口径同保守档
+            // 实测值，口径同保守档（顶层为 BTC+ETH 合并，symbols 为单标的）
             statsByTf: {
-                '1':  { hit: 48.3, lead: -2, netBp: -20.5, n: 5029 },
-                '4':  { hit: 48.0, lead: -2, netBp: -30.0, n: 1254 },
-                '24': { hit: 47.3, lead: -2, netBp: -36.0, n: 209 },
+                '1': {
+                    hit: 48.12, lead: -2, netBp: -20.7, n: 9879,
+                    symbols: { BTC: { hit: 47.60, netBp: -22.2, n: 5002 }, ETH: { hit: 48.66, netBp: -19.2, n: 4877 } },
+                },
+                '4': {
+                    hit: 48.10, lead: -2, netBp: -30.5, n: 2418,
+                    symbols: { BTC: { hit: 48.18, netBp: -28.5, n: 1179 }, ETH: { hit: 48.02, netBp: -32.5, n: 1239 } },
+                },
+                '24': {
+                    hit: 47.93, lead: -2, netBp: -33.5, n: 411,
+                    symbols: { BTC: { hit: 50.25, netBp: -27.0, n: 199 }, ETH: { hit: 45.75, netBp: -39.7, n: 212 } },
+                },
             },
             weights: {
                 macdPos: 4, macdHist: 5, maCross: 3, priceMa25: 2,
@@ -701,11 +738,28 @@ const CryptoPulseApp = {
 
         const keys = ['conservative', 'balanced', 'sensitive'];
         const tfLabel = this.getTimeframeConfig(this.state.currentTimeframe).label;
+        // 单标的单元格：该标的的命中率 / 扣费后收益
+        const symCell = (s, name) => {
+            const d = s.symbols && s.symbols[name];
+            if (!d) return '--';
+            return `${d.hit.toFixed(1)}% / ${d.netBp.toFixed(1)}bp`;
+        };
+
         const rows = [
             { label: '信号数', unit: '个', get: s => s.n },
             { label: '命中率', unit: '%', get: s => (s.hit === null ? '--' : s.hit) },
             { label: '中位滞后', unit: '根', get: s => (s.lead === null ? '--' : Math.abs(s.lead)) },
             { label: '扣费后', unit: 'bp', get: s => (s.netBp === null ? '--' : s.netBp) },
+            // 上四行是 BTC+ETH 合并值；下面两行保留单标的 ——
+            // 合并会把两个标的的差异平均掉，而日线上两者差 20bp，不该被藏起来
+            {
+                label: 'BTC 命中/扣费', unit: '', get: s => symCell(s, 'BTC'),
+                redWhen: s => !!(s.symbols && s.symbols.BTC && s.symbols.BTC.netBp < 0),
+            },
+            {
+                label: 'ETH 命中/扣费', unit: '', get: s => symCell(s, 'ETH'),
+                redWhen: s => !!(s.symbols && s.symbols.ETH && s.symbols.ETH.netBp < 0),
+            },
         ];
 
         const baseHit = this.getSensitivityStats('balanced').hit;
@@ -728,6 +782,10 @@ const CryptoPulseApp = {
                 }
                 // 扣费后期望为负，一律标红
                 if (row.label === '扣费后' && s.netBp !== null && s.netBp < 0) {
+                    cls = 'text-fall-red';
+                }
+                // 单标的一行同理：该标的扣费后为负就标红
+                if (row.redWhen && row.redWhen(s)) {
                     cls = 'text-fall-red';
                 }
 
@@ -753,9 +811,11 @@ const CryptoPulseApp = {
                 </table>
             </div>
             <p class="text-[9px] text-text-tertiary mt-1 leading-tight">
-                ${tfLabel}：BTC/ETH 2023-09~2026-08 回测，判据为信号后 6 根K线的方向命中率，
-                已计双边 10bp 成本。三档命中率都在 50% 附近或以下（即瞎猜水平），扣费后期望为负；
-                信号中位滞后 2~3 根K线。结论：该信号不具备可盈利的提前预测力，仅供形态参考。
+                ${tfLabel}：BTC+ETH 2023-09~2026-08 回测（前四行为两标的合并值，末两行为单标的），
+                判据为信号后 6 根K线的方向命中率，已计双边 10bp 成本。
+                三档命中率都在 50% 附近或以下（即瞎猜水平），扣费后期望为负；信号中位滞后 2~3 根K线。
+                注意日线上 BTC 与 ETH 差别明显（扣费后 −3.7bp / −20.7bp），合并值会把这个差异平均掉。
+                结论：该信号不具备可盈利的提前预测力，仅供形态参考。
             </p>
         `;
     },
