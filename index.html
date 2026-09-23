@@ -123,7 +123,13 @@
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
                     </svg>
                 </div>
-                <p id="coinNameSub" class="text-xs text-text-secondary hidden sm:block">Bitcoin</p>
+                <div class="coin-header-quote" aria-live="polite">
+                    <p id="coinNameSub" class="coin-header-name hidden sm:block">Bitcoin</p>
+                    <div class="coin-header-market">
+                        <span id="topCoinPrice" class="coin-header-price">--</span>
+                        <span id="topCoinChange" class="coin-header-change neutral">--</span>
+                    </div>
+                </div>
             </div>
             <div class="flex items-center gap-1">
                 <button id="aiBtn" class="p-2 rounded-lg hover:bg-gray-100 transition-colors relative" title="AI分析">
@@ -1384,7 +1390,7 @@
     <script src="js/coingecko.js?v=58"></script>
     <script src="js/stocks.js?v=58"></script>
     <script src="js/chart.js?v=59"></script>
-    <script src="js/app.js?v=59"></script>
+    <script src="js/app.js?v=60"></script>
     <script src="js/auth.js?v=3"></script>
 </body>
 </html>

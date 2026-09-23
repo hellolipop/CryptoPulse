@@ -517,7 +517,15 @@ const CryptoPulseApp = {
         if (!binanceSymbol) return null;
 
         try {
-            const resp = await fetch(`https://fapi.binance.com/fapi/v1/fundingRate?symbol=${binanceSymbol}&limit=500`);
+            // 必须带超时。这条请求在 loadCandleData 里被 await（且在该函数的
+            // try/catch 之外），而 fapi 在部分网络下是被阻断的 —— 裸 fetch 会
+            // 一直挂着不 settle，于是 loadCoinData 的 Promise.allSettled 永不返回、
+            // 加载遮罩永远不消失。实测症状：K线已画出、界面却卡在「加载中」，
+            // 而控制台一句报错都没有（因为请求既没成功也没失败）。
+            const resp = await fetch(
+                `https://fapi.binance.com/fapi/v1/fundingRate?symbol=${binanceSymbol}&limit=500`,
+                { signal: AbortSignal.timeout(15000) }
+            );
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const arr = await resp.json();
             if (!Array.isArray(arr) || arr.length < 60) throw new Error('样本不足');
@@ -1430,7 +1438,9 @@ const CryptoPulseApp = {
         this.state.catalogLoading = true;
 
         try {
-            const resp = await fetch(`${this.binanceApiBase}/exchangeInfo`);
+            // 全量币种目录体积很大（约 8MB），超时给得比其它请求宽松；
+            // 即便超时失败也没关系 —— 目录有本地缓存，只是这次不刷新。
+            const resp = await fetch(`${this.binanceApiBase}/exchangeInfo`, { signal: AbortSignal.timeout(45000) });
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const data = await resp.json();
 
@@ -1524,7 +1534,7 @@ const CryptoPulseApp = {
 
         try {
             const query = encodeURIComponent(JSON.stringify(symbols));
-            const resp = await fetch(`${this.binanceApiBase}/ticker/24hr?symbols=${query}`);
+            const resp = await fetch(`${this.binanceApiBase}/ticker/24hr?symbols=${query}`, { signal: AbortSignal.timeout(15000) });
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const data = await resp.json();
 
@@ -2552,7 +2562,7 @@ const CryptoPulseApp = {
         for (const chunk of chunks) {
             try {
                 const query = encodeURIComponent(JSON.stringify(chunk));
-                const resp = await fetch(`${this.binanceApiBase}/ticker/24hr?symbols=${query}`);
+                const resp = await fetch(`${this.binanceApiBase}/ticker/24hr?symbols=${query}`, { signal: AbortSignal.timeout(15000) });
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const data = await resp.json();
                 const arr = Array.isArray(data) ? data : [data];
@@ -3202,6 +3212,11 @@ const CryptoPulseApp = {
      */
     quoteFailureReason(error) {
         const msg = (error && error.message) ? String(error.message) : '';
+        // 超时（AbortSignal.timeout / AbortController）必须单独说清楚是「等太久」，
+        // 否则界面会把 "signal timed out" 这类内部措辞直接摆给用户看。
+        if (/timed out|timeout|abort/i.test(msg)) {
+            return '请求超时（网络太慢或链路被阻断，已放弃等待）';
+        }
         if (/Failed to fetch|NetworkError|Load failed|ERR_/i.test(msg)) {
             return '网络请求被中断或拦截（可能断网、DNS 解析被污染，或代理与防火墙拦了 data-api.binance.vision）';
         }
@@ -3296,6 +3311,17 @@ const CryptoPulseApp = {
             badge.textContent = '--';
             badge.className = 'text-xs font-medium px-2 py-0.5 rounded bg-gray-100 text-text-tertiary';
         }
+
+        const topPrice = document.getElementById('topCoinPrice');
+        if (topPrice) {
+            topPrice.textContent = '--';
+            topPrice.className = 'coin-header-price muted';
+        }
+        const topChange = document.getElementById('topCoinChange');
+        if (topChange) {
+            topChange.textContent = '--';
+            topChange.className = 'coin-header-change neutral';
+        }
     },
 
     /** 行情不可用提示条：给出原因与重试入口 */
@@ -3370,7 +3396,9 @@ const CryptoPulseApp = {
         let payload;
         try {
             const response = await fetch(
-                `${this.binanceApiBase}/ticker/24hr?symbol=${binanceSymbol}`
+                `${this.binanceApiBase}/ticker/24hr?symbol=${binanceSymbol}`,
+                // 带超时：这条是首屏关键路径，挂住会让加载遮罩一直不消失
+                { signal: AbortSignal.timeout(15000) }
             );
 
             // 带上状态码：出问题时能直接看出是 4xx 还是 5xx，
@@ -3471,7 +3499,9 @@ const CryptoPulseApp = {
         try {
             const { interval, limit } = this.getBinanceInterval(this.state.currentTimeframe);
             const response = await fetch(
-                `${this.binanceApiBase}/klines?symbol=${binanceSymbol}&interval=${interval}&limit=${limit}`
+                `${this.binanceApiBase}/klines?symbol=${binanceSymbol}&interval=${interval}&limit=${limit}`,
+                // 带超时：这条是首屏关键路径，挂住会让加载遮罩一直不消失
+                { signal: AbortSignal.timeout(15000) }
             );
 
             if (!response.ok) throw new Error('HTTP ' + response.status);
@@ -3560,7 +3590,9 @@ const CryptoPulseApp = {
     // 加载恐惧贪婪指数
     async loadFearGreedIndex() {
         try {
-            const response = await fetch('https://api.alternative.me/fng/?limit=1');
+            // 带超时：它在 loadDeferredData 的 Promise.allSettled 里，
+            // 挂住会让这个 allSettled 永不落地，信号就一直停在「分析中」
+            const response = await fetch('https://api.alternative.me/fng/?limit=1', { signal: AbortSignal.timeout(15000) });
             if (!response.ok) throw new Error('FNG API error');
 
             const data = await response.json();
@@ -4208,6 +4240,18 @@ const CryptoPulseApp = {
         // 价格变化徽章
         const changePercent = info.price_change_percentage_24h;
         const isPositive = changePercent >= 0;
+
+        const topPrice = document.getElementById('topCoinPrice');
+        if (topPrice) {
+            topPrice.textContent = TechnicalAnalysis.formatPrice(info.current_price);
+            topPrice.className = `coin-header-price ${isPositive ? 'rise' : 'fall'}`;
+        }
+        const topChange = document.getElementById('topCoinChange');
+        if (topChange) {
+            topChange.textContent = `${isPositive ? '+' : ''}${changePercent.toFixed(2)}%`;
+            topChange.className = `coin-header-change ${isPositive ? 'rise' : 'fall'}`;
+            topChange.title = `24 小时涨跌幅 ${topChange.textContent}`;
+        }
 
         const badge = document.getElementById('priceChangeBadge');
         if (badge) {
@@ -5722,6 +5766,13 @@ const CryptoPulseApp = {
      */
     trackPrediction(signal) {
         if (!signal || !this.state.coinInfo) return;
+        // coinInfo 必须是当前币种那一份。
+        //
+        // 原有防线是 applyQuoteUnavailable()：价格取不到时把 coinInfo 清成 null。
+        // 但那条防线依赖 markQuoteFailed 被调用 —— 而请求挂住时（既不成功也不失败）
+        // 它根本不会触发，coinInfo 就留着上一个币种的价格，被当成入场价记进预测，
+        // 污染准确率统计。这里用 id 对齐，堵住这一类缺口。
+        if (this.state.coinInfo.id !== this.state.currentCoin) return;
         const price = this.state.coinInfo.current_price;
         if (!price) return;
 
