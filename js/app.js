@@ -2328,6 +2328,13 @@ const CryptoPulseApp = {
     },
 
     // ===== 币种选择器 =====
+
+    // 行内可局部更新的片段，抽成常量。
+    // 这是必须的：整块重建与局部打补丁会写同一段标记，若两处各写一份，
+    // 以后改样式很容易只改了其中一处，出现「重建后是对的、打补丁后是错的」这种错位。
+    COIN_ROW_STAR_BAR: '<span data-role="star-bar" class="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-6 rounded-r-full bg-golden"></span>',
+    COIN_ROW_ACTIVE_TAG: '<span data-role="active-tag" class="text-[10px] px-1 py-px rounded bg-golden/15 text-golden">当前</span>',
+
     showCoinSelectorModal() {
         const modal = document.getElementById('coinSelectorModal');
         if (!modal) return;
@@ -2485,6 +2492,8 @@ const CryptoPulseApp = {
                         需要单独拉一次合约目录。
                     </p>
                 </div>`;
+                // 空结果占位不是行列表，作废签名，避免下次误判为「行集没变」
+                this._coinSelectorRowSetSignature = null;
                 return;
             }
 
@@ -2503,6 +2512,8 @@ const CryptoPulseApp = {
                 </p>
                 <p class="text-xs text-text-tertiary mt-1.5">也可以直接输入完整符号：BTC、ETH、SOL、AAPL</p>
             </div>`;
+            // 同上：没有任何行可选，签名必须作废
+            this._coinSelectorRowSetSignature = null;
             return;
         }
 
@@ -2524,6 +2535,28 @@ const CryptoPulseApp = {
             this.loadStockQuotes();
         }
 
+        // 渲染分两层：行集没变就只打补丁，行集变了才整块重建。
+        //
+        // 这是「点不中」问题的根治手段，不是性能优化。整块 innerHTML 重建会把
+        // 用户正指着的那一行一起销毁重建，如果这恰好发生在 mousedown 与 mouseup
+        // 之间，浏览器算出来的 click 目标就不再是同一个节点，click 事件根本不会
+        // 派发 —— 用户看到的就是「移上去闪一下，然后点不中」。
+        //
+        // 原来有两条路径会周期性踩到这一帧：行情刷新（30 秒一次的自选刷新、
+        // 补拉列表行情、美股快照），以及勾星标 / 切币种这类行级状态变化。
+        // 现在它们分别落到 patchCoinSelectorQuotes 与 patchCoinSelectorRowState，
+        // 都只改自己那几个节点。于是弹窗打开后行节点不再被替换，窗口从根上消失。
+        //
+        // 补丁失败（返回 false）时**必须**退回整块重建：那是防止界面停在过期内容
+        // 的最后一道保险，宁可多重建一次，也不能让用户看到错的数据。
+        const signature = this.coinSelectorRowSetSignature(shown, q);
+        if (signature === this._coinSelectorRowSetSignature) {
+            if (this.patchCoinSelectorQuotes(shown) && this.patchCoinSelectorRowState(shown)) {
+                return;
+            }
+        }
+        this._coinSelectorRowSetSignature = signature;
+
         container.innerHTML = shown.map(coin => {
             const isActive = coin.coinId === this.state.currentCoin;
             const inWatchlist = this.isSymbolInWatchlist(coin.binanceSymbol);
@@ -2539,7 +2572,7 @@ const CryptoPulseApp = {
             return `
                 <div class="coin-selector-item relative flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50 transition-colors ${isActive ? 'bg-golden/5' : ''}"
                      data-coin-id="${coin.coinId}" data-symbol="${coin.binanceSymbol}">
-                    ${inWatchlist ? '<span class="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-6 rounded-r-full bg-golden"></span>' : ''}
+                    ${inWatchlist ? this.COIN_ROW_STAR_BAR : ''}
                     <button class="coin-star-btn flex-shrink-0 p-0.5 rounded transition-transform active:scale-90"
                             data-coin-id="${coin.coinId}" data-symbol="${coin.binanceSymbol}"
                             title="${inWatchlist ? '取消自选' : '加入自选'}" aria-label="${inWatchlist ? '取消自选' : '加入自选'}">
@@ -2548,23 +2581,21 @@ const CryptoPulseApp = {
                         </svg>
                     </button>
                     <div class="flex items-center gap-3 min-w-0 flex-1">
-                        <div class="w-8 h-8 rounded-full ${inWatchlist ? 'bg-golden/10' : 'bg-gray-100'} flex items-center justify-center text-sm font-bold text-text-primary flex-shrink-0">
+                        <div data-role="avatar" class="w-8 h-8 rounded-full ${inWatchlist ? 'bg-golden/10' : 'bg-gray-100'} flex items-center justify-center text-sm font-bold text-text-primary flex-shrink-0">
                             ${coin.symbol.charAt(0)}
                         </div>
                         <div class="min-w-0">
-                            <div class="flex items-center gap-1.5">
+                            <div class="flex items-center gap-1.5" data-role="tags">
                                 <span class="text-sm font-semibold text-text-primary">${coin.symbol}</span>
                                 ${isStockRow ? '<span class="text-[10px] px-1 py-px rounded bg-blue-50 text-blue-600">合约</span>' : (coin.tokenized ? '<span class="text-[10px] px-1 py-px rounded bg-amber-50 text-amber-600">代币</span>' : '')}
-                                ${isActive ? '<span class="text-[10px] px-1 py-px rounded bg-golden/15 text-golden">当前</span>' : ''}
+                                ${isActive ? this.COIN_ROW_ACTIVE_TAG : ''}
                             </div>
                             <p class="text-xs text-text-secondary truncate">${this.getCoinSubtitle(coin)}</p>
                         </div>
                     </div>
                     <div class="text-right flex-shrink-0">
-                        <p class="text-sm font-medium tabular-nums text-text-primary">${hasQuote ? this.formatWatchPrice(quote.price) : '--'}</p>
-                        <p class="text-xs tabular-nums ${!hasQuote ? 'text-text-tertiary' : (up ? 'text-rise-green' : 'text-fall-red')}">
-                            ${hasQuote ? (up ? '+' : '') + quote.changePercent.toFixed(2) + '%' : '--'}
-                        </p>
+                        <p class="text-sm font-medium tabular-nums text-text-primary" data-role="price">${hasQuote ? this.formatWatchPrice(quote.price) : '--'}</p>
+                        <p class="text-xs tabular-nums ${!hasQuote ? 'text-text-tertiary' : (up ? 'text-rise-green' : 'text-fall-red')}" data-role="change">${hasQuote ? (up ? '+' : '') + quote.changePercent.toFixed(2) + '%' : '--'}</p>
                     </div>
                 </div>
             `;
@@ -2598,6 +2629,136 @@ const CryptoPulseApp = {
         }
     },
 
+    // 行集签名：只收录「有哪些行、按什么顺序、写死在结构里的静态内容是什么」。
+    //
+    // 签名里只允许两类东西，多一个字段都会让局部更新退化回整块重建：
+    //   1. 决定行集合与顺序的：分类、搜索词、显示条数、行数、每行的 coinId；
+    //   2. 渲染时写死在结构里的静态内容：symbol（含首字母头像）、name、
+    //      market、tokenized、tokenizedUnderlying（副标题与标签）。
+    //
+    // 「行情」和「行级可变状态」（是否自选、是否当前币）**故意不进签名** ——
+    // 它们各有 patch 方法就地去改节点；进了签名就等于每次行情刷新、每次勾星标
+    // 都要整块重建，那正是要根治的问题。
+    // 反过来，若以后渲染里新引入一个会变的字段，必须同步加进签名或写进 patch，
+    // 否则会出现「数据变了、界面没变」的幽灵 bug。
+    coinSelectorRowSetSignature(shown, q) {
+        const head = [this.state.marketTab, q, this.state.coinListLimit, shown.length].join('|');
+        const rows = shown.map(c => [
+            c.coinId, c.symbol, c.name, c.market,
+            c.tokenized ? 1 : 0, c.tokenizedUnderlying || ''
+        ].join('~'));
+        return head + '||' + rows.join('|');
+    },
+
+    // 只更新每行的价格与涨跌幅文本节点，返回是否全部命中。
+    //
+    // 返回 false 表示当前 DOM 与 shown 对不上（例如列表此刻显示的是空结果、
+    // 或结构被别的路径改过），调用方必须退回整块重建 —— 这个返回值是安全网：
+    // 宁可多重建一次，也不能让界面停在过期内容上。
+    patchCoinSelectorQuotes(shown) {
+        const container = document.getElementById('coinSelectorList');
+        if (!container) return false;
+
+        // 按 data-coin-id 建索引，而不是拼选择器：币种 id 来自远端目录，
+        // 拼进 querySelector 既要转义又有注入风险，直接比 dataset 更稳。
+        const rows = new Map();
+        container.querySelectorAll('.coin-selector-item').forEach(el => {
+            rows.set(el.dataset.coinId, el);
+        });
+        if (rows.size !== shown.length) return false;
+
+        for (const coin of shown) {
+            const row = rows.get(coin.coinId);
+            const priceEl = row && row.querySelector('[data-role="price"]');
+            const changeEl = row && row.querySelector('[data-role="change"]');
+            if (!priceEl || !changeEl) return false;
+
+            // 行情取值顺序必须与整块重建时完全一致，否则这两条路径会显示出不同的价格
+            let quote = this.state.watchlistQuotes[coin.coinId];
+            if (!quote) quote = this.state.coinListQuotes[coin.binanceSymbol];
+            if (!quote) quote = this.state.stockQuotes[coin.binanceSymbol];
+
+            if (quote) {
+                const up = quote.changePercent >= 0;
+                priceEl.textContent = this.formatWatchPrice(quote.price);
+                changeEl.textContent = (up ? '+' : '') + quote.changePercent.toFixed(2) + '%';
+                changeEl.className = `text-xs tabular-nums ${up ? 'text-rise-green' : 'text-fall-red'}`;
+            } else {
+                priceEl.textContent = '--';
+                changeEl.textContent = '--';
+                changeEl.className = 'text-xs tabular-nums text-text-tertiary';
+            }
+        }
+        return true;
+    },
+
+    // 就地更新「行级可变状态」：是否自选（左侧金条 / 星标 / 头像底色）与
+    // 是否当前币（行底色 /「当前」标签）。返回 false 同样表示要退回整块重建。
+    //
+    // 这两个字段原来都在签名里，于是勾一下星标、切一下币种就要把整个列表重建一遍 ——
+    // 而它们的共同点是「行的集合与顺序压根没变，只是某几行自己长什么样变了」，
+    // 完全可以只动对应节点。
+    //
+    // 注意「自选」分类是例外：在那里取消自选会让该行从列表里消失，属于行集合变了，
+    // 会由签名变化走整块重建，不经过这里 —— 这是正确的，不是遗漏。
+    patchCoinSelectorRowState(shown) {
+        const container = document.getElementById('coinSelectorList');
+        if (!container) return false;
+
+        const rows = new Map();
+        container.querySelectorAll('.coin-selector-item').forEach(el => {
+            rows.set(el.dataset.coinId, el);
+        });
+        if (rows.size !== shown.length) return false;
+
+        for (const coin of shown) {
+            const row = rows.get(coin.coinId);
+            if (!row) return false;
+
+            const starBtn = row.querySelector('.coin-star-btn');
+            const avatar = row.querySelector('[data-role="avatar"]');
+            const tags = row.querySelector('[data-role="tags"]');
+            if (!starBtn || !avatar || !tags) return false;
+
+            // ---- 是否自选 ----
+            const inWatchlist = this.isSymbolInWatchlist(coin.binanceSymbol);
+
+            // 左侧金条：要就插入、不要就移除，插入位置与重建模板一致（作为首个子节点）
+            const starBar = row.querySelector('[data-role="star-bar"]');
+            if (inWatchlist && !starBar) {
+                row.insertAdjacentHTML('afterbegin', this.COIN_ROW_STAR_BAR);
+            } else if (!inWatchlist && starBar) {
+                starBar.remove();
+            }
+
+            const label = inWatchlist ? '取消自选' : '加入自选';
+            starBtn.title = label;
+            starBtn.setAttribute('aria-label', label);
+
+            const starSvg = starBtn.querySelector('svg');
+            if (starSvg) {
+                starSvg.setAttribute('fill', inWatchlist ? 'currentColor' : 'none');
+                starSvg.classList.toggle('text-golden', inWatchlist);
+                starSvg.classList.toggle('text-gray-300', !inWatchlist);
+            }
+            avatar.classList.toggle('bg-golden/10', inWatchlist);
+            avatar.classList.toggle('bg-gray-100', !inWatchlist);
+
+            // ---- 是否当前币 ----
+            const isActive = coin.coinId === this.state.currentCoin;
+            row.classList.toggle('bg-golden/5', isActive);
+
+            // 「当前」标签在重建模板里位于标签容器末尾，这里也追加到末尾，保持顺序一致
+            const activeTag = tags.querySelector('[data-role="active-tag"]');
+            if (isActive && !activeTag) {
+                tags.insertAdjacentHTML('beforeend', this.COIN_ROW_ACTIVE_TAG);
+            } else if (!isActive && activeTag) {
+                activeTag.remove();
+            }
+        }
+        return true;
+    },
+
     // 判断某交易对是否已在自选中
     isSymbolInWatchlist(binanceSymbol) {
         if (!binanceSymbol) return false;
@@ -2619,6 +2780,7 @@ const CryptoPulseApp = {
             chunks.push(symbols.slice(i, i + 100));
         }
 
+        let changed = 0;
         for (const chunk of chunks) {
             try {
                 const query = encodeURIComponent(JSON.stringify(chunk));
@@ -2627,10 +2789,14 @@ const CryptoPulseApp = {
                 const data = await resp.json();
                 const arr = Array.isArray(data) ? data : [data];
                 arr.forEach(t => {
-                    this.state.coinListQuotes[t.symbol] = {
+                    const next = {
                         price: parseFloat(t.lastPrice),
                         changePercent: parseFloat(t.priceChangePercent)
                     };
+                    const prev = this.state.coinListQuotes[t.symbol];
+                    // 只统计「真的变了」的，价格没动就不必重建 DOM
+                    if (!prev || prev.price !== next.price || prev.changePercent !== next.changePercent) changed++;
+                    this.state.coinListQuotes[t.symbol] = next;
                 });
             } catch (e) {
                 console.warn('列表行情加载失败:', e.message);
@@ -2638,6 +2804,17 @@ const CryptoPulseApp = {
                 chunk.forEach(s => pending.delete(s));
             }
         }
+
+        // 只有真拿到新行情才重建列表 —— 这不是优化，是必须的。
+        //
+        // renderCoinSelectorList 在行情缺失时会调用本函数，而本函数若无条件回调
+        // render，取数失败时就形成「render → 取数失败 → render → 取数失败」的
+        // 无限循环：每次 render 都重新发起一次注定失败的请求，失败后又立刻 render。
+        // 实测（把 ticker 请求打桩成必失败）会把主线程占满，连页面导航都超时。
+        //
+        // 用户侧的表现就是「点列表时闪烁、点不中」—— 因为正在被点的行被反复销毁
+        // 重建，mousedown 与 mouseup 落在两个不同节点上，click 根本不会触发。
+        if (!changed) return;
 
         // 行情到位后刷新列表
         const modal = document.getElementById('coinSelectorModal');
@@ -2884,6 +3061,15 @@ const CryptoPulseApp = {
                 }
             });
             this.state.stockQuotes = quotes;
+
+            // 与 loadCoinListQuotes 同理：一条行情都没拿到就不要回调 render。
+            //
+            // renderCoinSelectorList 见到 stockQuotes 为空就会再调本函数，
+            // 所以无条件 render 会成环：render → 取数（空）→ render → 取数（空）…
+            // 在「美股」分类下会把页面卡死。美股行情取不到时（目录为空、
+            // 或 allTickers 返回空）正是这条路径。
+            if (!Object.keys(quotes).length) return;
+
             this.state.stockCatalog = this.sortStockCatalog(this.state.stockCatalog);
 
             const modal = document.getElementById('coinSelectorModal');
