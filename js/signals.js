@@ -20,7 +20,7 @@ const SignalGenerator = {
      *
      * 只改界面样式、文案、网络超时等不影响信号结果的东西，不必升版本。
      */
-    ALGORITHM_VERSION: '1.0.0',
+    ALGORITHM_VERSION: '1.0.1',
 
     /**
      * 生成综合交易信号
@@ -220,28 +220,39 @@ const SignalGenerator = {
         }
         
         // 基于综合评分的仓位建议
-        if (totalScore >= 70) {
+        //
+        // 这里按 signalType 分流，而不是拿 totalScore 再比一次阈值。
+        //
+        // 原因：阈值随灵敏度档位变化（保守 74/63/37/26、均衡 70/58/42/30、
+        // 灵敏 66/54/46/34），而原来这里把 70/58/42/30 写死在函数里 ——
+        // 于是保守档与灵敏档下，仓位提示会和上面的信号标签互相矛盾：
+        //   保守档 61 分：标签「观望」，提示却说「仓位30-50%」
+        //   灵敏档 56 分：标签「买入」，提示却说「等待更明确的信号」
+        // signalType 就是按当时用的是哪个档位算出来的结论，直接用它分流，
+        // 两者在结构上就不可能不一致。totalScore 参数保留：它是这一段的
+        // 上下文（调用方仍在传），但判定不再依赖它。
+        if (signalType === 'strong_buy') {
             tips.push({
                 type: 'buy',
                 icon: '✅',
                 text: '综合评分较高，可考虑分批建仓，仓位控制在60-80%',
                 priority: 'high'
             });
-        } else if (totalScore >= 58) {
+        } else if (signalType === 'buy') {
             tips.push({
                 type: 'buy',
                 icon: '👍',
                 text: '整体偏多，可轻仓试探，逢回调加仓，仓位30-50%',
                 priority: 'medium'
             });
-        } else if (totalScore <= 30) {
+        } else if (signalType === 'strong_sell') {
             tips.push({
                 type: 'sell',
                 icon: '🛑',
                 text: '风险较高，建议减仓至20%以下，或离场观望',
                 priority: 'high'
             });
-        } else if (totalScore <= 42) {
+        } else if (signalType === 'sell') {
             tips.push({
                 type: 'sell',
                 icon: '👎',

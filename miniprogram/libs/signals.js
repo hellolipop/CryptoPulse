@@ -9,6 +9,24 @@
 
 const SignalGenerator = {
     /**
+     * 算法版本号 —— 因子分析的时间基准。
+     *
+     * 为什么要有它：预测记录里存着各因子读数与最终评分，但如果不知道每条记录
+     * 是在哪一版算法下产生的，改了因子之后新旧数据混在一张表里，准确率的涨跌
+     * 就说不清是「因子起作用了」还是「比较对象变了」。有了版本号，表格就能按
+     * 版本分组对比，确切回答这个问题。
+     *
+     * 约定：凡会影响信号结果的改动都要升这个号，并在 `ALGORITHM-CHANGELOG.md`
+     * 登记改了什么、改在哪个文件哪个函数、为什么、预期影响。具体包括：
+     *   - signals.js 里的阈值、评分与操作建议逻辑
+     *   - app.js 里的因子权重、缺失因子的剔除、费率闸门
+     *   - prediction.js 里的复盘口径（判定阈值、复盘窗口、判定规则）
+     *
+     * 只改界面样式、文案、网络超时等不影响信号结果的东西，不必升版本。
+     */
+    ALGORITHM_VERSION: '1.0.1',
+
+    /**
      * 生成综合交易信号
      * @param {Object} techData - 技术面数据
      * @param {Object} newsData - 消息面数据
@@ -206,28 +224,39 @@ const SignalGenerator = {
         }
         
         // 基于综合评分的仓位建议
-        if (totalScore >= 70) {
+        //
+        // 这里按 signalType 分流，而不是拿 totalScore 再比一次阈值。
+        //
+        // 原因：阈值随灵敏度档位变化（保守 74/63/37/26、均衡 70/58/42/30、
+        // 灵敏 66/54/46/34），而原来这里把 70/58/42/30 写死在函数里 ——
+        // 于是保守档与灵敏档下，仓位提示会和上面的信号标签互相矛盾：
+        //   保守档 61 分：标签「观望」，提示却说「仓位30-50%」
+        //   灵敏档 56 分：标签「买入」，提示却说「等待更明确的信号」
+        // signalType 就是按当时用的是哪个档位算出来的结论，直接用它分流，
+        // 两者在结构上就不可能不一致。totalScore 参数保留：它是这一段的
+        // 上下文（调用方仍在传），但判定不再依赖它。
+        if (signalType === 'strong_buy') {
             tips.push({
                 type: 'buy',
                 icon: '✅',
                 text: '综合评分较高，可考虑分批建仓，仓位控制在60-80%',
                 priority: 'high'
             });
-        } else if (totalScore >= 58) {
+        } else if (signalType === 'buy') {
             tips.push({
                 type: 'buy',
                 icon: '👍',
                 text: '整体偏多，可轻仓试探，逢回调加仓，仓位30-50%',
                 priority: 'medium'
             });
-        } else if (totalScore <= 30) {
+        } else if (signalType === 'strong_sell') {
             tips.push({
                 type: 'sell',
                 icon: '🛑',
                 text: '风险较高，建议减仓至20%以下，或离场观望',
                 priority: 'high'
             });
-        } else if (totalScore <= 42) {
+        } else if (signalType === 'sell') {
             tips.push({
                 type: 'sell',
                 icon: '👎',
