@@ -53,8 +53,13 @@ const DATA_DIR = path.join(__dirname, 'data');
 const STORE_FILE = process.env.STORE_FILE || path.join(DATA_DIR, 'paper-state.json');
 const BACKUP_FILE = STORE_FILE + '.bak';
 const TMP_FILE = STORE_FILE + '.tmp';
-// 预测记录的表格产物（供分析用）。维护逻辑见下方 writePredictionsCsv。
-const PREDICTIONS_CSV = path.join(DATA_DIR, 'predictions.csv');
+// 预测记录的表格产物（供分析用）。列定义与写盘逻辑见 predictions-csv.js。
+//
+// 注意这里是跟着 STORE_FILE 走，而不是固定放在 server/data —— 否则用临时 STORE_FILE
+// 跑测试时，测试数据会写进真实的分析表格。这个坑真的踩过：跑一次测试就把 450 行的
+// 表格覆盖成了 3 行测试样本，而表格是拿去分析「该调哪个因子」的，被覆盖之后分析
+// 出来的结论全是错的、还看不出来。
+const PREDICTIONS_CSV = path.join(path.dirname(STORE_FILE), 'predictions.csv');
 
 // 请求体上限。模拟盘状态里成交记录是有上限的（每账户 200 笔），
 // 正常不会超过几百 KB；给到 2MB 是留余量，同时挡住异常大的写入。
@@ -197,87 +202,17 @@ function writeStore(store) {
 // ---------- 预测记录表格 ----------
 //
 // 为什么另存一份 CSV：JSON 适合存，不适合分析。要回答「哪个因子需要调整」，
-// 得能直接在表格里筛选、按分组算准确率。
+// 得能直接在表格里筛选、按分组算准确率。每次整份重写而不是追加 —— 记录会被复盘
+// 就地更新（evalPrice/correct），追加会产生重复行，重复行会让准确率算错。
 //
-// 每次推送整份重写，而不是追加 —— 记录会被复盘就地更新（evalPrice/correct），
-// 追加会产生重复行，重复行会让准确率算错。
+// 具体的列定义与写盘逻辑在 predictions-csv.js 里，本文件只负责在写入后调用它：
+// 维护脚本（例如批量修正复盘结论）也要重写这张表，放在共用的模块里才不会出现
+// 两份列定义各自漂移的情况。
 
-const PREDICTION_COLUMNS = [
-    '用户名', '记录ID', '币种', '币种符号', '周期', '信号', '算法版本', '灵敏度档',
-    '预测时间', '预测价格', '复盘时间点', '复盘价格', '涨跌幅%', '是否正确',
-    '综合分', '技术分', '量能分', '消息分', '情绪分', '衍生品分',
-    // 技术面的子因子得分。技术面在总分里权重最高（40），拆开才能看出
-    // 到底是 RSI 判错了还是均线判错了 —— 这是「该调哪个因子」的直接线索。
-    '技术_rsi', '技术_macd', '技术_ma', '技术_momentum', '技术_bollinger',
-    '技术_vwap', '技术_stochRSI', '技术_kdj', '技术_obv',
-    '权重_技术', '权重_量能', '权重_消息', '权重_情绪', '权重_衍生品',
-    'RSI', 'MACD_DIF', 'MACD_DEA', 'MACD柱', 'KDJ_K', 'KDJ_D', 'KDJ_J',
-    'MA7', 'MA25', 'MA200', 'StochRSI_K', 'ROC', 'ROC死区', '量比', '资金费率分位',
-    '方向阈值', '观望阈值', '复盘窗口(小时)',
-];
+const { writePredictionsCsv } = require('./predictions-csv');
 
-/** CSV 单元格：一律引号包裹并转义内部引号（信号名、币种符号都可能含逗号） */
-function csvCell(value) {
-    if (value === null || value === undefined) return '';
-    return '"' + String(value).replace(/"/g, '""') + '"';
-}
-
-function predictionRow(username, rec) {
-    const f = rec.factors || {};
-    const b = f.breakdown || {};
-    const tb = f.technicalBreakdown || {};
-    const w = f.weights || {};
-    const ind = f.indicators || {};
-    const macd = ind.macd || {};
-    const kdj = ind.kdj || {};
-    const stoch = ind.stochRSI || {};
-    const c = rec.criteria || {};
-    const iso = ms => (typeof ms === 'number' && ms > 0) ? new Date(ms).toISOString() : '';
-    const hours = ms => (typeof ms === 'number' && ms > 0) ? (ms / 3600000).toFixed(2) : '';
-    return [
-        username, rec.id, rec.coinId, rec.coinSymbol, rec.timeframe,
-        rec.signalText || rec.signalType, rec.algoVersion, f.sensitivity,
-        iso(rec.predictedAt), rec.price, iso(rec.resolveAt), rec.evalPrice,
-        (rec.changePct === null || rec.changePct === undefined) ? '' : (rec.changePct * 100).toFixed(2),
-        // 三态：未复盘留空，不能写成 false —— 那会被当成「判错」参与统计。
-        // 分析时用「是否正确 非空」筛选出已复盘样本即可。
-        (rec.correct === null || rec.correct === undefined) ? '' : (rec.correct ? '正确' : '错误'),
-        rec.score, b.technical, b.volume, b.news, b.sentiment, b.derivatives,
-        tb.rsi, tb.macd, tb.ma, tb.momentum, tb.bollinger, tb.vwap, tb.stochRSI, tb.kdj, tb.obv,
-        w.technical, w.volume, w.news, w.sentiment, w.derivatives,
-        ind.rsi, macd.macd, macd.signal, macd.histogram,
-        kdj.k, kdj.d, kdj.j, ind.ma7, ind.ma25, ind.ma200,
-        stoch.k, ind.roc, ind.rocScale,
-        (f.volumeMetrics || {}).ratio, f.fundingPercentile,
-        c.directionThreshold, c.holdThreshold, hours(c.horizonMs),
-    ];
-}
-
-/**
- * 重写预测表格，返回写入的行数。
- *
- * 走「临时文件 + rename」：这个文件是拿来分析的，读到半截会得出错误结论。
- */
-function writePredictionsCsv(store) {
-    const rows = [];
-    Object.keys(store.predictions || {}).sort().forEach(username => {
-        (store.predictions[username] || []).forEach(rec => {
-            if (rec && rec.id) rows.push([username, rec]);
-        });
-    });
-    rows.sort((a, b) => (a[1].predictedAt || 0) - (b[1].predictedAt || 0));
-
-    const lines = [PREDICTION_COLUMNS.map(csvCell).join(',')];
-    rows.forEach(item => {
-        lines.push(predictionRow(item[0], item[1]).map(csvCell).join(','));
-    });
-
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    const tmp = PREDICTIONS_CSV + '.tmp';
-    // 开头加 BOM：否则 Excel 打开中文表头会乱码
-    fs.writeFileSync(tmp, '\ufeff' + lines.join('\r\n') + '\r\n');
-    fs.renameSync(tmp, PREDICTIONS_CSV);
-    return rows.length;
+function writePredictionsCsvLocal(store) {
+    return writePredictionsCsv(store, PREDICTIONS_CSV);
 }
 
 // ---------- HTTP 工具（与 proxy.js 保持一致的做法） ----------
@@ -444,7 +379,7 @@ const server = http.createServer(async (req, res) => {
         if (url.pathname.endsWith('.csv')) {
             if (req.method !== 'GET') { send(res, 405, { error: '只支持 GET' }, origin); return; }
             try {
-                writePredictionsCsv(store);
+                writePredictionsCsvLocal(store);
                 // 必须按 Buffer 读、按 Buffer 写。指定 'utf8' 时 Node 会吞掉开头的
                 // BOM，而 BOM 正是 Excel 正确识别中文表头所依赖的东西 ——
                 // 少了它，用户打开看到的是一堆乱码。
@@ -504,7 +439,7 @@ const server = http.createServer(async (req, res) => {
 
             try {
                 writeStore(store);
-                writePredictionsCsv(store);
+                writePredictionsCsvLocal(store);
             } catch (e) {
                 send(res, 500, { error: '保存失败：' + e.message }, origin);
                 return;
