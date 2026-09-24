@@ -156,19 +156,33 @@ const PredictionTracker = {
     /**
      * 用最新K线复盘所有到期的预测
      *
-     * @param {Array} candleData - K线数据 [{time, open, high, low, close, volume}]
+     * 必须同时限定标的与周期：本函数只拿到一份K线（当前正在显示的那份），
+     * 而记录里混着多个币种、多个周期。
+     *
+     * 这里曾经不做限定，于是把「当前显示的币」的K线套到了所有到期记录上：
+     * 显示 ETH 时，BTC 的记录被拿 ETH 的收盘价复盘；显示 BTC 时反过来。
+     * 危害不止于一条记录判错 —— correct 一旦写入就永久生效（此后每次都跳过它），
+     * 错误判定会落盘、同步到后端、写进 CSV，事后单看数字也认不出哪条是错的。
+     * 所以这里宁可不复盘：留到下次还有机会补上，用错标的的数据则永久写坏。
+     *
+     * @param {Array} candleData - 某一标的、某一周期的K线
+     * @param {string} coinId - 这份K线所属的币种
+     * @param {number} timeframe - 这份K线所属的周期
      * @returns {boolean} 是否有记录被更新
      */
-    evaluate(candleData) {
+    evaluate(candleData, coinId, timeframe) {
         if (!candleData || candleData.length < 2) return false;
+        if (!coinId) return false;
 
         const list = this.load();
         const now = Date.now();
         let updated = false;
 
         list.forEach(rec => {
-            if (rec.correct !== null) return;      // 已复盘
-            if (now < rec.resolveAt) return;       // 未到期
+            if (rec.correct !== null) return;        // 已复盘
+            if (rec.coinId !== coinId) return;       // 不是这份K线的标的
+            if (rec.timeframe !== timeframe) return; // 不是这份K线的周期
+            if (now < rec.resolveAt) return;         // 未到期
 
             const closePrice = this.findCloseAt(candleData, rec.resolveAt);
             if (closePrice === null) return;       // K线数据还没覆盖到该时间点
@@ -184,6 +198,114 @@ const PredictionTracker = {
     },
 
     /**
+     * 核对**已复盘**记录的结论是否需要修正
+     *
+     * 存在的理由：修好「用错标的复盘」之后，已经写坏的那批记录不会自己变对 ——
+     * 它们的结论是拿别的币的收盘价算出来的，而且已经落盘、同步到后端、写进 CSV。
+     * correct 一旦写入就永久生效，所以必须回过头去核对。
+     *
+     * 做法是**核对并就地修正**，不是「先清空、再重算」。这个区别很关键：
+     * 清空会让判不出来的记录（K线已超出可取范围）彻底丢掉结论，把本来对的一起毁掉；
+     * 核对只在「用该记录自己标的的K线、能算出一个与存值不符的结果」时才改写，
+     * 算不出来的（findCloseAt 返回 null）一律原样留着。
+     *
+     * 被修正的记录会留下 prevEvalPrice / prevCorrect / reviewFixedAt 供审计与回退。
+     *
+     * @param {Array} candleData - 某一标的、某一周期的K线
+     * @param {string} coinId - 这份K线所属的币种
+     * @param {number} timeframe - 这份K线所属的周期
+     * @returns {number} 被修正的记录条数
+     */
+    verifyResolved(candleData, coinId, timeframe) {
+        if (!candleData || candleData.length < 2) return 0;
+        if (!coinId) return 0;
+
+        // 容许的相对误差。同一交易对同一根K线的收盘价本应逐位一致，放宽一点点
+        // 是为了容忍现货/合约这类数据源的微小差异；而「串了标的」的偏差是几十倍
+        // 到上亿倍，任何合理阈值都分辨得出。
+        const tolerance = 0.001;
+
+        const list = this.load();
+        const now = Date.now();
+        let fixed = 0;
+        let checked = 0;
+
+        list.forEach(rec => {
+            if (rec.correct === null) return;        // 还没复盘，交给 evaluate
+            if (rec.coinId !== coinId) return;       // 不是这份K线的标的
+            if (rec.timeframe !== timeframe) return; // 不是这份K线的周期
+            if (!rec.evalPrice) return;              // 没有存值可比，不动
+
+            const closePrice = this.findCloseAt(candleData, rec.resolveAt);
+            if (closePrice === null) return;         // 核不了就不动它 —— 宁可存疑，不可毁掉对的
+
+            if (Math.abs(closePrice / rec.evalPrice - 1) <= tolerance) {
+                // 核对通过。留个记号，批量复核就不必再为它反复取K线 ——
+                // 核过一次就是定论：那根K线的收盘价不会再变。
+                if (!rec.reviewCheckedAt) { rec.reviewCheckedAt = now; checked++; }
+                return;
+            }
+
+            rec.prevEvalPrice = rec.evalPrice;
+            rec.prevCorrect = rec.correct;
+            rec.reviewFixedAt = now;
+            rec.reviewCheckedAt = now;               // 修正也是一次核对
+            rec.evalPrice = closePrice;
+            rec.changePct = rec.price ? (closePrice / rec.price - 1) : 0;
+            rec.correct = this.judgeCorrect(rec.signalType, rec.changePct);
+            fixed++;
+        });
+
+        if (fixed || checked) this.save(list);
+        return fixed;
+    },
+
+    /**
+     * 汇总「还需要复核」的工作量，按币种 + 周期分组。
+     *
+     * 供批量复盘的驱动方使用：按组去取各自的K线，这样即使某个币从没被打开过，
+     * 它的预测也能结算 —— 否则那些记录只会一直挂在待复盘里。
+     *
+     * @returns {Array} [{ coinId, timeframe, pending, verify, oldestResolveAt }]
+     *   - pending: 已到期但未复盘
+     *   - verify: 已复盘但还没核对过结论的（核对过的记为 reviewCheckedAt，不再重复取数）
+     *   - oldestResolveAt: 该组最老的复盘时点，取K线时要覆盖到它
+     */
+    getReviewGroups() {
+        const list = this.load();
+        const now = Date.now();
+        const groups = new Map();
+
+        list.forEach(rec => {
+            if (!rec || !rec.coinId) return;
+            const isPending = rec.correct === null && now >= rec.resolveAt;
+            // 已复盘的只在「还没核对过」时才算工作量。不加这个条件的话，每个周期
+            // 都会为同一批老记录重复取K线，永远跑不完，也白白浪费请求。
+            const needsVerify = rec.correct !== null && !rec.reviewCheckedAt;
+            if (!isPending && !needsVerify) return;
+
+            const key = rec.coinId + '|' + rec.timeframe;
+            let g = groups.get(key);
+            if (!g) {
+                g = {
+                    coinId: rec.coinId, timeframe: rec.timeframe,
+                    pending: 0, verify: 0, oldestResolveAt: rec.resolveAt,
+                };
+                groups.set(key, g);
+            }
+            if (isPending) g.pending++;
+            if (needsVerify) g.verify++;
+            if (typeof rec.resolveAt === 'number' && rec.resolveAt < g.oldestResolveAt) {
+                g.oldestResolveAt = rec.resolveAt;
+            }
+        });
+
+        // 待复盘的排前面：那是还在累积的新数据，核对历史是补旧账
+        return Array.from(groups.values())
+            .sort((a, b) => (b.pending - a.pending) || (b.verify - a.verify));
+    },
+
+    /**
      * 在K线中找到复盘时间点之后的第一个收盘价
      * @param {Array} candleData
      * @param {number} resolveAt - 毫秒时间戳
@@ -191,7 +313,8 @@ const PredictionTracker = {
      */
     findCloseAt(candleData, resolveAt) {
         const targetSec = Math.floor(resolveAt / 1000);
-        // 从后往前找，定位第一根 time >= targetSec 的K线
+        // 从前往后找，定位第一根 time >= targetSec 的K线 ——
+        // 也就是「复盘窗口到期后的第一根」，这正是要取的收盘价
         for (let i = 0; i < candleData.length; i++) {
             if (candleData[i].time >= targetSec) {
                 return candleData[i].close;

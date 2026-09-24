@@ -13,6 +13,12 @@ const CryptoPulseApp = {
         coinInfo: {},
         priceData: null,
         candleData: [],
+        // candleData 属于哪个币种、哪个周期。
+        //
+        // 复盘必须靠它核对标的，不能用 currentCoin / currentTimeframe：
+        // 那两个是「用户现在选中什么」，而 candleData 是「上一次取数拿回来什么」，
+        // 切币或切周期之后、新数据回来之前，两者并不一致。
+        candleMeta: null,
         indicators: {},
         newsList: [],
         signal: null,
@@ -1694,6 +1700,10 @@ const CryptoPulseApp = {
         this.updateFavoriteButton();
         this.saveUIState();
         this.startAutoRefresh();
+
+        // 首屏就绪后，再去结算「界面没在看的币种」的预测。不 await：它要发若干次
+        // 请求（每次最多 8 组），不该拖慢启动；内部有节流与并发保护，失败只记日志。
+        this.reviewPendingPredictions();
     },
 
     // 绑定事件
@@ -3164,6 +3174,10 @@ const CryptoPulseApp = {
         };
 
         this.state.candleData = built.candles;
+        // 这一路刻意不声明K线身份：CoinGecko 的粒度由时间跨度决定（30分钟/4小时/4天），
+        // 与应用的 1h/4h/24h 不是一回事，拿它复盘会算错复盘窗口。
+        // 这类币种本来也不产生综合信号、不记录预测，所以置空不影响任何记录。
+        this.state.candleMeta = null;
         this.state.candleSource = 'coingecko';
         this.state.cgCandleMeta = {
             granularity: built.granularity,
@@ -3517,6 +3531,7 @@ const CryptoPulseApp = {
         if (rec.klines) {
             // K线取不到：指标无从计算，图表也不能留着上一次的曲线
             this.state.candleData = [];
+            this.state.candleMeta = null;
             this.state.indicators = null;
             if (typeof ChartManager !== 'undefined') {
                 ChartManager.clearCandlestickData();
@@ -3739,11 +3754,16 @@ const CryptoPulseApp = {
             return;
         }
 
+        // 周期在取数前就定下来并一路用到底。中途切周期时，回来的这份数据属于旧
+        // 周期，不能再当成新周期的K线用：K线本身没错，错的是贴给它的周期标签，
+        // 而复盘窗口（几根K线）是按周期算的。
+        const tf = this.state.currentTimeframe;
+
         // try 只包住「取数 + 解析」。后面的指标计算与渲染若出错，
         // 那是程序问题，不该报成「K线取不到」。
         let candleData;
         try {
-            const { interval, limit } = this.getBinanceInterval(this.state.currentTimeframe);
+            const { interval, limit } = this.getBinanceInterval(tf);
             const response = await fetch(
                 `${this.binanceApiBase}/klines?symbol=${binanceSymbol}&interval=${interval}&limit=${limit}`,
                 // 带超时：这条是首屏关键路径，挂住会让加载遮罩一直不消失
@@ -3769,11 +3789,13 @@ const CryptoPulseApp = {
             return;
         }
 
-        // 切币后才回来的响应必须丢弃，否则会把新币种的K线覆盖成旧币种的。
-        // 之前这里没有这道判断，切到 CoinGecko 币种时会被在途的币安请求污染。
-        if (this.state.currentCoin !== coinId) return;
+        // 切币或切周期后才回来的响应必须丢弃，否则会把新币种/新周期的K线
+        // 覆盖成旧的。之前只挡了切币这一路，切周期是漏的。
+        if (this.state.currentCoin !== coinId || this.state.currentTimeframe !== tf) return;
 
         this.state.candleData = candleData;
+        // 记下这份K线的身份，复盘时用它核对标的与周期
+        this.state.candleMeta = { coinId, timeframe: tf };
         this.state.candleSource = 'binance';
         this.evaluatePredictions();
         this.calculateIndicators();
@@ -3798,20 +3820,22 @@ const CryptoPulseApp = {
      */
     async loadStockCandleData(coinId, binanceSymbol) {
         try {
-            const { interval, limit } = this.getBinanceInterval(this.state.currentTimeframe);
+            const tf = this.state.currentTimeframe;
+            const { interval, limit } = this.getBinanceInterval(tf);
             const candleData = await Stocks.klines(binanceSymbol, interval, limit);
 
-            // 切币后才回来的响应必须丢弃
-            if (this.state.currentCoin !== coinId) return;
+            // 切币或切周期后才回来的响应必须丢弃（同 loadCandleData）
+            if (this.state.currentCoin !== coinId || this.state.currentTimeframe !== tf) return;
 
             if (!candleData.length) throw new Error('合约K线为空');
 
             this.state.candleData = candleData;
+            this.state.candleMeta = { coinId, timeframe: tf };
             this.state.candleSource = 'stock';
             // 窗口降级规则在 technical.js 里，这里按同一规则算出实际窗口再生成文案，
             // 保证「界面显示的窗口」和「评分实际用的窗口」永远是同一个
             this.state.stockDepthNotice = Stocks.depthWarning(
-                this.state.currentTimeframe, candleData.length,
+                tf, candleData.length,
                 TechnicalAnalysis.pickLongMAWindow(candleData.length)
             );
             this.renderStockNotice();
@@ -6142,11 +6166,159 @@ const CryptoPulseApp = {
      * 用最新K线复盘到期的预测
      */
     evaluatePredictions() {
+        // 用 candleMeta（这份K线自己的身份）而不是 currentCoin/currentTimeframe
+        // （用户当前选中什么）。两者在切币/切周期之后、新数据回来之前并不一致，
+        // 用后者会把旧的K线当成新标的的数据交给复盘。
+        const meta = this.state.candleMeta;
+        if (!meta) return;
         if (!this.state.candleData || this.state.candleData.length === 0) return;
-        const updated = PredictionTracker.evaluate(this.state.candleData);
+
+        const updated = PredictionTracker.evaluate(
+            this.state.candleData, meta.coinId, meta.timeframe
+        );
         if (updated) {
             console.log('[预测] 有预测完成复盘');
         }
+
+        // 顺手核对这个币已复盘的结论。在修复「用错标的复盘」之前写下的结论可能是
+        // 错的，而 correct 一旦写入就永久生效，不会自己变对。首轮会改写那批记录，
+        // 之后每次只是一遍本地比对（不产生写盘、不发请求），代价可以忽略。
+        const fixed = PredictionTracker.verifyResolved(
+            this.state.candleData, meta.coinId, meta.timeframe
+        );
+        if (fixed) {
+            console.log(`[预测] 核对出 ${fixed} 条被用错标的复盘的记录，已按本标的K线修正`);
+        }
+    },
+
+    /**
+     * 为复盘取某个「币种 + 周期」的K线。
+     *
+     * 与界面取数的区别：这里不写任何 state、不触发渲染 —— 它服务的是「结算别的币种
+     * 的预测」，那份数据不该覆盖用户正在看的图。
+     *
+     * @param {string} coinId
+     * @param {number} timeframe
+     * @param {number} oldestResolveAt - 该组最老的复盘时点，K线必须覆盖到它
+     * @returns {Array|null} K线；取不到返回 null
+     */
+    async fetchCandlesForReview(coinId, timeframe, oldestResolveAt) {
+        // CoinGecko 的粒度由时间跨度决定（30分钟/4小时/4天），与应用周期不是一回事，
+        // 拿它复盘会算错复盘窗口，所以这一类直接不参与
+        if (this.getDataSource(coinId) === 'coingecko') return null;
+
+        const binanceSymbol = this.getBinanceSymbol(coinId);
+        if (!binanceSymbol) return null;
+
+        const { interval } = this.getBinanceInterval(timeframe);
+
+        // 根数按要覆盖的时间跨度算：K线必须能覆盖到最老的那条记录，否则它永远结不了。
+        // 下限沿用界面的 200 根，上限 1000 是币安单次请求的上限。
+        const barMs = this.getTimeframeConfig(timeframe).seconds * 1000;
+        const spanBars = Math.ceil((Date.now() - oldestResolveAt) / barMs) + 10;
+        const limit = Math.min(1000, Math.max(200, spanBars));
+
+        try {
+            if (this.isStock(coinId)) {
+                const rows = await Stocks.klines(binanceSymbol, interval, limit);
+                return rows && rows.length ? rows : null;
+            }
+            const resp = await fetch(
+                `${this.binanceApiBase}/klines?symbol=${binanceSymbol}&interval=${interval}&limit=${limit}`,
+                { signal: AbortSignal.timeout(15000) }
+            );
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+
+            const data = await resp.json();
+            if (!Array.isArray(data) || !data.length) return null;
+            return data.map(item => ({
+                time: Math.floor(item[0] / 1000),
+                open: parseFloat(item[1]),
+                high: parseFloat(item[2]),
+                low: parseFloat(item[3]),
+                close: parseFloat(item[4]),
+                volume: parseFloat(item[5]),
+            }));
+        } catch (e) {
+            console.warn(`[预测复核] ${coinId}/${timeframe}h 取K线失败:`, e.message);
+            return null;
+        }
+    },
+
+    /** 用一份K线把某一组结算干净：先补未复盘的，再核对已复盘的 */
+    reviewOneGroup(coinId, timeframe, candles) {
+        if (!candles || !candles.length) return { evaluated: false, fixed: 0 };
+        return {
+            evaluated: PredictionTracker.evaluate(candles, coinId, timeframe),
+            fixed: PredictionTracker.verifyResolved(candles, coinId, timeframe),
+        };
+    },
+
+    /**
+     * 批量复核：把界面没在看的那几个币种的预测也结算掉。
+     *
+     * 为什么需要它：复盘原先只在「切到那个币」时才发生，于是别的币种的预测一直挂在
+     * 待复盘里 —— 实测待复盘的 30 条里，属于当前显示那个币的是 0 条。这里按
+     * 「币种 + 周期」分组各取一次K线来结算。
+     *
+     * 每轮只处理若干组，避免一次打出十几个请求；剩下的靠 10 分钟节流慢慢追平。
+     * 尽力而为：任何一组失败都不影响其他组，也不影响界面。
+     *
+     * @param {boolean} force - 忽略节流，立即跑一轮
+     * @returns {Object} { fixed, evaluatedGroups, groupsLeft }
+     */
+    async reviewPendingPredictions(force) {
+        if (typeof PredictionTracker === 'undefined') return { fixed: 0, evaluatedGroups: 0, groupsLeft: 0 };
+        if (this._reviewRunning) return { fixed: 0, evaluatedGroups: 0, groupsLeft: 0 };
+
+        const now = Date.now();
+        const throttleMs = 10 * 60 * 1000;
+        if (!force && this._lastReviewAt && now - this._lastReviewAt < throttleMs) {
+            return { fixed: 0, evaluatedGroups: 0, groupsLeft: 0 };
+        }
+
+        const all = PredictionTracker.getReviewGroups();
+        if (!all.length) return { fixed: 0, evaluatedGroups: 0, groupsLeft: 0 };
+
+        // 当前显示的那一份已经有K线了，顺手用它，不必再发一次请求
+        const meta = this.state.candleMeta;
+        const isOnScreen = g => meta && g.coinId === meta.coinId && g.timeframe === meta.timeframe;
+        const onScreen = all.filter(isOnScreen);
+        const others = all.filter(g => !isOnScreen(g));
+
+        const perRun = 8;
+        const batch = others.slice(0, perRun);
+
+        this._reviewRunning = true;
+        let fixed = 0;
+        let evaluatedGroups = 0;
+        try {
+            for (const g of onScreen) {
+                if (!meta) break;
+                const r = this.reviewOneGroup(meta.coinId, meta.timeframe, this.state.candleData);
+                fixed += r.fixed;
+                if (r.evaluated) evaluatedGroups++;
+            }
+
+            for (const g of batch) {
+                const candles = await this.fetchCandlesForReview(g.coinId, g.timeframe, g.oldestResolveAt);
+                if (!candles) continue;
+                const r = this.reviewOneGroup(g.coinId, g.timeframe, candles);
+                fixed += r.fixed;
+                if (r.evaluated) evaluatedGroups++;
+            }
+        } catch (e) {
+            console.warn('[预测复核] 本轮中断:', e.message);
+        } finally {
+            this._reviewRunning = false;
+            this._lastReviewAt = Date.now();
+        }
+
+        const groupsLeft = Math.max(0, others.length - batch.length);
+        if (evaluatedGroups || fixed) {
+            console.log(`[预测复核] 本轮结算 ${evaluatedGroups} 组、修正 ${fixed} 条，剩余 ${groupsLeft} 组`);
+        }
+        return { fixed, evaluatedGroups, groupsLeft };
     },
 
     calculateSentimentScore() {
@@ -6982,9 +7154,11 @@ const CryptoPulseApp = {
             this.loadWatchlistQuotes();
         }, 30000);
 
-        // 每5分钟刷新一次新闻
+        // 每5分钟刷新一次新闻，顺带跑一轮批量复核。
+        // 复核自带 10 分钟节流，所以这里触发得比它密也无妨（多出来的是空调用）。
         setInterval(() => {
             this.loadNews(this.state.currentCoin);
+            this.reviewPendingPredictions();
         }, 300000);
     }
 };
