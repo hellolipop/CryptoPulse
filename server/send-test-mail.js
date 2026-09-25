@@ -37,6 +37,9 @@ const USAGE = [
     '  node server/send-test-mail.js                发一封样例提醒（结构与真实提醒一致）',
     '  node server/send-test-mail.js --check        只检查配置是否完整，不发信',
     '  node server/send-test-mail.js --to a@b.com   本次改发到别的地址（不写入配置文件）',
+    '',
+    '真实提醒的收件地址由每个账号在网页「交易 → 邮件提醒」里自己填写并验证，',
+    '不在这份配置里（配置里那个 to 只是本工具的默认收件人）。',
 ].join('\n');
 
 /**
@@ -68,6 +71,16 @@ function sampleMarker() {
         algoVersion: '1.0.1',
         gate: 'off',
         source: 'paper-marker',
+        // 未收盘那根K线上的待确认信号。真实提醒里它可能没有（那就是 null），
+        // 样例固定带上一条，好让人看清「待确认」在邮件里长什么样、措辞是什么。
+        pendingSignal: {
+            side: 'sell',
+            label: '卖出',
+            strong: false,
+            price: 2701.4,
+            time: bar + 4 * 3600,
+            score: 41,
+        },
     };
 }
 
@@ -89,7 +102,11 @@ async function main() {
     }
 
     const cfg = state.config;
-    console.log('已配置：作为 ' + cfg.user + ' 发送到 ' + cfg.to);
+    // 收件地址只在自检里由这里决定。真实提醒的收件地址不在这份配置里 ——
+    // 那是每个账号在网页「交易 → 邮件提醒」里填并验证过的那个（见 store.js）。
+    const toArg = argOf('to');
+    const to = toArg || cfg.to || '';
+    console.log('已配置：作为 ' + cfg.user + ' 发送到 ' + (to || '（未指定）'));
     console.log('服务器 ' + cfg.host + ':' + cfg.port + '（' + (cfg.secure ? '隐式 TLS' : 'STARTTLS') + '）');
     if (state.hint) console.log('提示：' + state.hint);
 
@@ -98,10 +115,16 @@ async function main() {
         return;
     }
 
-    // --to 只在本次发送里改收件地址，不动配置文件
-    const to = argOf('to');
+    if (!to) {
+        console.log('\n✗ 没有收件地址：配置里没写 to，命令行也没给 --to。');
+        console.log('  自检用：node server/send-test-mail.js --to you@example.com');
+        console.log('  注意真实提醒的收件地址不在这里配 —— 那是每个账号在网页');
+        console.log('  「交易 → 邮件提醒」里自己填写并验证的那个地址。');
+        process.exit(1);
+    }
+
     const signal = sampleMarker();
-    console.log('\n使用内置样例（一条K线买卖点提醒）' + (to ? '，本次改发到 ' + to : ''));
+    console.log('\n使用内置样例（一条K线买卖点提醒）' + (toArg ? '，本次改发到 ' + toArg : ''));
 
     console.log('正在发送…');
     const result = await notify.sendSignalMail(signal, { force: true, to });

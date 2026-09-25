@@ -542,6 +542,8 @@ const ChartSnapshot = {
      * @param {Array} [o.markers] - 与界面同源的标注（generateSignalMarkers 的输出）
      * @param {number} [o.focusTime] - 本次提醒所在K线的时间，会画一条竖线标出来
      * @param {string} [o.title] [o.note] - 标题与副标题
+     * @param {string} [o.note2] - 第二行副标题（用来说明图上的「待确认」箭头）。
+     *        有它时标题区自动加高，不会压到K线上。
      * @param {number} [o.bars] - 只画最近多少根。界面是 fitContent 全画，但 200 根挤在
      *        一张图里箭头会糊成一片，看不出位置；这里默认收窄到 90 根。
      * @returns {{base64:string,width:number,height:number}|null}
@@ -553,7 +555,9 @@ const ChartSnapshot = {
 
         const W = opt.width || 960;
         const H = opt.height || 430;
-        const titleH = 48;
+        const note2 = opt.note2 || null;
+        // 两行副标题要占两行的高度，否则第二行会盖在K线上
+        const titleH = note2 ? 66 : 48;
         const padL = 14;
         const padR = 80;      // 右侧价格轴
         const padT = 12;
@@ -729,7 +733,7 @@ const ChartSnapshot = {
             ctx.lineTo(x, y1);
             ctx.stroke();
             ctx.restore();
-            const label = '本次买卖点';
+            const label = '本次买卖点（已确认）';
             ctx.font = '600 10px ' + this.FONT;
             const tw = ctx.measureText(label).width + 12;
             let bx = Math.min(Math.max(x - tw / 2, x0), x1 - tw);
@@ -775,6 +779,14 @@ const ChartSnapshot = {
             ctx.font = '12px ' + this.FONT;
             ctx.fillStyle = '#6b7280';
             ctx.fillText(opt.note, x0, 35);
+        }
+
+        // 第二行专门说「待确认」那个浅色箭头。用琥珀色而不是灰色：
+        // 这句是防误读的警告（它不是成交依据），不该和普通说明长得一样。
+        if (note2) {
+            ctx.font = '600 12px ' + this.FONT;
+            ctx.fillStyle = '#b45309';
+            ctx.fillText(note2, x0, 53);
         }
 
         ctx.strokeStyle = '#e8ecf3';

@@ -969,6 +969,48 @@
                 </div>
                 <p id="paperSyncHint" class="text-[10px] text-text-tertiary mt-1.5 leading-relaxed">--</p>
             </section>
+
+            <!-- 邮件提醒（推送邮箱按账号隔离，必须本人验证） -->
+            <section class="mt-2 bg-white px-4 py-3">
+                <div class="flex items-center justify-between mb-1.5">
+                    <h3 class="text-sm font-semibold">邮件提醒</h3>
+                    <span id="mailTag" class="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-200 text-text-secondary">未登录</span>
+                </div>
+                <p class="text-[11px] text-text-tertiary leading-relaxed mb-2.5">
+                    「已开启交易」的币种出现新的K线买卖点时，把提醒发到<b>你自己的</b>邮箱。
+                    地址按账号隔离，而且<b>必须本人验证</b>：填完点「发送验证码」，到邮箱里拿到 6 位码填回来，才算生效。
+                    这样别人既看不到你的地址，也没法借这台服务的发信账号往陌生邮箱发信。
+                </p>
+                <div class="flex items-center gap-2">
+                    <label class="text-[11px] text-text-secondary flex-shrink-0">推送邮箱</label>
+                    <input id="mailEmailInput" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com"
+                        class="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-gray-50 border border-border-light text-xs placeholder-gray-400 focus:outline-none focus:border-golden/60 transition-colors disabled:opacity-50">
+                    <button id="mailSendCodeBtn"
+                        class="flex-shrink-0 px-3 py-1.5 rounded-lg bg-golden text-white text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed">
+                        发送验证码
+                    </button>
+                </div>
+                <div id="mailCodeRow" class="hidden items-center gap-2 mt-2">
+                    <label class="text-[11px] text-text-secondary flex-shrink-0">验证码</label>
+                    <input id="mailCodeInput" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="6 位数字"
+                        class="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-gray-50 border border-border-light text-xs tracking-widest placeholder-gray-400 placeholder:tracking-normal focus:outline-none focus:border-golden/60 transition-colors disabled:opacity-50">
+                    <button id="mailConfirmBtn"
+                        class="flex-shrink-0 px-3 py-1.5 rounded-lg bg-golden text-white text-xs font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed">
+                        确认
+                    </button>
+                </div>
+                <div id="mailUnbindRow" class="hidden items-center justify-between mt-2">
+                    <span id="mailBoundText" class="text-[11px] text-text-tertiary truncate"></span>
+                    <button id="mailUnbindBtn"
+                        class="flex-shrink-0 ml-2 text-[11px] text-text-tertiary hover:text-fall-red transition-colors disabled:opacity-50">解除绑定</button>
+                </div>
+                <p id="mailHint" class="text-[10px] text-text-tertiary mt-1.5 leading-relaxed">--</p>
+                <ul class="text-[10px] text-text-tertiary leading-relaxed mt-1.5 space-y-0.5">
+                    <li>· 验证码 10 分钟内有效；一个账号一小时内最多获取 5 次。</li>
+                    <li>· <b>没验证就不会发信</b>，也不会退回用别人的地址 —— 所以未设置时收不到任何提醒。</li>
+                    <li>· 提醒只在有标签页打开时发出（信号是浏览器算的），详见 README。</li>
+                </ul>
+            </section>
             </div><!-- /tradePanePaper -->
 
             <!-- ===== 模式二：币安测试网 ===== -->
@@ -1389,8 +1431,8 @@
     <script src="js/binance.js?v=58"></script>
     <script src="js/coingecko.js?v=58"></script>
     <script src="js/stocks.js?v=58"></script>
-    <script src="js/chart.js?v=60"></script>
-    <script src="js/app.js?v=74"></script>
-    <script src="js/auth.js?v=4"></script>
+    <script src="js/chart.js?v=61"></script>
+    <script src="js/app.js?v=77"></script>
+    <script src="js/auth.js?v=5"></script>
 </body>
 </html>

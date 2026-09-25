@@ -482,13 +482,36 @@ async function main() {
     const incomplete = notify.loadConfig();
     eq(incomplete.configured, false, '字段不全时报告未配置');
     contains(incomplete.reason, 'user', '缺字段提示里点名 user');
-    contains(incomplete.reason, 'to', '缺字段提示里点名 to');
+    // to 不再是必填：收件地址改成每个账号在网页上自己填并验证（见 store.js），
+    // 配置文件里那个 to 只剩「自检工具的默认收件人」这一个用途。
+    eq(incomplete.reason.indexOf('to') === -1, true, 'to 不再是必填字段');
+    fs.writeFileSync(process.env.MAIL_CONFIG_FILE, json({ provider: 'qq', user: 'a@qq.com', pass: 'x' }));
+    eq(notify.loadConfig().configured, true, '没有 to 也能算配置完整（收件地址不在配置里）');
 
     fs.writeFileSync(process.env.MAIL_CONFIG_FILE, json({ provider: 'nosuch', user: 'a', pass: 'b', to: 'c' }));
     contains(notify.loadConfig().reason, '未知的 provider', '未知 provider 有明确提示');
 
-    // ---------------- 6. 真实发送链路（对本地假 SMTP） ----------------
-    section('6. 发送链路（本地假 SMTP 服务器）');
+    // ---------------- 6. 收件地址校验 ----------------
+    section('6. 收件地址校验（它来自用户输入，会被拼进邮件头）');
+
+    ['you@example.com', 'a.b+tag@sub.example.co', 'x@y.cn'].forEach(addr => {
+        eq(notify.isEmailAddress(addr), true, '合法地址被接受：' + addr);
+    });
+    eq(notify.isEmailAddress('  you@example.com  '), true, '首尾空白会被去掉后再判断（粘贴常带空格）');
+
+    // 最关键的一条：含换行的「地址」就是一次邮件头注入，必须挡在外面。
+    // 注意首尾空白会被 trim 掉（见下面那条断言），所以这里要验的是**夹在中间**的换行。
+    ['a@b.com\r\nBcc: victim@x.com', 'a@b.com\nX-Evil: 1', 'no-at-sign', 'a@b', '@b.com',
+        'a@.com', 'a b@c.com', '', null, undefined, 'a@b\tc.com'].forEach(addr => {
+        eq(notify.isEmailAddress(addr), false, '非法地址被拒绝：' + JSON.stringify(addr));
+    });
+    // trim 之后再判断：粘贴来的地址常带首尾空白，去了就好，
+    // 而这也保证了「校验通过的那个值一定不含空白」——注入要靠夹在中间的换行，那种会被拒
+    eq(notify.isEmailAddress('a@b.com\n'), true, '仅有尾随换行会被去掉，不算注入');
+    eq(notify.isEmailAddress('a'.repeat(250) + '@b.com'), false, '超长地址被拒绝');
+
+    // ---------------- 7. 真实发送链路（对本地假 SMTP） ----------------
+    section('7. 发送链路（本地假 SMTP 服务器）');
 
     const certResult = makeCert();
     const creds = certResult.ok ? certResult : null;
@@ -623,8 +646,8 @@ async function main() {
         await noStartTls.close();
     }
 
-    // ---------------- 7. 与接口层的衔接 ----------------
-    section('7. sendSignalMail 的对外行为');
+    // ---------------- 8. 与接口层的衔接 ----------------
+    section('8. sendSignalMail 的对外行为');
 
     // 没配邮箱时：不报错，只标记跳过（没配邮箱是正常状态）
     fs.rmSync(process.env.MAIL_CONFIG_FILE, { force: true });
@@ -639,8 +662,27 @@ async function main() {
     eq(holdRes.skipped, true, '观望信号被跳过');
     contains(holdRes.error, '买入与卖出', '给出的理由说明范围');
 
+    // 配置齐了但「这个账号还没验证推送邮箱」—— 这是本次改动后的常态，
+    // 必须跳过并说清去哪儿补，而不是发到某个陌生的默认地址
+    fs.writeFileSync(process.env.MAIL_CONFIG_FILE, json({ provider: 'qq', user: 'a@qq.com', pass: 'b' }));
+    const noTo = await notify.sendSignalMail(sampleSignal(), { dryRun: true });
+    eq(noTo.ok, false, '没有收件地址时不发送');
+    eq(noTo.skipped, true, '没有收件地址属于「跳过」而不是「失败」');
+    contains(noTo.error, '交易 → 邮件提醒', '提示里说清去哪儿设置');
+    contains(noTo.error, '--to', '命令行自检也给出做法');
+
+    // 每个账号自己的地址由浏览器作为 opts.to 传进来（不走配置文件）
+    const ownTo = await notify.sendSignalMail(sampleSignal(), { dryRun: true, to: 'mine@qq.com' });
+    eq(ownTo.ok, true, '带上本账号的地址可以正常发送');
+    eq(ownTo.to, 'mine@qq.com', '用的就是传进来的那个地址');
+
+    // 传进来的地址也要过校验：它是用户输入，不是可信常量
+    const badTo = await notify.sendSignalMail(sampleSignal(), { dryRun: true, to: 'a@b.com\r\nBcc: x@y.com' });
+    eq(badTo.ok, false, '含换行的地址被拒绝（否则就是邮件头注入）');
+    eq(badTo.skipped, true, '同样按「跳过」处理，日志里不落一条伪造的收件人');
+
     // 卖出类也在范围内（用户明确要求买卖都要有）
-    fs.writeFileSync(process.env.MAIL_CONFIG_FILE, json({ provider: 'qq', user: 'a', pass: 'b', to: 'c' }));
+    fs.writeFileSync(process.env.MAIL_CONFIG_FILE, json({ provider: 'qq', user: 'a', pass: 'b', to: 'me@qq.com' }));
     const sellDry = await notify.sendSignalMail(sampleSignal({ signalType: 'sell', signalText: '卖出' }), { dryRun: true });
     eq(sellDry.ok, true, '卖出信号在提醒范围内');
     contains(sellDry.subject, '卖出', '卖出的主题正确');
@@ -696,8 +738,8 @@ async function main() {
         skip('sendSignalMail 端到端', '无法生成测试用自签证书：' + certResult.error);
     }
 
-    // ---------------- 8. 内嵌K线图 ----------------
-    section('8. 内嵌K线图（邮件里的买卖点位置）');
+    // ---------------- 9. 内嵌K线图 ----------------
+    section('9. 内嵌K线图（邮件里的买卖点位置）');
 
     // 用一段覆盖各种字节值的二进制当图。这里刻意不追求「是张真 PNG」——
     // 邮件这一层只负责原样搬运字节，不需要会解码图片；真正的图长什么样，
@@ -856,6 +898,107 @@ async function main() {
         await imgMock.close();
     } else {
         skip('带图邮件端到端', '无法生成测试用自签证书：' + certResult.error);
+    }
+
+    // ---------------- 10. 「已确认」才发，「待确认」要说清楚 ----------------
+    section('10. 已确认 / 待确认');
+
+    // 提醒只由已收盘K线上的买卖点触发，所以主题与正文都要点明这一点
+    const conf = notify.composeSignalMail(markerSample());
+    contains(conf.subject, '已确认', '主题点明这是已确认的买卖点');
+    contains(conf.text, '【信号状态】', '正文有一段专讲信号状态');
+    eq(conf.text.indexOf('已确认') >= 0, true, '正文标明已确认');
+    contains(conf.text, '不会再变', '并说清「已确认」意味着什么');
+    contains(conf.text, '只发已确认的信号', '明确本提醒只发已确认的信号');
+    contains(conf.html, '信号状态', 'HTML 也有信号状态这一段');
+    contains(conf.html, '已确认', 'HTML 标明已确认');
+
+    // 没有待确认信号时也要写出来：不写，收信人就无法确认「图上只有已确认的点」
+    contains(conf.text, '待确认', '没待确认信号时也保留「待确认」这一项');
+    contains(conf.text, '无。当前没有未收盘的信号', '并如实写明没有');
+    contains(conf.html, '当前没有未收盘的信号', 'HTML 同样写明没有');
+
+    // 有待确认信号时：标出档位、价格、时间，并说清它不算数
+    const pendSig = { side: 'sell', label: '卖出', strong: false, price: 2701.4, time: 1790279985, score: 41 };
+    const withPend = notify.composeSignalMail(markerSample({ pendingSignal: pendSig }));
+    contains(withPend.text, '卖出 · 2701.40', '正文里待确认信号带上档位与价格');
+    contains(withPend.text, '还没收盘', '说明它还没收盘');
+    contains(withPend.text, '随时可能翻转或消失', '说明它随时会变');
+    contains(withPend.text, '不作为成交依据', '明确它不是成交依据');
+    contains(withPend.text, '浅色箭头', '把图上那个箭头和它对应起来');
+    contains(withPend.html, '不作为成交依据', 'HTML 同样说清');
+    contains(withPend.html, '浅色箭头', 'HTML 里也对应到图上的浅色箭头');
+
+    // 带图时，配图说明里也要点出浅色箭头 —— 图注与正文不能各说各话
+    const pendChart = notify.composeSignalMail(markerSample({
+        pendingSignal: pendSig, chart: { base64: imgB64 },
+    }));
+    contains(pendChart.html, '浅色箭头', '带图时配图说明里也点出浅色箭头');
+
+    // 待确认信号绝不能喧宾夺主：主题只写已确认的那个
+    contains(withPend.subject, '强烈买入', '主题仍是已确认的那个信号');
+    eq(withPend.subject.indexOf('卖出'), -1, '主题不出现待确认信号的档位');
+
+    // 老式的实时信号没有「待确认」这个概念，别凭空长出一段
+    eq(notify.composeSignalMail(sampleSignal()).text.indexOf('【信号状态】'), -1,
+        '实时信号的正文不出现【信号状态】段');
+    eq(notify.composeSignalMail(sampleSignal()).html.indexOf('信号状态'), -1,
+        '实时信号的 HTML 也不出现信号状态');
+
+    // ---------------- 11. 验证码邮件（推送邮箱的验证） ----------------
+    section('11. 验证码邮件');
+
+    // 参数与配置问题先测：这部分不需要证书
+    fs.rmSync(process.env.MAIL_CONFIG_FILE, { force: true });
+    const vNoCfg = await notify.sendVerificationMail({ to: 'mine@qq.com', code: '123456' });
+    eq(vNoCfg.ok, false, '没配发信账号时不谎报成功');
+    contains(String(vNoCfg.error), '发信邮箱', '说明是发信配置的问题');
+
+    fs.writeFileSync(process.env.MAIL_CONFIG_FILE, json({ provider: 'qq', user: 'a@qq.com', pass: 'x' }));
+    const vBadTo = await notify.sendVerificationMail({ to: 'not-an-email', code: '123456' });
+    eq(vBadTo.ok, false, '非法收件地址被拒绝');
+    const vBadCode = await notify.sendVerificationMail({ to: 'a@b.com', code: 'abc' });
+    eq(vBadCode.ok, false, '非 6 位数字的码被拒绝');
+
+    if (creds) {
+        const codeMock = await startMockSmtp({ creds, implicitTls: true });
+        fs.writeFileSync(process.env.MAIL_CONFIG_FILE, json({
+            host: 'localhost', port: codeMock.port, secure: true, ca: creds.caPem,
+            user: 'sender@qq.com', pass: 'auth-code', to: 'me@qq.com',
+        }));
+
+        const vOk = await notify.sendVerificationMail({
+            to: 'owner@qq.com', code: '042815', account: 'alice', ttlMinutes: 10,
+        });
+        eq(vOk.ok, true, '验证码邮件发送成功');
+        eq(vOk.to, 'owner@qq.com', '发到了用户当场填的那个地址');
+
+        const recv = codeMock.state.received[codeMock.state.received.length - 1];
+        const wire = recv ? recv.data : '';
+        contains(recv.commands.join(' | '), 'RCPT TO:<owner@qq.com>', 'RCPT TO 用的就是这个地址');
+        contains(decodeRfc2047(headerOf(wire, 'Subject')), '042815', '主题里带上验证码（一眼能抄）');
+        const body = decodePart(wire, 'text/plain');
+        contains(body, '042815', '纯文本里有验证码');
+        contains(body, '10 分钟', '说明有效期');
+        contains(body, 'alice', '带上账号，便于确认是自己申请的');
+        contains(decodePart(wire, 'text/html'), '042815', 'HTML 版同样有验证码');
+        contains(wire, 'multipart/alternative', '验证码邮件不带图，仍是 alternative 结构');
+        // 地址可能填错，所以这封信里不该出现任何行情或持仓内容
+        eq(/买入|卖出|持仓|评分|价位/.test(body), false, '验证码邮件里不带任何行情或持仓内容');
+        await codeMock.close();
+
+        // 发信失败必须如实报错：否则用户会一直等一封永远不会到的邮件
+        const deadCode = await startMockSmtp({ creds, implicitTls: true, rejectAuth: true });
+        fs.writeFileSync(process.env.MAIL_CONFIG_FILE, json({
+            host: 'localhost', port: deadCode.port, secure: true, ca: creds.caPem,
+            user: 'sender@qq.com', pass: 'wrong',
+        }));
+        const vFail = await notify.sendVerificationMail({ to: 'owner@qq.com', code: '042815' });
+        eq(vFail.ok, false, 'SMTP 认证失败时如实报错');
+        contains(String(vFail.error), '535', '错误里带服务端返回码，便于定位');
+        await deadCode.close();
+    } else {
+        skip('验证码邮件端到端', '无法生成测试用自签证书：' + certResult.error);
     }
 
     // ---------------- 收尾 ----------------

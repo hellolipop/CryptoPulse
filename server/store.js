@@ -65,7 +65,7 @@ const PREDICTIONS_CSV = path.join(path.dirname(STORE_FILE), 'predictions.csv');
 // 正常不会超过几百 KB；给到 2MB 是留余量，同时挡住异常大的写入。
 const MAX_BODY = 2 * 1024 * 1024;
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 // 会话有效期。到期后客户端会收到 401，界面提示重新登录。
 const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
@@ -73,7 +73,7 @@ const SESSION_TTL_MS = 30 * 24 * 3600 * 1000;
 // ---------- 存储 ----------
 
 function emptyStore() {
-    return { schemaVersion: SCHEMA_VERSION, users: {}, accounts: {}, sessions: {}, predictions: {} };
+    return { schemaVersion: SCHEMA_VERSION, users: {}, accounts: {}, sessions: {}, predictions: {}, mail: {} };
 }
 
 /** 读整份存储。文件不存在/损坏都回落到空存储，不让服务因此起不来。 */
@@ -91,6 +91,10 @@ function readStore() {
                 // v3 及更早的文件没有 predictions 字段。同样必须补上：
                 // 否则读一次再写回，预测记录就被整段丢掉了。
                 if (!parsed.predictions || typeof parsed.predictions !== 'object') parsed.predictions = {};
+                // v4 及更早的文件没有 mail 字段（推送邮箱）。同样必须补上：
+                // 否则读一次再写回，已验证的推送地址就被整段丢掉了 ——
+                // 表现是「明明验证过，重启后又要重新验证一遍」。
+                if (!parsed.mail || typeof parsed.mail !== 'object') parsed.mail = {};
                 // 读到旧版本就地升级，下次写入即变为新格式
                 if (parsed.schemaVersion !== SCHEMA_VERSION) parsed.schemaVersion = SCHEMA_VERSION;
                 if (file === BACKUP_FILE) {
@@ -230,7 +234,7 @@ function corsHeaders(origin) {
     if (!origin || (!LAN_MODE && !isLocalOrigin(origin))) return {};
     return {
         'Access-Control-Allow-Origin': origin,
-        'Access-Control-Allow-Methods': 'GET,PUT,POST,OPTIONS',
+        'Access-Control-Allow-Methods': 'GET,PUT,POST,DELETE',
         // Authorization 不是 CORS 安全列表头，带上它会触发预检；
         // 预检响应里不列出它，浏览器就会直接拦掉后续的真实请求。
         'Access-Control-Allow-Headers': 'Content-Type, Authorization',
@@ -248,11 +252,23 @@ function maskAddress(addr) {
     return keep + '*'.repeat(Math.max(1, name.length - keep.length)) + s.slice(at);
 }
 
-/** 最近 5 条发送记录，供 /api/notify 的 GET 排查「为什么没收到」 */
-function readRecentNotices() {
+/**
+ * 最近 5 条发送记录，供 /api/notify 的 GET 排查「为什么没收到」
+ *
+ * 只回本账号自己的那几条。这份日志是全服务共用的，而每条记录里都带着收件地址 ——
+ * 不过滤的话，A 账号能看到 B 账号的地址（哪怕是脱敏后的，「9548***@qq.com」
+ * 也已经足够确认是谁）。每条记录带了 account 字段，早期没有该字段的记录
+ * 按「收件地址等于本人地址」归属，这样升级前后的记录都能正确归类。
+ */
+function readRecentNotices(username, ownEmail) {
     try {
         const logs = JSON.parse(fs.readFileSync(notify.logFile(), 'utf8'));
-        return (Array.isArray(logs) ? logs : []).slice(-5).map(e => ({
+        const mine = (Array.isArray(logs) ? logs : []).filter(e => {
+            if (!e) return false;
+            if (e.account) return e.account === username;
+            return !!ownEmail && e.to === ownEmail;
+        });
+        return mine.slice(-5).map(e => ({
             at: new Date(e.at).toISOString(),
             ok: !!e.ok,
             signal: e.coinId ? `${e.coinId}/${e.timeframe}/${e.signalType}` : null,
@@ -265,6 +281,99 @@ function readRecentNotices() {
     } catch (e) {
         return [];
     }
+}
+
+// ---------- 推送邮箱（按账号隔离，必须本人验证） ----------
+//
+// 为什么不用 mail-config.json 里那个 to：那是「这台机器往哪个邮箱发信」，
+// 所有账号共用一份。一旦有第二个账号，就等于把第一个人的邮箱给了第二个人；
+// 而且谁注册一个账号，都能拿这台机器的 SMTP 往那个地址发信。
+// 所以收件地址改成**每个账号一份**，而且**必须本人验证**。
+//
+// 为什么要验证码，而不是「填了就算」：不做验证的话，任何人都能把推送地址填成
+// 别人的邮箱，用你的 SMTP 去给陌生人发信 —— 受害的是对方的收件箱和你的发信信誉。
+// 它同时解决了第二个问题：地址填错一个字母就永远收不到，而这件事本身毫无提示，
+// 验证码正好证明「这个地址真的能收到」。
+//
+// 地址与验证状态存在 store.mail[username]，与 accounts 分开：accounts 是浏览器
+// 权威的模拟盘镜像、会被整份覆盖，邮箱设置不能被一次同步冲掉。
+const MAIL_CODE_TTL_MS = 10 * 60 * 1000;   // 验证码有效期
+const MAIL_CODE_COOLDOWN_MS = 60 * 1000;   // 同一账号两次发码的最小间隔
+const MAIL_CODE_MAX_PER_HOUR = 5;          // 单账号每小时发码上限
+const MAIL_CODE_MAX_PER_HOUR_ALL = 20;     // 全服务每小时上限（注册是开放的，兜一层底）
+const MAIL_CODE_MAX_ATTEMPTS = 5;          // 一个验证码最多试错几次
+
+/**
+ * 正在发码的账号。
+ *
+ * 节流是读文件判断的，而发信要等 SMTP 往返 —— 两次请求几乎同时到达时，
+ * 两边都会读到「还没发过」然后各发一封。浏览器那边按钮会禁用，但那只是界面约束，
+ * 挡不住直接打接口。这里用一个进程内的集合把窗口补上。
+ */
+const mailCodeInFlight = new Set();
+
+function mailRecord(store, username) {
+    if (!store.mail || typeof store.mail !== 'object') store.mail = {};
+    const rec = store.mail[username];
+    return (rec && typeof rec === 'object') ? rec : null;
+}
+
+/**
+ * 验证码的存法：不存码本身，存 sha256(用户名|码)。
+ *
+ * 加用户名是为了让同一个码在不同账号下算出不同摘要 —— 码只有 6 位数字（100 万种），
+ * 单纯 sha256(码) 是能被穷举的，撞上就等于拿到了别人的验证码。
+ */
+function codeHashOf(username, code) {
+    return crypto.createHash('sha256').update(`${username}|${code}`).digest('hex');
+}
+
+/** 某个账号在当前这一小时窗口里已发出的验证码数量 */
+function codesSentInWindow(rec, now) {
+    const p = rec && rec.pending;
+    if (!p || typeof p.sentAt !== 'number') return { count: 0, windowStart: now };
+    const inWindow = typeof p.windowStart === 'number' && now - p.windowStart < 3600 * 1000;
+    return {
+        count: inWindow ? (p.sentCount || 0) : 0,
+        windowStart: inWindow ? p.windowStart : now,
+    };
+}
+
+/** 全服务一小时内的发码总量（跨账号兜底） */
+function codesSentTotal(store, now) {
+    let total = 0;
+    Object.keys(store.mail || {}).forEach(u => {
+        const rec = store.mail[u];
+        if (!rec || typeof rec !== 'object') return;
+        total += codesSentInWindow(rec, now).count;
+    });
+    return total;
+}
+
+/**
+ * 给界面看的本账号状态。
+ *
+ * 地址回显**完整值**而不是脱敏值：那是用户自己填的，脱敏只会让他看不出填错在哪。
+ * 日志那一份仍然脱敏（见 readRecentNotices），那里可能出现在别人的请求里。
+ */
+function mailStateOf(store, username) {
+    const rec = mailRecord(store, username);
+    if (!rec) return { email: null, verified: false, verifiedAt: null, pending: null };
+
+    const now = Date.now();
+    const p = rec.pending;
+    const pending = (p && p.email) ? {
+        email: p.email,
+        expiresInSec: Math.max(0, Math.round((p.expiresAt - now) / 1000)),
+        resendAfterSec: Math.max(0, Math.ceil((MAIL_CODE_COOLDOWN_MS - (now - (p.sentAt || 0))) / 1000)),
+    } : null;
+
+    return {
+        email: rec.email || null,
+        verified: !!rec.verifiedAt,
+        verifiedAt: rec.verifiedAt || null,
+        pending,
+    };
 }
 
 function send(res, status, body, origin) {
@@ -577,17 +686,26 @@ const server = http.createServer(async (req, res) => {
         if (!username) { send(res, 401, { error: '请先登录' }, origin); return; }
 
         if (req.method === 'GET') {
-            // 用于排查「为什么没收到」：配置状态、节流参数、最近的发送记录
+            // 用于排查「为什么没收到」：发信能力、本账号的推送邮箱、节流参数、最近的发送记录
             const state = notify.loadConfig();
+            const mine = mailStateOf(store, username);
             send(res, 200, {
                 configured: state.configured,
                 reason: state.reason || null,
                 hint: state.hint || null,
-                to: state.configured ? maskAddress(state.config.to) : null,
+                // 发信服务器（host / 账号 / 授权码）是这台机器一份；
+                // 收件地址是每个账号一份，且必须本人验证过才生效
+                smtp: state.configured
+                    ? { host: state.config.host, port: state.config.port, user: state.config.user }
+                    : null,
+                email: mine.email,
+                emailVerified: mine.verified,
+                emailVerifiedAt: mine.verifiedAt,
+                pendingEmail: mine.pending ? mine.pending.email : null,
                 cooldownHours: notify.COOLDOWN_HOURS,
                 maxPerHour: notify.MAX_PER_HOUR,
                 configFile: notify.configFile(),
-                recent: readRecentNotices(),
+                recent: readRecentNotices(username, mine.email),
             }, origin);
             return;
         }
@@ -609,7 +727,27 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
-        const result = await notify.sendSignalMail(payload.signal, { force: !!payload.force });
+        // 收件地址只用**本账号已验证**的那个，刻意不回落配置文件里的 to：
+        // 那不是「本人的地址」，回落等于把一个人的邮箱变成所有账号共用的收件箱，
+        // 正是这次要改掉的东西（谁注册一个账号都能往那个地址发信）。
+        const mine = mailRecord(store, username);
+        const to = (mine && mine.verifiedAt && mine.email) ? mine.email : '';
+        if (!to) {
+            // 跳过而不是失败：这是「还没配好」的正常状态，浏览器不该反复重试。
+            // 被挡下的这条买卖点也不会补发，所以提示里要说清去哪儿补。
+            send(res, 200, {
+                ok: false,
+                skipped: true,
+                error: '本账号还没设置并验证推送邮箱，请在「交易 → 邮件提醒」里填写并验证',
+            }, origin);
+            return;
+        }
+
+        const result = await notify.sendSignalMail(payload.signal, {
+            force: !!payload.force,
+            to,
+            account: username,
+        });
 
         // 被跳过（没配邮箱、这个买卖点已经提醒过、一小时内发得太密）不算错误：
         // 这是正常状态，返回 200 让浏览器别再重试。只有真正发信失败才给 502。
@@ -626,6 +764,238 @@ const server = http.createServer(async (req, res) => {
         return;
     }
 
+    // ---- 推送邮箱设置（按账号隔离，必须本人验证）----
+    //
+    // 「这台机器的 SMTP 该往哪个邮箱发信」这个问题的答案，不能由服务端猜、
+    // 也不能由别人代填 —— 只能由账号本人填一个能收到信的地址，并证明那是他自己的。
+    // 所以是两个动作：先请服务端往该地址发一个 6 位码，再把码填回来。
+    if (url.pathname === '/api/notify/email') {
+        const store = readStore();
+        const username = requireUser(req, store);
+        if (!username) { send(res, 401, { error: '请先登录' }, origin); return; }
+
+        if (req.method === 'GET') {
+            const cfgState = notify.loadConfig();
+            const mine = mailStateOf(store, username);
+            send(res, 200, Object.assign({
+                ok: true,
+                // 发信服务器没配好时验证码根本发不出去。先说清楚，
+                // 免得用户在界面上反复点「发送验证码」，却不知道为什么收不到。
+                smtpReady: cfgState.configured,
+                smtpReason: cfgState.configured ? null : cfgState.reason,
+                ttlMinutes: Math.round(MAIL_CODE_TTL_MS / 60000),
+                maxPerHour: MAIL_CODE_MAX_PER_HOUR,
+            }, mine), origin);
+            return;
+        }
+
+        if (req.method === 'DELETE') {
+            const rec = mailRecord(store, username);
+            if (rec) {
+                delete rec.email;
+                delete rec.verifiedAt;
+                delete rec.pending;
+                if (!Object.keys(rec).length) delete store.mail[username];
+                try {
+                    writeStore(store);
+                } catch (e) {
+                    send(res, 500, { error: '保存失败：' + e.message }, origin);
+                    return;
+                }
+            }
+            send(res, 200, { ok: true, email: null, verified: false, pending: null }, origin);
+            console.log(`[提醒] ${username} 已解除推送邮箱绑定`);
+            return;
+        }
+
+        if (req.method !== 'POST') {
+            send(res, 405, { error: '只支持 GET / POST / DELETE' }, origin);
+            return;
+        }
+
+        let payload;
+        try {
+            payload = JSON.parse(await readBody(req));
+        } catch (e) {
+            send(res, 400, { error: '请求体不是合法 JSON' }, origin);
+            return;
+        }
+
+        const email = String((payload && payload.email) || '').trim();
+        // 格式必须在这里挡住：这个地址会直接拼进 To 头与 RCPT TO，
+        // 一个带换行的「邮箱」就是一次邮件头注入。
+        if (!notify.isEmailAddress(email)) {
+            send(res, 400, { error: '邮箱格式不对，请填写完整地址（例如 you@example.com）' }, origin);
+            return;
+        }
+
+        const cfgState = notify.loadConfig();
+        if (!cfgState.configured) {
+            send(res, 503, {
+                error: '服务端还没配置发信邮箱，验证码发不出去：' + cfgState.reason,
+                hint: cfgState.hint || null,
+            }, origin);
+            return;
+        }
+
+        const now = Date.now();
+        const rec = mailRecord(store, username) || (store.mail[username] = {});
+        const p = rec.pending;
+
+        if (p && typeof p.sentAt === 'number' && now - p.sentAt < MAIL_CODE_COOLDOWN_MS) {
+            const wait = Math.ceil((MAIL_CODE_COOLDOWN_MS - (now - p.sentAt)) / 1000);
+            send(res, 429, { error: `验证码刚发过，请 ${wait} 秒后再试`, retryAfterSec: wait }, origin);
+            return;
+        }
+        const win = codesSentInWindow(rec, now);
+        if (win.count >= MAIL_CODE_MAX_PER_HOUR) {
+            send(res, 429, { error: `一个账号一小时内最多获取 ${MAIL_CODE_MAX_PER_HOUR} 次验证码，请稍后再试` }, origin);
+            return;
+        }
+        if (codesSentTotal(store, now) >= MAIL_CODE_MAX_PER_HOUR_ALL) {
+            send(res, 429, { error: `本服务一小时内发出的验证码已达上限（${MAIL_CODE_MAX_PER_HOUR_ALL} 封），请稍后再试` }, origin);
+            return;
+        }
+        if (mailCodeInFlight.has(username)) {
+            send(res, 429, { error: '上一封验证码还在发送中，请稍候再试' }, origin);
+            return;
+        }
+
+        const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+        mailCodeInFlight.add(username);
+        let sent;
+        try {
+            sent = await notify.sendVerificationMail({
+                to: email,
+                code,
+                account: username,
+                ttlMinutes: Math.round(MAIL_CODE_TTL_MS / 60000),
+            });
+        } catch (e) {
+            sent = { ok: false, error: e.message };
+        } finally {
+            mailCodeInFlight.delete(username);
+        }
+
+        if (!sent.ok) {
+            // 发信失败就什么都不记。若是先落了盘再发现发不出去，用户既等不到码，
+            // 还会被 60 秒冷却挡在门外 —— 而真正的原因（SMTP 不通）根本不在他视野里。
+            console.error('[提醒] 验证码发送失败:', sent.error);
+            send(res, 502, { error: '验证码发送失败：' + sent.error }, origin);
+            return;
+        }
+
+        rec.pending = {
+            email,
+            codeHash: codeHashOf(username, code),
+            expiresAt: now + MAIL_CODE_TTL_MS,
+            attempts: 0,
+            sentAt: now,
+            sentCount: win.count + 1,
+            windowStart: win.windowStart,
+        };
+        try {
+            writeStore(store);
+        } catch (e) {
+            // 码已经发出去了，但服务端没记住它 —— 用户手上是一个没人认的码。
+            // 不谎报成功，让他重新获取。
+            delete rec.pending;
+            send(res, 500, { error: '验证码已发出，但服务端未能保存，请重新获取' }, origin);
+            return;
+        }
+
+        send(res, 200, {
+            ok: true,
+            email,
+            expiresInSec: Math.round(MAIL_CODE_TTL_MS / 1000),
+            resendAfterSec: Math.round(MAIL_CODE_COOLDOWN_MS / 1000),
+            messageId: sent.messageId || null,
+        }, origin);
+        console.log(`[提醒] 已向 ${maskAddress(email)} 发出验证码（账号 ${username}）`);
+        return;
+    }
+
+    if (url.pathname === '/api/notify/email/confirm') {
+        if (req.method !== 'POST') { send(res, 405, { error: '只支持 POST' }, origin); return; }
+
+        const store = readStore();
+        const username = requireUser(req, store);
+        if (!username) { send(res, 401, { error: '请先登录' }, origin); return; }
+
+        let payload;
+        try {
+            payload = JSON.parse(await readBody(req));
+        } catch (e) {
+            send(res, 400, { error: '请求体不是合法 JSON' }, origin);
+            return;
+        }
+
+        const code = String((payload && payload.code) || '').trim();
+        if (!/^\d{6}$/.test(code)) { send(res, 400, { error: '验证码是 6 位数字' }, origin); return; }
+
+        const rec = mailRecord(store, username);
+        const p = rec && rec.pending;
+        if (!p) {
+            send(res, 400, { error: '没有待验证的邮箱：请先填写地址并获取验证码' }, origin);
+            return;
+        }
+
+        // 码一旦作废就必须落盘：只从内存里删掉的话，重启后它又"活"了，
+        // 用户明明看到「已作废」，却还能拿它验证成功。
+        const invalidate = () => {
+            delete rec.pending;
+            try {
+                writeStore(store);
+            } catch (e) {
+                console.warn('[提醒] 作废验证码未能落盘:', e.message);
+            }
+        };
+
+        if (Date.now() > p.expiresAt) {
+            invalidate();
+            send(res, 400, { error: '验证码已过期，请重新获取' }, origin);
+            return;
+        }
+        if ((p.attempts || 0) >= MAIL_CODE_MAX_ATTEMPTS) {
+            invalidate();
+            send(res, 429, { error: '验证码试错次数过多，请重新获取' }, origin);
+            return;
+        }
+        if (!sameSecret(codeHashOf(username, code), p.codeHash)) {
+            p.attempts = (p.attempts || 0) + 1;
+            const left = MAIL_CODE_MAX_ATTEMPTS - p.attempts;
+            if (left <= 0) {
+                invalidate();
+                send(res, 429, { error: '验证码错误次数过多，已作废，请重新获取' }, origin);
+                return;
+            }
+            try {
+                writeStore(store);
+            } catch (e) {
+                // 次数没记住不该让这次请求失败：失败的是「少记一次」，不影响正确性方向
+                console.warn('[提醒] 验证码试错次数未能落盘:', e.message);
+            }
+            send(res, 400, { error: `验证码不对，还可以试 ${left} 次` }, origin);
+            return;
+        }
+
+        const email = p.email;
+        const verifiedAt = new Date().toISOString();
+        rec.email = email;
+        rec.verifiedAt = verifiedAt;
+        delete rec.pending;
+        try {
+            writeStore(store);
+        } catch (e) {
+            send(res, 500, { error: '保存失败：' + e.message }, origin);
+            return;
+        }
+
+        send(res, 200, { ok: true, email, verified: true, verifiedAt }, origin);
+        console.log(`[提醒] ${username} 的推送邮箱已验证：${maskAddress(email)}`);
+        return;
+    }
+
     send(res, 404, { error: '未知路径：' + url.pathname }, origin);
 });
 
@@ -635,6 +1005,7 @@ server.listen(PORT, HOST, () => {
     console.log(`  监听    http://${HOST}:${PORT}`);
     console.log(`  数据文件 ${STORE_FILE}`);
     console.log(`  接口    GET/PUT /api/paper/state?account=<id>`);
+    console.log('          推送邮箱：GET / POST / DELETE /api/notify/email、POST /api/notify/email/confirm');
     console.log(`  安全    ${LAN_MODE ? '局域网模式：已绑定外部网卡，登录后按用户隔离；请勿直接暴露公网' : '仅监听本机'}；公网部署前仍需 HTTPS、限流与更强验证`);
     console.log('─'.repeat(58));
 });

@@ -15,6 +15,19 @@
     let session = null;
     function setMessage(text) { message.textContent = text || ''; }
     function setVisible(visible) { gate.hidden = !visible; }
+
+    /**
+     * 让「交易 → 邮件提醒」那一块按当前账号重新渲染。
+     *
+     * 每次都用 typeof 判断再调：app.js 与 auth.js 是两个文件，缓存版本不完全一致时
+     * 那个方法可能不存在（例如用户手里是旧的 app.js）。那种情况下不该让整个登录流程挂掉。
+     */
+    function renderMailNotify() {
+        if (typeof CryptoPulseApp !== 'undefined' && CryptoPulseApp
+            && typeof CryptoPulseApp.renderMailNotify === 'function') {
+            try { CryptoPulseApp.renderMailNotify(); } catch (e) { /* 这块渲染失败不影响登录本身 */ }
+        }
+    }
     function saveSession(next) {
         session = next;
         localStorage.setItem(SESSION_KEY, JSON.stringify(next));
@@ -70,6 +83,9 @@
             await PredictionTracker.initSync();
             if (typeof CryptoPulseApp !== 'undefined') CryptoPulseApp.renderPredictTab();
         }
+        // 推送邮箱是跟着账号走的：登录态一变就得重新拉一次本账号的那份，
+        // 否则界面上会留着上一个账号的地址与验证状态。
+        renderMailNotify();
     }
     async function enter() {
         const name = username.value.trim();
@@ -89,6 +105,7 @@
                 await PredictionTracker.initSync();
                 if (typeof CryptoPulseApp !== 'undefined') CryptoPulseApp.renderPredictTab();
             }
+            renderMailNotify();
         } catch (error) { setMessage(error instanceof Error ? error.message : '登录失败'); }
         finally { submit.disabled = false; }
     }

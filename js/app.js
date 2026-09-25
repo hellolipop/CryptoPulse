@@ -1702,6 +1702,8 @@ const CryptoPulseApp = {
         step('initPaper', () => this.initPaper());
         // 币安测试网交易：绑定交互（密钥不落地，刷新即失效）
         step('initBinance', () => this.initBinance());
+        // 推送邮箱设置：地址按账号隔离，等登录后再由 auth.js 重渲染一次
+        step('initMailNotify', () => this.initMailNotify());
 
         // 后台联网拉取币种目录与自选行情
         this.loadCoinCatalog();
@@ -5639,7 +5641,9 @@ const CryptoPulseApp = {
         const candles = await this.fetchCandlesFor(t.coinId, t.timeframe);
         if (!candles || candles.length < 31) return;
 
-        // 与 syncPaperAccount 同一步：只取已收盘的K线
+        // 与 syncPaperAccount 同一步：只取已收盘的K线。
+        // 「已确认」的定义就是这一步 —— 正在走形的那根不参与，它的信号随时会翻，
+        // 拿它发提醒就会出现「邮件刚发出去、那个点就没了」。
         const closed = candles.slice(0, candles.length - 1);
         // commit:false —— 这是给别的币种算指标，不能覆盖界面上那份
         const indicators = this.calculateIndicators(closed, { commit: false });
@@ -5657,6 +5661,9 @@ const CryptoPulseApp = {
         //
         // 代价是页面关着的那段时间里出现的买卖点不会补发，这与「必须开着页面才会提醒」
         // 是同一件事的两面，已在 README 里写明。
+        //
+        // 能走到这里，说明这个买卖点所在的K线**已经收盘**，也就是「已确认」——
+        // 它不会再变，可以当成交依据，也才值得发一封邮件。
         if (marker.index !== closed.length - 1) return;
 
         // 同一个买卖点只提醒一次。服务端也会按 markerTime 去重，这里先挡一道，
@@ -5674,8 +5681,16 @@ const CryptoPulseApp = {
             ? (marker.side === 'buy' ? 'strong_buy' : 'strong_sell')
             : marker.side;
 
+        // 含「正在走形那根」的指标与标注：配图与「待确认」判断共用这一份
+        const view = this.markerChartView(candles);
+
         // 配图：这个买卖点所属币种、周期的K线，标注与界面同源
-        const chart = this.buildMarkerChart(t, candles, marker);
+        const chart = this.buildMarkerChart(t, candles, marker, view);
+
+        // 未收盘那根K线上的信号。它不单独发提醒（上面已经挡掉了），但要随这封邮件
+        // 一起标成「待确认」并说清它不算数 —— 收信人会在图里看到一个浅色箭头，
+        // 不说明白就会被当成又一个刚出现的买卖点。
+        const pending = this.pendingSignalOf(view, candles);
 
         const result = await this.postNotice({
             coinId: t.coinId,
@@ -5697,6 +5712,9 @@ const CryptoPulseApp = {
             algoVersion: (typeof SignalGenerator !== 'undefined' && SignalGenerator.ALGORITHM_VERSION) || null,
             gate: this.getPaperGate().key,
             source: 'paper-marker',
+            // 未收盘那根K线上的信号（可能没有，那就是 null）。服务端会把它标成
+            // 「待确认」并写明不作为成交依据，与正文「本提醒只发已确认的信号」配对。
+            pendingSignal: pending,
             // 没有配图时给 null，服务端按纯文字发
             chart: chart ? { base64: chart.base64, width: chart.width, height: chart.height } : null,
         });
@@ -5707,6 +5725,55 @@ const CryptoPulseApp = {
     },
 
     /**
+     * 含「正在走形那根K线」的指标、信号序列与标注
+     *
+     * 配图和「待确认」判断都要这一份 —— 界面上的画法也是这样（含未收盘那根），
+     * 所以一次算好传下去，同一批K线不重复算两遍。
+     *
+     * @param {Array} candles - 完整K线（含最后一根未收盘的）
+     * @returns {{ind:Object, series:Array, markers:Array}}
+     */
+    markerChartView(candles) {
+        // commit:false —— 这是给别的币种算的，不能覆盖界面上那份
+        const ind = this.calculateIndicators(candles, { commit: false });
+        return {
+            ind,
+            series: this.buildSignalSeries(candles, ind),
+            markers: this.generateSignalMarkers(candles, ind),
+        };
+    },
+
+    /**
+     * 正在走形那根K线上的「待确认」信号
+     *
+     * 这就是图上那个浅色箭头。它随价格摆动，随时可能翻转甚至消失，所以：
+     * 既不作为成交依据，也不单独发提醒（提醒只发已收盘K线上已确认的买卖点）。
+     * 但它会出现在邮件的配图里，必须把身份说清楚，不能让它冒充一个买卖点。
+     *
+     * 用 buildSignalSeries 而不是图上的标注来取：标注里的文案已经带了「待确认·」
+     * 前缀，拿它当信号名会得到「待确认·买入」这种套娃的文案。
+     *
+     * @returns {{side:string,label:string,strong:boolean,price:number,time:number,score:number}|null}
+     */
+    pendingSignalOf(view, candles) {
+        if (!view || !view.ind || !candles || !candles.length) return null;
+
+        const series = view.series || this.buildSignalSeries(candles, view.ind);
+        const last = series[series.length - 1];
+        // 最近一个点不在最后一根K线上，说明正在走的这根上什么也没发生
+        if (!last || last.index !== candles.length - 1) return null;
+
+        return {
+            side: last.side,
+            label: last.label,
+            strong: !!last.strong,
+            price: last.price,
+            time: last.time,
+            score: last.score,
+        };
+    },
+
+    /**
      * 为这次提醒画一张K线图，附在邮件里
      *
      * 用的是**这个买卖点所属**币种与周期的数据，不是界面上正在显示的那份 ——
@@ -5714,12 +5781,18 @@ const CryptoPulseApp = {
      *
      * 均线与标注都取自「含正在走形那根」的完整序列，与界面上的画法一致，
      * 所以邮件里的箭头与页面上看到的是同一个点、同一个样子。
+     * 也正因为含了未收盘那根，图里可能出现浅色箭头（待确认），图注必须交代清楚：
+     * 深色箭头是本次已确认的买卖点，浅色那个还没成立、不是成交依据。
      *
      * 画不出来就返回 null（画布不可用、数据太少、图太大）。提醒本身不该因为配图失败而丢。
      *
+     * @param {Object} t - 扫描目标 {coinId, timeframe}
+     * @param {Array} candles - 完整K线（含未收盘那根）
+     * @param {Object} marker - 本次已确认的买卖点
+     * @param {Object} [view] - markerChartView 的结果，省去重复计算
      * @returns {{base64:string,width:number,height:number}|null}
      */
-    buildMarkerChart(t, candles, marker) {
+    buildMarkerChart(t, candles, marker, view) {
         if (typeof ChartSnapshot === 'undefined') return null;
         try {
             const info = this.getCoinInfo(t.coinId);
@@ -5727,18 +5800,22 @@ const CryptoPulseApp = {
             const symbol = (info && info.symbol) || binanceSymbol.replace(/USDT$/, '') || t.coinId;
             const tfLabel = this.getTimeframeConfig(t.timeframe).label;
 
-            const ind = this.calculateIndicators(candles, { commit: false });
-            const markers = this.generateSignalMarkers(candles, ind);
+            const v = view || this.markerChartView(candles);
+            const ind = v.ind;
+            const pending = this.pendingSignalOf(v, candles);
 
             const shot = ChartSnapshot.render({
                 candles,
                 ma7: ind.ma7,
                 ma25: ind.ma25,
                 ma99: ind.ma99,
-                markers,
+                markers: v.markers,
                 focusTime: marker.time,
                 title: `${symbol} · ${tfLabel}`,
-                note: `本次买卖点：${marker.label} · ${this.formatCandleTime(marker.time)} 收盘（北京时间）`,
+                note: `本次买卖点（已确认）：${marker.label} · ${this.formatCandleTime(marker.time)} 收盘（北京时间）`,
+                note2: pending
+                    ? `浅色箭头＝待确认信号（${pending.label}，K线尚未收盘，不作为成交依据）`
+                    : null,
             });
             if (!shot) return null;
 
@@ -5849,6 +5926,313 @@ const CryptoPulseApp = {
             return null;
         }
     },
+
+    // ==================== 推送邮箱设置（按账号隔离，必须本人验证） ====================
+    //
+    // 「提醒发到哪个邮箱」这个问题的答案不能由服务端猜、也不能由别人代填：
+    // 每个账号填自己的地址，并且要证明那个地址真的能收到信 —— 做法是让服务端
+    // 往该地址寄一个 6 位码，用户把码填回来。三件事都由这一小块串起来：
+    // 填地址 → 发码 → 确认。后端实现见 server/store.js 的 /api/notify/email。
+    //
+    // 为什么不做「没填就用配置文件里那个 to」的兜底：那等于把某一个人的邮箱变成
+    // 所有账号共用的收件箱 —— 谁注册一个账号都能往那个地址发信。宁可什么都不发。
+
+    /**
+     * 绑定「邮件提醒」区块的交互。等一帧后自己拉一次状态。
+     */
+    initMailNotify() {
+        // 倒计时句柄与「正在确认」标记：都要在重新登录/重渲染时能被覆盖，所以放实例上
+        this._mailCountdown = null;
+        this._mailConfirming = false;
+        this._mailInputDirty = false;
+        this._mailState = null;
+        this._mailToken = null;
+
+        const on = (id, ev, fn) => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener(ev, fn);
+        };
+
+        on('mailSendCodeBtn', 'click', () => this.mailRequestCode());
+        on('mailConfirmBtn', 'click', () => this.mailConfirmCode());
+        on('mailUnbindBtn', 'click', () => this.mailUnbind());
+
+        const emailInput = document.getElementById('mailEmailInput');
+        if (emailInput) {
+            // 用户自己动过这个框就不再回写它：否则每次重渲染都会把他正在改的地址冲掉
+            emailInput.addEventListener('input', () => { this._mailInputDirty = true; });
+            emailInput.addEventListener('keydown', e => {
+                if (e.key === 'Enter') { e.preventDefault(); this.mailRequestCode(); }
+            });
+        }
+
+        const codeInput = document.getElementById('mailCodeInput');
+        if (codeInput) {
+            // 只留数字并截到 6 位：验证码输入框里出现字母一定是误输入
+            codeInput.addEventListener('input', () => {
+                codeInput.value = codeInput.value.replace(/\D/g, '').slice(0, 6);
+            });
+            codeInput.addEventListener('keydown', e => {
+                if (e.key === 'Enter') { e.preventDefault(); this.mailConfirmCode(); }
+            });
+        }
+
+        this.renderMailNotify();
+    },
+
+    /**
+     * 调后端「推送邮箱」接口。
+     *
+     * 复用「记录到后端」那套地址与登录令牌，所以后端地址只需要配一次；
+     * 失败一律返回 {ok:false, error}，不抛 —— 调用方全都要把原因显示给用户。
+     */
+    async mailApi(method, path, body) {
+        if (typeof PredictionTracker === 'undefined') return { ok: false, error: '未登录' };
+        const cfg = PredictionTracker.getSyncConfig();
+        const session = PredictionTracker.getAuthSession();
+        if (!cfg || !cfg.url) return { ok: false, error: '还没配置后端地址：先在上面的「记录到后端」里填好并保存' };
+        if (!session || !session.token) return { ok: false, error: '请先登录' };
+
+        try {
+            const resp = await fetch(`${cfg.url}/api/notify/email${path}`, {
+                method,
+                headers: Object.assign(
+                    { Authorization: `Bearer ${session.token}` },
+                    body ? { 'Content-Type': 'application/json' } : {}
+                ),
+                body: body ? JSON.stringify(body) : undefined,
+                // 发验证码要等 SMTP 往返，比普通读写慢
+                signal: AbortSignal.timeout(30000),
+            });
+            let data = null;
+            try { data = await resp.json(); } catch (e) { /* 可能没有响应体 */ }
+            if (!data || typeof data !== 'object') {
+                return { ok: false, error: `后端返回异常（HTTP ${resp.status}）` };
+            }
+            return data;
+        } catch (e) {
+            return { ok: false, error: '连不上后端：' + e.message };
+        }
+    },
+
+    /** 点「发送验证码」：把地址交给服务端，由服务端寄码 */
+    async mailRequestCode() {
+        const input = document.getElementById('mailEmailInput');
+        const email = input ? input.value.trim() : '';
+        if (!email) { this.mailSetHint('请先填写要接收提醒的邮箱地址', true); return; }
+
+        const btn = document.getElementById('mailSendCodeBtn');
+        if (btn) btn.disabled = true;
+
+        const r = await this.mailApi('POST', '', { email });
+        if (!r || !r.ok) {
+            if (btn) btn.disabled = false;
+            this.mailSetHint((r && r.error) || '发送失败', true);
+            // 被冷却挡下时服务端会给出还要等多少秒，直接用它起倒计时，
+            // 而不是让用户对着「请稍后再试」自己数
+            if (r && r.retryAfterSec) this.mailStartCooldown(r.retryAfterSec);
+            return;
+        }
+
+        this.mailShowCodeRow(true);
+        const mins = Math.max(1, Math.round((r.expiresInSec || 600) / 60));
+        this.mailSetHint(`验证码已发到 ${r.email}（${mins} 分钟内有效）。把 6 位数字填到下面并确认。`, false);
+        this.mailStartCooldown(r.resendAfterSec || 60);
+    },
+
+    /** 点「确认」：把码交给服务端核验，通过后该地址才开始生效 */
+    async mailConfirmCode() {
+        if (this._mailConfirming) return;   // 连点两下不该打两次接口
+        const input = document.getElementById('mailCodeInput');
+        const code = input ? input.value.trim() : '';
+        if (!/^\d{6}$/.test(code)) { this.mailSetHint('验证码是 6 位数字', true); return; }
+
+        this._mailConfirming = true;
+        try {
+            const r = await this.mailApi('POST', '/confirm', { code });
+            if (!r || !r.ok) {
+                // 顺序要紧：先把状态拉回真实情况（码可能已经作废或过期，界面得跟着变），
+                // 再把错误写上去。反过来的话重渲染会把错误提示冲掉，
+                // 用户只看到「还没有推送邮箱」，完全看不出刚才哪一步错了。
+                await this.renderMailNotify();
+                this.mailSetHint((r && r.error) || '验证失败', true);
+                return;
+            }
+            if (input) input.value = '';
+            this.showToast(`推送邮箱已验证：${r.email}`);
+            await this.renderMailNotify();
+        } finally {
+            this._mailConfirming = false;
+        }
+    },
+
+    /** 解除绑定：之后不再发任何提醒，直到重新验证一个地址 */
+    async mailUnbind() {
+        const bound = this._mailState && this._mailState.email;
+        if (bound && !confirm(`停止向 ${bound} 发送提醒？该地址的绑定会被清除。`)) return;
+
+        const r = await this.mailApi('DELETE', '');
+        if (!r || !r.ok) { this.mailSetHint((r && r.error) || '解除绑定失败', true); return; }
+
+        const input = document.getElementById('mailEmailInput');
+        if (input) input.value = '';
+        this._mailInputDirty = false;
+        this.showToast('已解除推送邮箱绑定');
+        await this.renderMailNotify();
+    },
+
+    /**
+     * 渲染推送邮箱状态。
+     *
+     * 五种状态，都必须区分开：未登录 / 后端没配发信账号 / 未设置 / 待验证 / 已启用。
+     * 尤其「未登录」和「未设置」不能混为一谈 —— 前者点按钮会直接 401，
+     * 而后者只要填个地址就行；混在一起的提示等于让人白试一次。
+     */
+    async renderMailNotify() {
+        const tag = document.getElementById('mailTag');
+        if (!tag) return;
+
+        const session = (typeof PredictionTracker !== 'undefined') ? PredictionTracker.getAuthSession() : null;
+        if (!session || !session.token) {
+            this._mailState = null;
+            this.mailSetTag('未登录', 'gray');
+            this.mailSetControls(false);
+            this.mailShowCodeRow(false);
+            this.mailShowUnbindRow(false);
+            this.mailSetHint('登录之后才能设置推送邮箱：地址按账号隔离，得先知道你是谁。', false);
+            return;
+        }
+
+        const r = await this.mailApi('GET', '');
+        if (!r || !r.ok) {
+            this._mailState = null;
+            this.mailSetTag('不可用', 'red');
+            this.mailSetControls(false);
+            this.mailShowCodeRow(false);
+            this.mailShowUnbindRow(false);
+            this.mailSetHint((r && r.error) || '读取推送邮箱设置失败', true);
+            return;
+        }
+
+        this._mailState = r;
+
+        // 回显完整地址（不脱敏）：这是他自己填的，脱敏只会让他看不出错在哪。
+        // 换账号登录时强制回写一次，否则会把上一个账号的地址留在框里。
+        const emailInput = document.getElementById('mailEmailInput');
+        if (emailInput && (!this._mailInputDirty || this._mailToken !== session.token)) {
+            const shown = r.email || (r.pending && r.pending.email) || '';
+            if (emailInput.value !== shown) emailInput.value = shown;
+        }
+        this._mailToken = session.token;
+        this._mailInputDirty = false;
+
+        const pending = r.pending && r.pending.email ? r.pending : null;
+
+        if (!r.smtpReady) {
+            // 服务端的发信账号还没配好，验证码根本发不出去 —— 先说清楚，
+            // 否则用户会一直点「发送验证码」并以为是自己填错了
+            this.mailSetTag('发信未配置', 'red');
+            this.mailSetControls(false);
+            this.mailShowCodeRow(false);
+            this.mailShowUnbindRow(!!r.email);
+            this.mailSetHint('本机服务还没配置发信邮箱，验证码发不出去：' + (r.smtpReason || ''), true);
+            return;
+        }
+
+        this.mailSetControls(true);
+        this.mailShowCodeRow(!!pending);
+        this.mailShowUnbindRow(!!r.email);
+
+        const bound = document.getElementById('mailBoundText');
+        if (bound) bound.textContent = r.email ? `当前：${r.email}` : '';
+
+        if (r.verified && r.email && !pending) {
+            this.mailSetTag('已启用', 'green');
+            this.mailSetHint(`提醒会发到 ${r.email}。想换地址就填一个新的、再验证一次；解除绑定后不再发信。`, false);
+            return;
+        }
+
+        if (pending) {
+            this.mailSetTag(r.email ? '改绑待验证' : '待验证', 'amber');
+            const mins = Math.max(1, Math.round(pending.expiresInSec / 60));
+            const wait = pending.resendAfterSec > 0 ? `，${pending.resendAfterSec} 秒后可重发` : '';
+            const tail = r.email
+                ? `验证通过前仍会发到 ${r.email}。`
+                : '验证通过后才会开始发提醒。';
+            this.mailSetHint(`验证码已发到 ${pending.email}（约 ${mins} 分钟内有效${wait}）。${tail}`, false);
+            if (pending.resendAfterSec > 0) this.mailStartCooldown(pending.resendAfterSec);
+            return;
+        }
+
+        this.mailSetTag('未设置', 'gray');
+        this.mailSetHint('还没有推送邮箱，所以现在收不到任何提醒。填一个你自己的地址，点「发送验证码」，再把收到的 6 位数字填回来。', false);
+    },
+
+    /** 发码后的倒计时。按钮上的秒数是最直观的「还要等多久」 */
+    mailStartCooldown(seconds) {
+        const btn = document.getElementById('mailSendCodeBtn');
+        if (!btn) return;
+        clearInterval(this._mailCountdown);
+
+        let left = Math.max(1, Math.round(Number(seconds) || 0));
+        const tick = () => {
+            if (left <= 0) {
+                clearInterval(this._mailCountdown);
+                this._mailCountdown = null;
+                btn.disabled = false;
+                btn.textContent = '发送验证码';
+                return;
+            }
+            btn.disabled = true;
+            btn.textContent = `${left} 秒后可重发`;
+            left--;
+        };
+        tick();
+        this._mailCountdown = setInterval(tick, 1000);
+    },
+
+    mailSetTag(text, tone) {
+        const el = document.getElementById('mailTag');
+        if (!el) return;
+        el.textContent = text;
+        el.className = 'text-[10px] px-1.5 py-0.5 rounded-full ' + (
+            tone === 'green' ? 'bg-green-100 text-rise-green'
+                : tone === 'red' ? 'bg-red-100 text-fall-red'
+                    : tone === 'amber' ? 'bg-amber-100 text-amber-700'
+                        : 'bg-gray-200 text-text-secondary');
+    },
+
+    mailSetHint(text, isError) {
+        const el = document.getElementById('mailHint');
+        if (!el) return;
+        el.textContent = text || '--';
+        el.className = 'text-[10px] mt-1.5 leading-relaxed ' + (isError ? 'text-fall-red' : 'text-text-tertiary');
+    },
+
+    /** 开关一组控件。整体禁用比逐个藏起来更好懂：状态是「现在不能用」而不是「没有这回事」 */
+    mailSetControls(enabled) {
+        ['mailEmailInput', 'mailSendCodeBtn', 'mailCodeInput', 'mailConfirmBtn', 'mailUnbindBtn']
+            .forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.disabled = !enabled;
+            });
+    },
+
+    /**
+     * 显示/隐藏一行控件。
+     *
+     * hidden 与 flex 都会写 display，Tailwind 里谁生效取决于样式表顺序，
+     * 所以两个类必须一起切 —— 只切 hidden 会出现「藏不住」或「出来但不横排」。
+     */
+    mailToggleRow(id, show) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.classList.toggle('hidden', !show);
+        el.classList.toggle('flex', !!show);
+    },
+
+    mailShowCodeRow(show) { this.mailToggleRow('mailCodeRow', show); },
+    mailShowUnbindRow(show) { this.mailToggleRow('mailUnbindRow', show); },
 
     // ==================== 币安测试网交易 ====================
 

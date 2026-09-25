@@ -1,4 +1,5 @@
 {
+  "_note": "这里配的是『发信账号』——这台机器用谁的邮箱往外发信。收件地址不在这份配置里：每个账号在网页「交易 → 邮件提醒」里自己填写并验证（GET/POST/DELETE /api/notify/email）。下面这个 to 只是命令行自检工具 send-test-mail.js 的默认收件人。",
   "provider": "qq",
   "user": "you@qq.com",
   "pass": "这里填邮箱的 SMTP 授权码（不是登录密码）",

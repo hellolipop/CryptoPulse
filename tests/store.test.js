@@ -33,6 +33,10 @@ const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-store-'));
 const FILE = path.join(TMP_DIR, 'paper-state.json');
 process.env.PORT = '0';
 process.env.STORE_FILE = FILE;
+// 邮件相关的文件同样指到临时目录：否则测一次就会拿真实授权码去发信，
+// 并把测试记录写进真实的分析日志里
+process.env.MAIL_CONFIG_FILE = path.join(TMP_DIR, 'mail-config.json');
+process.env.MAIL_LOG_FILE = path.join(TMP_DIR, 'notify-log.json');
 
 let BASE = '';
 
@@ -50,6 +54,9 @@ function ok(cond, name, extra) {
 }
 function eq(actual, expected, name) {
     ok(actual === expected, name, `期望 ${JSON.stringify(expected)}，实际 ${JSON.stringify(actual)}`);
+}
+function contains(hay, needle, name) {
+    ok(String(hay).indexOf(needle) >= 0, name, `没找到 ${JSON.stringify(needle)}`);
 }
 function section(t) { console.log('\n\x1b[1m' + t + '\x1b[0m'); }
 
@@ -203,10 +210,11 @@ section('旧的 v2 文件（无 sessions 字段）可平滑升级');
     eq(st.data && st.data.data && st.data.data.totalCapital, 12345, '既有数据内容完整');
 
     const parsed = readFile();
-    eq(parsed.schemaVersion, 4, '文件已升级到 schemaVersion 4');
+    eq(parsed.schemaVersion, 5, '文件已升级到 schemaVersion 5');
     ok(parsed.sessions && typeof parsed.sessions === 'object', '已补上 sessions 字段');
     ok(!!parsed.sessions[sha256(reg.data.token)], '新注册的会话已落盘');
     ok(parsed.predictions && typeof parsed.predictions === 'object', '已补上 predictions 字段');
+    ok(parsed.mail && typeof parsed.mail === 'object', '已补上 mail 字段（推送邮箱）');
 }
 
 section('会话按用户隔离');
@@ -327,6 +335,209 @@ section('预测记录：CSV 表格');
 }
 
 // ============================================================
+section('推送邮箱：按账号隔离，必须本人验证');
+try {
+    // 前面的用例结尾把服务关了（顺带释放端口），这里重新起一个
+    await restart();
+
+    // 发信那一环在 notify.test.js 里已经对着假 SMTP 验过了，这里只验**协议**：
+    // 谁在什么时候能拿到哪个地址、验证码怎么存、错了会怎样、解绑之后如何。
+    // 所以把两个发信函数换成桩，把服务端真正生成的那个码接出来。
+    // （store.js 里是 `notify.sendVerificationMail(...)` 这种取属性再调用，
+    //   所以替换模块上的属性就能生效，不需要注入。）
+    const notifyMod = require('../server/notify');
+    const realVerification = notifyMod.sendVerificationMail;
+    const realSignal = notifyMod.sendSignalMail;
+
+    let lastCode = null;
+    let verifyOpts = null;
+    let signalOpts = null;
+
+    notifyMod.sendVerificationMail = async opts => {
+        lastCode = opts.code;
+        verifyOpts = opts;
+        return { ok: true, to: opts.to, messageId: '<mock@cryptopulse.local>' };
+    };
+    notifyMod.sendSignalMail = async (signal, opts) => {
+        signalOpts = opts || {};
+        return { ok: true, to: signalOpts.to, subject: 'stub' };
+    };
+
+    // 发信账号（host/user/pass）是这台机器一份。这里故意在配置里留一个 to：
+    // 它就是「以前那个全局收件地址」，用来证明**它不会再被任何账号用上**。
+    // 临时目录在前面的用例收尾时被清掉了，这里补建一次 —— 不补的话
+    // 下面这句会以一个跟被测行为毫无关系的 ENOENT 失败。
+    fs.mkdirSync(TMP_DIR, { recursive: true });
+    fs.writeFileSync(process.env.MAIL_CONFIG_FILE, JSON.stringify({
+        provider: 'qq', user: 'sender@qq.com', pass: 'auth-code',
+        to: 'global_fallback@qq.com',
+    }));
+
+    const tokenA = (await req('POST', '/api/auth/register', { body: { username: 'mail_a', password: 'probe12345' } })).data.token;
+    const tokenB = (await req('POST', '/api/auth/register', { body: { username: 'mail_b', password: 'probe12345' } })).data.token;
+    const sig = {
+        coinId: 'ethereum', timeframe: 4, signalType: 'buy', signalText: '买入',
+        markerTime: 1790337600, source: 'paper-marker', score: 70, price: 2600,
+    };
+
+    eq((await req('GET', '/api/notify/email')).status, 401, '未登录读设置 401');
+    eq((await req('POST', '/api/notify/email', { body: { email: 'a@b.com' } })).status, 401, '未登录请求验证码 401');
+    eq((await req('POST', '/api/notify/email/confirm', { body: { code: '123456' } })).status, 401, '未登录确认验证码 401');
+    eq((await req('DELETE', '/api/notify/email')).status, 401, '未登录解绑 401');
+
+    const init = await req('GET', '/api/notify/email', { token: tokenA });
+    eq(init.status, 200, '登录后可读自己的设置');
+    eq(init.data.email, null, '初始没有推送邮箱');
+    eq(init.data.verified, false, '初始未验证');
+    eq(init.data.pending, null, '初始没有待验证的地址');
+    eq(init.data.smtpReady, true, '并告知服务端发信账号已就绪');
+
+    // --- 坏地址进不来。这个值会拼进 To 头与 RCPT TO，注入必须堵在这里 ---
+    eq((await req('POST', '/api/notify/email', { token: tokenA, body: { email: 'not-an-email' } })).status,
+        400, '邮箱格式不对返回 400');
+    eq((await req('POST', '/api/notify/email', { token: tokenA, body: { email: 'a@b.com\r\nBcc: victim@x.com' } })).status,
+        400, '含换行的地址被拒（否则就是邮件头注入）');
+
+    // --- A 请求验证码 ---
+    const askA = await req('POST', '/api/notify/email', { token: tokenA, body: { email: 'owner_a@qq.com' } });
+    eq(askA.status, 200, 'A 请求验证码成功');
+    eq(askA.data.email, 'owner_a@qq.com', '回显发到了哪个地址');
+    const codeA = String(lastCode);
+    ok(/^\d{6}$/.test(codeA), '码是 6 位数字', codeA);
+    eq(verifyOpts && verifyOpts.to, 'owner_a@qq.com', '验证码寄给了用户填的那个地址');
+    eq(verifyOpts && verifyOpts.account, 'mail_a', '发信时带上账号，便于排查是谁申请的');
+
+    // 落盘的不该是码本身：数据文件可能被看到，也可能被误提交
+    ok(!fs.readFileSync(FILE, 'utf8').includes(codeA), '文件里搜不到验证码明文');
+    const recA = readFile().mail.mail_a;
+    eq(recA.pending.codeHash, sha256('mail_a|' + codeA), '存下来的是 sha256(用户名|码)');
+    eq(recA.pending.attempts, 0, '试错次数从 0 开始');
+    eq(recA.email, undefined, '还没验证，所以没有生效的地址');
+
+    // 加了用户名做前缀，是为了让 6 位码（只有 100 万种）不至于被穷举对撞
+    eq(readFile().mail.mail_a.pending.codeHash === sha256(codeA), false,
+        '摘要不是单纯的 sha256(码)（那个能被穷举）');
+
+    // --- 60 秒冷却 ---
+    const again = await req('POST', '/api/notify/email', { token: tokenA, body: { email: 'owner_a@qq.com' } });
+    eq(again.status, 429, '60 秒内重发被挡下');
+    ok(again.data.retryAfterSec > 0, '并给出还要等多少秒（界面用它起倒计时）', JSON.stringify(again.data));
+
+    // --- 确认：先试几种错的 ---
+    const wrong = await req('POST', '/api/notify/email/confirm', { token: tokenA, body: { code: '000000' } });
+    eq(wrong.status, 400, '错误的验证码被拒');
+    contains(wrong.data.error, '还可以试', '并告知还剩几次机会');
+    eq((await req('POST', '/api/notify/email/confirm', { token: tokenA, body: { code: 'abc' } })).status,
+        400, '非 6 位数字被拒');
+
+    // B 手上没有待验证项，拿 A 的码也确认不了
+    const steal = await req('POST', '/api/notify/email/confirm', { token: tokenB, body: { code: codeA } });
+    eq(steal.status, 400, 'B 拿 A 的码确认不了');
+    contains(steal.data.error, '没有待验证的邮箱', '原因是 B 自己那边根本没有待验证项');
+
+    // --- 确认成功 ---
+    const done = await req('POST', '/api/notify/email/confirm', { token: tokenA, body: { code: codeA } });
+    eq(done.status, 200, '正确的验证码通过');
+    eq(done.data.email, 'owner_a@qq.com', '生效的地址就是刚验证的那个');
+    eq(done.data.verified, true, '标记为已验证');
+
+    const after = await req('GET', '/api/notify/email', { token: tokenA });
+    eq(after.data.email, 'owner_a@qq.com', '再读能读到这个地址');
+    eq(after.data.verified, true, '状态是已启用');
+    eq(after.data.pending, null, '待验证项已清掉');
+    eq((await req('POST', '/api/notify/email/confirm', { token: tokenA, body: { code: codeA } })).status,
+        400, '同一个码不能再用第二次');
+
+    // --- 按账号隔离 ---
+    const bState = await req('GET', '/api/notify/email', { token: tokenB });
+    eq(bState.data.email, null, 'B 读不到 A 的地址');
+    eq(bState.data.verified, false, 'B 仍是未验证状态');
+
+    // --- 发提醒时只用本人已验证的地址 ---
+    signalOpts = null;
+    const noAddr = await req('POST', '/api/notify', { token: tokenB, body: { signal: sig } });
+    eq(noAddr.status, 200, 'B 没验证地址时不是错误码（浏览器不该反复重试）');
+    eq(noAddr.data.skipped, true, '而是「跳过」');
+    contains(String(noAddr.data.error), '邮件提醒', '并提示去哪儿设置');
+    eq(signalOpts, null, '根本没走到发信那一步');
+    ok(!fs.readFileSync(FILE, 'utf8').includes('global_fallback@qq.com'),
+        '配置里那个全局 to 完全没被写进任何账号的记录');
+
+    signalOpts = null;
+    const sentA = await req('POST', '/api/notify', { token: tokenA, body: { signal: sig } });
+    eq(sentA.status, 200, 'A 的发信请求被处理');
+    eq(signalOpts && signalOpts.to, 'owner_a@qq.com', '发到了 A 自己验证过的地址（不是全局那个）');
+    eq(signalOpts && signalOpts.account, 'mail_a', '并带上账号，发送记录按它归属');
+
+    // --- 诊断接口：只看得到自己的 ---
+    const diagA = await req('GET', '/api/notify', { token: tokenA });
+    eq(diagA.status, 200, '诊断接口可用');
+    eq(diagA.data.email, 'owner_a@qq.com', '诊断里显示本账号的地址');
+    eq(diagA.data.emailVerified, true, '并标明已验证');
+    eq((await req('GET', '/api/notify', { token: tokenB })).data.email, null, 'B 的诊断里没有 A 的地址');
+
+    // --- 落盘与重启 ---
+    const stored = readFile().mail.mail_a;
+    eq(stored.email, 'owner_a@qq.com', '已验证的地址落盘');
+    ok(!!stored.verifiedAt, '并记下验证时间');
+    eq(stored.pending, undefined, '待验证项不留在文件里');
+
+    await restart();
+    eq((await req('GET', '/api/notify/email', { token: tokenA })).data.email,
+        'owner_a@qq.com', '重启后仍然有效（不用重新验证一遍）');
+
+    // --- 过期的码会被作废 ---
+    const askB = await req('POST', '/api/notify/email', { token: tokenB, body: { email: 'owner_b@qq.com' } });
+    eq(askB.status, 200, 'B 也能请求验证码');
+    const codeB = String(lastCode);
+
+    const expired = readFile();
+    expired.mail.mail_b.pending.expiresAt = Date.now() - 1000;   // 放到过期
+    fs.writeFileSync(FILE, JSON.stringify(expired, null, 2));
+
+    const tooLate = await req('POST', '/api/notify/email/confirm', { token: tokenB, body: { code: codeB } });
+    eq(tooLate.status, 400, '过期的验证码被拒');
+    contains(String(tooLate.data.error), '过期', '原因说明是过期');
+    eq(readFile().mail.mail_b.pending, undefined, '过期即作废，不能留着继续试');
+
+    // --- 试错用尽会作废，之后连正确的码也不认 ---
+    eq((await req('POST', '/api/notify/email', { token: tokenB, body: { email: 'owner_b@qq.com' } })).status,
+        200, '重新获取验证码');
+    const goodB = String(lastCode);
+    const badB = goodB === '000000' ? '111111' : '000000';
+
+    let lastTry = null;
+    for (let i = 0; i < 5; i++) {
+        lastTry = await req('POST', '/api/notify/email/confirm', { token: tokenB, body: { code: badB } });
+    }
+    eq(lastTry.status, 429, '连试 5 次错之后被拒');
+    eq(readFile().mail.mail_b.pending, undefined, '试错用尽即作废');
+    eq((await req('POST', '/api/notify/email/confirm', { token: tokenB, body: { code: goodB } })).status,
+        400, '作废后连正确的码也不认（必须重新获取）');
+
+    // --- 解除绑定 ---
+    eq((await req('DELETE', '/api/notify/email', { token: tokenA })).status, 200, '解除绑定成功');
+    const unbound = await req('GET', '/api/notify/email', { token: tokenA });
+    eq(unbound.data.email, null, '解绑后没有地址');
+    eq(unbound.data.verified, false, '也不再是已验证状态');
+
+    signalOpts = null;
+    const afterUnbind = await req('POST', '/api/notify', { token: tokenA, body: { signal: sig } });
+    eq(afterUnbind.data.skipped, true, '解绑后不再发提醒');
+    eq(signalOpts, null, '同样不会退回到任何别的地址');
+
+    // 复原，别让桩漏给后面的用例
+    notifyMod.sendVerificationMail = realVerification;
+    notifyMod.sendSignalMail = realSignal;
+} catch (e) {
+    failed++;
+    failures.push('推送邮箱用例异常: ' + e.message);
+    console.log('  \x1b[31m✗\x1b[0m 推送邮箱用例异常: ' + e.message + '\n' + (e.stack || ''));
+} finally {
+    // 关掉这一节起的服务：否则那个监听会一直吊住事件循环，跑完也不退出
+    if (current) await new Promise(r => current.close(r));
+}
+
 console.log('\n' + '─'.repeat(56));
 console.log(`通过 ${passed}　失败 ${failed}`);
 if (failed) {
