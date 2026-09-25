@@ -1,0 +1,6 @@
+{
+  "provider": "qq",
+  "user": "you@qq.com",
+  "pass": "这里填邮箱的 SMTP 授权码（不是登录密码）",
+  "to": "you@qq.com"
+}

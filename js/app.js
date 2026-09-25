@@ -3,6 +3,16 @@
  * 负责数据获取、状态管理、UI更新和用户交互
  */
 
+/**
+ * 买卖点提醒配图（base64）的长度上限。
+ *
+ * 服务端 /api/notify 的请求体上限是 2MB，base64 又把图放大约三分之一，
+ * 所以这里留出足够余量。真实的一张图约几十 KB，离上限很远；
+ * 定这个上限是为了万一画布实现变了、图炸大时，宁可只发文字，
+ * 也不能让整封提醒因为一张图被服务端拒掉。
+ */
+const NOTIFY_CHART_MAX_BASE64 = 1200 * 1024;
+
 const CryptoPulseApp = {
     // 状态
     state: {
@@ -3738,6 +3748,39 @@ const CryptoPulseApp = {
     },
 
     // 加载K线数据（币安 API）
+    /**
+     * 取一段币安现货K线（纯取数，不碰任何界面状态）
+     *
+     * 抽出来是为了让「看图时加载」与「后台扫描已开启交易的币种」共用同一套 URL 与
+     * 解析。两处各写一遍的话，早晚出现一边改了另一边没改 —— 这类分叉是这一路
+     * 修下来最常见的 bug 来源。
+     *
+     * @param {string} binanceSymbol - 交易对，如 ETHUSDT
+     * @param {number} tf - 周期（小时数）
+     * @returns {Promise<Array>} 解析后的K线；失败抛错，由调用方决定怎么处理
+     */
+    async fetchBinanceKlines(binanceSymbol, tf) {
+        const { interval, limit } = this.getBinanceInterval(tf);
+        const response = await fetch(
+            `${this.binanceApiBase}/klines?symbol=${binanceSymbol}&interval=${interval}&limit=${limit}`,
+            // 带超时：这条是首屏关键路径，挂住会让加载遮罩一直不消失
+            { signal: AbortSignal.timeout(15000) }
+        );
+
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+
+        const data = await response.json();
+
+        return data.map(item => ({
+            time: Math.floor(item[0] / 1000),
+            open: parseFloat(item[1]),
+            high: parseFloat(item[2]),
+            low: parseFloat(item[3]),
+            close: parseFloat(item[4]),
+            volume: parseFloat(item[5]),
+        }));
+    },
+
     async loadCandleData(coinId) {
         // CoinGecko 币种的K线由 loadCoinDataFromCoinGecko 负责
         if (this.getDataSource(coinId) === 'coingecko') return;
@@ -3763,25 +3806,7 @@ const CryptoPulseApp = {
         // 那是程序问题，不该报成「K线取不到」。
         let candleData;
         try {
-            const { interval, limit } = this.getBinanceInterval(tf);
-            const response = await fetch(
-                `${this.binanceApiBase}/klines?symbol=${binanceSymbol}&interval=${interval}&limit=${limit}`,
-                // 带超时：这条是首屏关键路径，挂住会让加载遮罩一直不消失
-                { signal: AbortSignal.timeout(15000) }
-            );
-
-            if (!response.ok) throw new Error('HTTP ' + response.status);
-
-            const data = await response.json();
-
-            candleData = data.map(item => ({
-                time: Math.floor(item[0] / 1000),
-                open: parseFloat(item[1]),
-                high: parseFloat(item[2]),
-                low: parseFloat(item[3]),
-                close: parseFloat(item[4]),
-                volume: parseFloat(item[5]),
-            }));
+            candleData = await this.fetchBinanceKlines(binanceSymbol, tf);
         } catch (error) {
             console.error('获取K线数据失败:', error);
             // 不再生成随机K线顶替。取不到就如实说取不到。
@@ -3967,12 +3992,21 @@ const CryptoPulseApp = {
         this.updateDerivativesUI();
     },
 
-    // 计算技术指标
-    calculateIndicators() {
-        const closes = this.state.candleData.map(d => d.close);
-        const highs = this.state.candleData.map(d => d.high);
-        const lows = this.state.candleData.map(d => d.low);
-        const volumes = this.state.candleData.map(d => d.volume);
+    /**
+     * 计算技术指标
+     *
+     * @param {Array} [candles] - 要计算的K线；省略则用当前显示的那份
+     * @param {Object} [opts] - { commit:false } 表示「只算、不落地」。
+     *        后台扫描其他币种时用它：要的是算出来的指标，不能把界面正在用的那份覆盖掉。
+     * @returns {Object} 指标对象
+     */
+    calculateIndicators(candles, opts) {
+        const data = candles || this.state.candleData;
+        const commit = !opts || opts.commit !== false;
+        const closes = data.map(d => d.close);
+        const highs = data.map(d => d.high);
+        const lows = data.map(d => d.low);
+        const volumes = data.map(d => d.volume);
         const currentPrice = closes[closes.length - 1];
 
         const ma3 = TechnicalAnalysis.calculateSMA(closes, 3);
@@ -4025,7 +4059,7 @@ const CryptoPulseApp = {
         const volMa5 = TechnicalAnalysis.calculateSMA(volumes, 5);
         const volMa10 = TechnicalAnalysis.calculateSMA(volumes, 10);
 
-        this.state.indicators = {
+        const indicators = {
             ma3,
             ma7,
             ma25,
@@ -4055,10 +4089,16 @@ const CryptoPulseApp = {
             currentPrice
         };
 
+        // 只算不落地：调用方要的是返回值，不能碰界面状态
+        if (!commit) return indicators;
+
+        this.state.indicators = indicators;
+
         this.updateIndicatorsUI();
         this.updateQuickInfoBar();
         this.updateVolumeInfo();
         this.updateInfoTab();
+        return indicators;
     },
 
     /**
@@ -5512,6 +5552,302 @@ const CryptoPulseApp = {
         this.showToast(
             `${coin.symbol} 模拟${last.side === 'buy' ? '买入' : '卖出'} @ $${TechnicalAnalysis.formatPrice(last.price)}`
         );
+    },
+
+    // ==================== 买卖点邮件提醒 ====================
+
+    /**
+     * 已开启交易、且能算出买卖点的币种
+     *
+     * 「已开启交易」= 在模拟盘里开启了且有配额 —— 这类币种图上标注的K线买卖点
+     * 就是它的成交依据，也正是要提醒的内容。
+     *
+     * 两种情况排除：
+     *   - 没有 strategyTimeframe：账户从未在某个周期上运行过，没有周期就算不出买卖点；
+     *   - CoinGecko 来源的币种：取不到K线（看图时也不会给它们标买卖点）。
+     */
+    paperScanTargets() {
+        if (typeof PaperTrader === 'undefined') return [];
+        const accounts = (PaperTrader.load() || {}).accounts || {};
+        const targets = [];
+        Object.keys(accounts).forEach(coinId => {
+            if (!PaperTrader.isEnabled(coinId)) return;
+            if (PaperTrader.getAllocation(coinId) <= 0) return;
+            const tf = PaperTrader.getAccount(coinId).strategyTimeframe;
+            if (tf === undefined || tf === null) return;
+            if (this.getDataSource(coinId) === 'coingecko') return;
+            targets.push({ coinId, timeframe: tf });
+        });
+        return targets;
+    },
+
+    /**
+     * 取某个币种在指定周期上的K线（供后台扫描用）
+     * @returns {Promise<Array|null>} 取不到返回 null
+     */
+    async fetchCandlesFor(coinId, tf) {
+        const binanceSymbol = this.getBinanceSymbol(coinId);
+        if (!binanceSymbol) return null;
+        if (this.isStock(coinId)) {
+            const { interval, limit } = this.getBinanceInterval(tf);
+            const candles = await Stocks.klines(binanceSymbol, interval, limit);
+            return (candles && candles.length) ? candles : null;
+        }
+        return await this.fetchBinanceKlines(binanceSymbol, tf);
+    },
+
+    /**
+     * 扫描「已开启交易」的币种，出现新的K线买卖点时发邮件提醒
+     *
+     * 口径与 syncPaperAccount 完全一致：去掉正在走形的最后一根K线，只用已收盘的
+     * 算买卖点。正在走的那根信号会随价格摆动，拿它提醒就会出现「刚发出去就没了」。
+     *
+     * 刻意**不**调用 PaperTrader.replay：这里只负责提醒，不该趁用户没看某个币的
+     * 时候替他把成交记录写进去。账户仍然只在你查看该币种时、按当时周期回放，
+     * 而回放是纯重算，所以两边不会打架。
+     *
+     * 一个已知取舍：资金费率闸门是按「界面上那个币」的费率分位算的，后台扫描
+     * 拿不到其他币种的分位，因此这里不做闸门过滤，只在邮件里如实标注闸门状态。
+     * 闸门默认关闭，此时与图上的买卖点完全一致。
+     */
+    async notifyPaperSignals() {
+        if (typeof PaperTrader === 'undefined' || typeof PredictionTracker === 'undefined') return;
+        if (this._paperScanRunning) return;   // 上一轮没跑完就跳过，避免叠加
+        if (!PredictionTracker.getSyncConfig().url) return;
+        // 未登录不发：服务端那条接口要鉴权，否则同一局域网里谁都能让这台机器发邮件
+        if (!PredictionTracker.getAuthSession().token) return;
+
+        const targets = this.paperScanTargets();
+        if (!targets.length) return;
+
+        this._paperScanRunning = true;
+        try {
+            for (const t of targets) {
+                try {
+                    await this.scanPaperTarget(t);
+                } catch (e) {
+                    // 单个币种失败不影响其他币种；后台任务不打扰用户，只记日志
+                    console.warn(`[提醒] ${t.coinId} 扫描失败:`, e.message);
+                }
+            }
+        } finally {
+            this._paperScanRunning = false;
+        }
+    },
+
+    async scanPaperTarget(t) {
+        const candles = await this.fetchCandlesFor(t.coinId, t.timeframe);
+        if (!candles || candles.length < 31) return;
+
+        // 与 syncPaperAccount 同一步：只取已收盘的K线
+        const closed = candles.slice(0, candles.length - 1);
+        // commit:false —— 这是给别的币种算指标，不能覆盖界面上那份
+        const indicators = this.calculateIndicators(closed, { commit: false });
+        const series = this.buildSignalSeries(closed, indicators);
+
+        const marker = series[series.length - 1];
+        if (!marker) return;
+
+        // 只提醒「刚出现在最新那根已收盘K线上」的买卖点。
+        //
+        // series 里最后一个买卖点未必是新的：信号只在多空方向翻转时落点，一根 4 小时
+        // K线上没有翻转，最后那个点就还停在几根K线之前。刚打开页面时若不加这道判断，
+        // 会把一个几天前的买卖点当成「刚发生」发出去 —— 邮件里还写着「按下一根K线开盘价
+        // 成交」，等于让人照着一个几天前的价位去下单。
+        //
+        // 代价是页面关着的那段时间里出现的买卖点不会补发，这与「必须开着页面才会提醒」
+        // 是同一件事的两面，已在 README 里写明。
+        if (marker.index !== closed.length - 1) return;
+
+        // 同一个买卖点只提醒一次。服务端也会按 markerTime 去重，这里先挡一道，
+        // 免得每轮扫描都白发一次请求、日志也刷屏。
+        const seen = this._notifiedMarkers || (this._notifiedMarkers = {});
+        const slot = `${t.coinId}|${t.timeframe}`;
+        if (seen[slot] === marker.time) return;
+
+        const info = this.getCoinInfo(t.coinId);
+        const binanceSymbol = this.getBinanceSymbol(t.coinId) || '';
+        const next = candles[marker.index + 1];
+
+        // 买卖点本身只给 side 与「是否强烈」，档位由这两个组合出来
+        const signalType = marker.strong
+            ? (marker.side === 'buy' ? 'strong_buy' : 'strong_sell')
+            : marker.side;
+
+        // 配图：这个买卖点所属币种、周期的K线，标注与界面同源
+        const chart = this.buildMarkerChart(t, candles, marker);
+
+        const result = await this.postNotice({
+            coinId: t.coinId,
+            // 币种简称优先用目录里的，取不到就从交易对里去掉 USDT
+            coinSymbol: (info && info.symbol) || binanceSymbol.replace(/USDT$/, '') || t.coinId,
+            timeframe: t.timeframe,
+            signalType,
+            signalText: marker.label,
+            score: marker.score,
+            price: marker.price,
+            // 这个买卖点所在K线的时间（秒），服务端按它做「同一点不重复发」的去重
+            markerTime: marker.time,
+            // 成交口径：该K线收盘后、按下一根K线的开盘价成交（与模拟盘一致）
+            execTime: next ? next.time : null,
+            execPrice: next ? next.open : null,
+            predictedAt: Date.now(),
+            sensitivity: this.state.sensitivity,
+            actionTip: this.paperTipFor(signalType, marker.score, marker.price),
+            algoVersion: (typeof SignalGenerator !== 'undefined' && SignalGenerator.ALGORITHM_VERSION) || null,
+            gate: this.getPaperGate().key,
+            source: 'paper-marker',
+            // 没有配图时给 null，服务端按纯文字发
+            chart: chart ? { base64: chart.base64, width: chart.width, height: chart.height } : null,
+        });
+
+        // 服务端已有定论（发出去了，或明确不会再发）就不再重试；
+        // 传输失败（返回 null）不记，下一轮扫描会再试一次。
+        if (result && (result.ok || result.skipped)) seen[slot] = marker.time;
+    },
+
+    /**
+     * 为这次提醒画一张K线图，附在邮件里
+     *
+     * 用的是**这个买卖点所属**币种与周期的数据，不是界面上正在显示的那份 ——
+     * 后台扫描时界面上很可能是别的币种，图不能张冠李戴。
+     *
+     * 均线与标注都取自「含正在走形那根」的完整序列，与界面上的画法一致，
+     * 所以邮件里的箭头与页面上看到的是同一个点、同一个样子。
+     *
+     * 画不出来就返回 null（画布不可用、数据太少、图太大）。提醒本身不该因为配图失败而丢。
+     *
+     * @returns {{base64:string,width:number,height:number}|null}
+     */
+    buildMarkerChart(t, candles, marker) {
+        if (typeof ChartSnapshot === 'undefined') return null;
+        try {
+            const info = this.getCoinInfo(t.coinId);
+            const binanceSymbol = this.getBinanceSymbol(t.coinId) || '';
+            const symbol = (info && info.symbol) || binanceSymbol.replace(/USDT$/, '') || t.coinId;
+            const tfLabel = this.getTimeframeConfig(t.timeframe).label;
+
+            const ind = this.calculateIndicators(candles, { commit: false });
+            const markers = this.generateSignalMarkers(candles, ind);
+
+            const shot = ChartSnapshot.render({
+                candles,
+                ma7: ind.ma7,
+                ma25: ind.ma25,
+                ma99: ind.ma99,
+                markers,
+                focusTime: marker.time,
+                title: `${symbol} · ${tfLabel}`,
+                note: `本次买卖点：${marker.label} · ${this.formatCandleTime(marker.time)} 收盘（北京时间）`,
+            });
+            if (!shot) return null;
+
+            // 载荷要走 JSON POST，服务端请求体上限 2MB。超了就宁可只发文字，
+            // 也不能让整封提醒因为一张图被丢掉。
+            if (shot.base64.length > NOTIFY_CHART_MAX_BASE64) {
+                console.warn(`[提醒] 配图过大（${Math.round(shot.base64.length / 1024)}KB），本次只发文字`);
+                return null;
+            }
+            return shot;
+        } catch (e) {
+            console.warn('[提醒] 生成K线图失败:', e.message);
+            return null;
+        }
+    },
+
+    /** K线时间转北京时间文本，用于配图上的说明 */
+    formatCandleTime(sec) {
+        try {
+            const d = new Date(sec * 1000);
+            const p = n => String(n).padStart(2, '0');
+            const parts = new Intl.DateTimeFormat('zh-CN', {
+                timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit',
+                day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+            }).formatToParts(d);
+            const g = k => (parts.find(x => x.type === k) || {}).value || '';
+            return `${g('year')}-${g('month')}-${g('day')} ${p(g('hour'))}:${p(g('minute'))}`;
+        } catch (e) {
+            return new Date(sec * 1000).toISOString();
+        }
+    },
+
+    /**
+     * 取某一档信号的仓位建议文案
+     *
+     * 直接问信号模块要，而不是在服务端再抄一份话术 —— 话术抄两份，改一处就会
+     * 留下不一致。传最小输入是为了只让它产出「基于综合评分的仓位建议」那一条
+     * （技术指标与消息面那几条诊断需要完整数据，这里没有，也不该在这里编）。
+     *
+     * 与邮件里取建议的规则相同：强烈买入的建议 type 是 'buy'、强烈卖出是 'sell'，
+     * 取最后一个匹配项（前面那些是同方向的诊断，不是仓位建议）。
+     *
+     * @returns {string|null}
+     */
+    paperTipFor(signalType, score, price) {
+        if (typeof SignalGenerator === 'undefined' || !SignalGenerator.generateActionTips) return null;
+        try {
+            const tips = SignalGenerator.generateActionTips(
+                { signals: [] },
+                { topNews: [], score: 50, positiveCount: 0, negativeCount: 0 },
+                { currentPrice: price, supportResistance: null, breakdown: null },
+                signalType,
+                score
+            ) || [];
+            const want = signalType === 'strong_buy' ? 'buy'
+                : (signalType === 'strong_sell' ? 'sell' : signalType);
+            const hit = tips.filter(x => x.type === want);
+            return hit.length ? hit[hit.length - 1].text : null;
+        } catch (e) {
+            // 建议文案取不到不该影响提醒本身
+            return null;
+        }
+    },
+
+    /**
+     * 把一条提醒交给本地服务去发信
+     *
+     * 只负责传输，内容由调用方组装 —— 这样「什么算一个买卖点」与「邮件怎么发」
+     * 各管一头，改一边不会牵动另一边。
+     *
+     * payload.force 用于「把同一条再发一次」：服务端已经支持，用来预览样式或
+     * 确认收得到（比如刚配好邮箱时，最近那个买卖点其实已经错过了）。
+     * 注意服务端的小时上限是绕不过的，force 只越过「同一点已发过」与冷却期。
+     *
+     * @returns {Promise<Object|null>} 服务端结论；传输失败返回 null
+     */
+    async postNotice(payload) {
+        if (typeof PredictionTracker === 'undefined') return null;
+        const cfg = PredictionTracker.getSyncConfig();
+        const session = PredictionTracker.getAuthSession();
+        if (!cfg || !cfg.url || !session || !session.token) return null;
+
+        try {
+            const body = { signal: payload };
+            if (payload && payload.force) body.force = true;
+            const resp = await fetch(`${cfg.url}/api/notify`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${session.token}`,
+                },
+                body: JSON.stringify(body),
+                // 发信要连 SMTP 服务器并等对方接收完，比取行情慢，超时给宽一点
+                signal: AbortSignal.timeout(30000),
+            });
+            let result = null;
+            try { result = await resp.json(); } catch (e) { /* 非 JSON 就当没有 */ }
+            if (result && result.ok) {
+                console.log('[提醒] 邮件已发送:', result.subject);
+            } else if (result && result.skipped) {
+                console.log('[提醒] 未发送:', result.error);
+            } else {
+                console.warn('[提醒] 发送失败:', (result && result.error) || ('HTTP ' + resp.status));
+            }
+            return result;
+        } catch (e) {
+            console.warn('[提醒] 请求失败:', e.message);
+            return null;
+        }
     },
 
     // ==================== 币安测试网交易 ====================
@@ -7154,12 +7490,19 @@ const CryptoPulseApp = {
             this.loadWatchlistQuotes();
         }, 30000);
 
-        // 每5分钟刷新一次新闻，顺带跑一轮批量复核。
+        // 每5分钟刷新一次新闻，顺带跑一轮批量复核与买卖点扫描。
         // 复核自带 10 分钟节流，所以这里触发得比它密也无妨（多出来的是空调用）。
         setInterval(() => {
             this.loadNews(this.state.currentCoin);
             this.reviewPendingPredictions();
+            // 扫一遍「已开启交易」的币种，出现新的K线买卖点时发邮件提醒。
+            // 买卖点只在K线收盘时才可能变，5 分钟一次足够。
+            this.notifyPaperSignals();
         }, 300000);
+
+        // 启动后延迟跑一轮：等首屏数据与登录态就绪
+        // （未登录时 notifyPaperSignals 会自己跳过，之后每5分钟那次再补上）
+        setTimeout(() => this.notifyPaperSignals(), 25000);
     }
 };
 

@@ -210,6 +210,7 @@ function writeStore(store) {
 // 两份列定义各自漂移的情况。
 
 const { writePredictionsCsv } = require('./predictions-csv');
+const notify = require('./notify');
 
 function writePredictionsCsvLocal(store) {
     return writePredictionsCsv(store, PREDICTIONS_CSV);
@@ -235,6 +236,35 @@ function corsHeaders(origin) {
         'Access-Control-Allow-Headers': 'Content-Type, Authorization',
         'Access-Control-Max-Age': '600',
     };
+}
+
+/** 只回显部分地址：够确认「配的是哪个邮箱」即可，没必要把完整地址暴露在局域网响应里 */
+function maskAddress(addr) {
+    const s = String(addr || '');
+    const at = s.indexOf('@');
+    if (at <= 0) return s;
+    const name = s.slice(0, at);
+    const keep = name.slice(0, 2);
+    return keep + '*'.repeat(Math.max(1, name.length - keep.length)) + s.slice(at);
+}
+
+/** 最近 5 条发送记录，供 /api/notify 的 GET 排查「为什么没收到」 */
+function readRecentNotices() {
+    try {
+        const logs = JSON.parse(fs.readFileSync(notify.logFile(), 'utf8'));
+        return (Array.isArray(logs) ? logs : []).slice(-5).map(e => ({
+            at: new Date(e.at).toISOString(),
+            ok: !!e.ok,
+            signal: e.coinId ? `${e.coinId}/${e.timeframe}/${e.signalType}` : null,
+            error: e.error || null,
+            to: e.to ? maskAddress(e.to) : null,
+            // 配图情况：便于回答「为什么这封没有K线图」
+            chart: e.chart === undefined ? null : !!e.chart,
+            chartError: e.chartError || null,
+        }));
+    } catch (e) {
+        return [];
+    }
 }
 
 function send(res, status, body, origin) {
@@ -530,6 +560,69 @@ const server = http.createServer(async (req, res) => {
         }
 
         send(res, 405, { error: '只支持 GET / PUT' }, origin);
+        return;
+    }
+
+    // ---- 买卖信号邮件提醒 ----
+    //
+    // 信号在浏览器里算（server/ 不引用 technical.js / signals.js，也不取行情），
+    // 所以这里是被动接收：浏览器扫到「已开启交易」的币种出现新的K线买卖点时，
+    // 把这个点的快照 POST 过来。
+    //
+    // 必须鉴权：这个服务可能绑在局域网网卡上，若不校验，同一网络里任何人都能
+    // 让这台机器往外发邮件。
+    if (url.pathname === '/api/notify') {
+        const store = readStore();
+        const username = requireUser(req, store);
+        if (!username) { send(res, 401, { error: '请先登录' }, origin); return; }
+
+        if (req.method === 'GET') {
+            // 用于排查「为什么没收到」：配置状态、节流参数、最近的发送记录
+            const state = notify.loadConfig();
+            send(res, 200, {
+                configured: state.configured,
+                reason: state.reason || null,
+                hint: state.hint || null,
+                to: state.configured ? maskAddress(state.config.to) : null,
+                cooldownHours: notify.COOLDOWN_HOURS,
+                maxPerHour: notify.MAX_PER_HOUR,
+                configFile: notify.configFile(),
+                recent: readRecentNotices(),
+            }, origin);
+            return;
+        }
+
+        if (req.method !== 'POST') {
+            send(res, 405, { error: '只支持 GET / POST' }, origin);
+            return;
+        }
+
+        let payload;
+        try {
+            payload = JSON.parse(await readBody(req));
+        } catch (e) {
+            send(res, 400, { error: '请求体不是合法 JSON' }, origin);
+            return;
+        }
+        if (!payload || typeof payload !== 'object' || !payload.signal) {
+            send(res, 400, { error: '缺少 signal' }, origin);
+            return;
+        }
+
+        const result = await notify.sendSignalMail(payload.signal, { force: !!payload.force });
+
+        // 被跳过（没配邮箱、这个买卖点已经提醒过、一小时内发得太密）不算错误：
+        // 这是正常状态，返回 200 让浏览器别再重试。只有真正发信失败才给 502。
+        if (result.ok || result.skipped) {
+            send(res, 200, result, origin);
+        } else {
+            send(res, 502, result, origin);
+        }
+        if (result.ok) {
+            console.log(`[提醒] 已发送 ${result.subject} → ${result.to}（${result.elapsedMs}ms）`);
+        } else if (!result.skipped) {
+            console.error('[提醒] 发送失败:', result.error);
+        }
         return;
     }
 

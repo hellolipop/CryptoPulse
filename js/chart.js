@@ -507,3 +507,285 @@ const ChartManager = {
         this._markers = [];
     }
 };
+
+/**
+ * 把K线画成一张可以直接塞进邮件的 PNG。
+ *
+ * 为什么不用上面那个 Lightweight Charts 实例截屏：
+ *
+ *   1. 发提醒时界面上显示的往往是**别的**币种。邮件里的图必须是「这个买卖点所属的
+ *      那个标的、那个周期」，不能在别人的图上标个箭头。
+ *   2. 更要紧的是：标签页不可见时浏览器会停掉 requestAnimationFrame，而
+ *      Lightweight Charts 正是挂在 rAF 上绘制的。那种情况下 takeScreenshot()
+ *      要么拿到空白，要么一直等不到绘制 —— 而邮件提醒最需要发挥作用的场景，
+ *      恰恰就是你没在看页面的时候。
+ *
+ * 所以这里用普通 2D canvas 自己画：同步绘制，不依赖 rAF，画完就有内容。
+ * 配色与界面那一套完全一致（涨 #089981 / 跌 #f23645、成交量同色 45% 透明、
+ * MA7 #f0b90b、MA25 #8e5cf6、MA99 #3b82f6、买卖点箭头同涨跌色），
+ * 让人在邮箱里看到的图与页面上看到的是同一个东西。
+ */
+const ChartSnapshot = {
+    UP: '#089981',
+    DOWN: '#f23645',
+    MA7: '#f0b90b',
+    MA25: '#8e5cf6',
+    MA99: '#3b82f6',
+    FONT: '"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",-apple-system,"Helvetica Neue",sans-serif',
+
+    /**
+     * 渲染一张K线图
+     *
+     * @param {Object} o
+     * @param {Array} o.candles - K线（含正在走形那根，与界面一致）
+     * @param {Array} [o.ma7] [o.ma25] [o.ma99] - 均线，与 candles 同下标
+     * @param {Array} [o.markers] - 与界面同源的标注（generateSignalMarkers 的输出）
+     * @param {number} [o.focusTime] - 本次提醒所在K线的时间，会画一条竖线标出来
+     * @param {string} [o.title] [o.note] - 标题与副标题
+     * @param {number} [o.bars] - 只画最近多少根。界面是 fitContent 全画，但 200 根挤在
+     *        一张图里箭头会糊成一片，看不出位置；这里默认收窄到 90 根。
+     * @returns {{base64:string,width:number,height:number}|null}
+     */
+    render(o) {
+        const opt = o || {};
+        const candles = opt.candles || [];
+        if (candles.length < 2) return null;
+
+        const W = opt.width || 960;
+        const H = opt.height || 430;
+        const titleH = 48;
+        const padL = 14;
+        const padR = 80;      // 右侧价格轴
+        const padT = 12;
+        const padB = 26;      // 底部时间轴
+
+        const x0 = padL;
+        const x1 = W - padR;
+        const y0 = titleH + padT;
+        const y1 = H - padB;
+
+        // 成交量占底部 18%，价格区在上方
+        const volTop = y1 - (y1 - y0) * 0.18;
+        const priceTop = y0;
+        const priceBottom = volTop - 6;
+
+        const bars = Math.max(20, Math.min(opt.bars || 90, candles.length));
+        const end = candles.length - 1;
+        const start = end - bars + 1;
+        const view = candles.slice(start, end + 1);
+
+        const canvas = document.createElement('canvas');
+        canvas.width = W;
+        canvas.height = H;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, W, H);
+        ctx.textBaseline = 'middle';
+
+        // ---- 纵向网格 + 右侧价格刻度 ----
+        let hi = -Infinity;
+        let lo = Infinity;
+        view.forEach(c => { if (c.high > hi) hi = c.high; if (c.low < lo) lo = c.low; });
+        [opt.ma7, opt.ma25, opt.ma99].forEach(arr => {
+            if (!arr) return;
+            for (let i = start; i <= end; i++) {
+                const v = arr[i];
+                if (v == null) continue;
+                if (v > hi) hi = v;
+                if (v < lo) lo = v;
+            }
+        });
+        if (!isFinite(hi) || !isFinite(lo) || hi === lo) {
+            hi = hi + (hi || 1) * 0.01;
+            lo = lo - (lo || 1) * 0.01;
+        }
+        // 上下各留一点余量，免得最高/最低的影线贴边
+        const span = hi - lo;
+        hi += span * 0.06;
+        lo -= span * 0.06;
+
+        const priceY = v => priceBottom - (v - lo) / (hi - lo) * (priceBottom - priceTop);
+
+        const slot = (x1 - x0) / bars;
+        const cx = i => x0 + (i - start + 0.5) * slot;
+
+        ctx.font = '11px ' + this.FONT;
+        ctx.textAlign = 'right';
+        ctx.strokeStyle = '#e8ecf3';
+        ctx.lineWidth = 1;
+        const ticks = 5;
+        for (let t = 0; t <= ticks; t++) {
+            const v = lo + (hi - lo) * t / ticks;
+            const y = Math.round(priceY(v)) + 0.5;
+            ctx.beginPath();
+            ctx.moveTo(x0, y);
+            ctx.lineTo(x1, y);
+            ctx.stroke();
+            ctx.fillStyle = '#848e9c';
+            const label = TechnicalAnalysis.formatPrice(v);
+            ctx.fillText(label, W - 8, y);
+        }
+
+        // ---- 成交量 ----
+        let maxVol = 0;
+        view.forEach(c => { if (c.volume > maxVol) maxVol = c.volume; });
+        if (maxVol > 0) {
+            const volH = y1 - volTop;
+            const bodyW = Math.max(1, Math.floor(slot * 0.62));
+            view.forEach((c, i) => {
+                const h = Math.max(1, (c.volume / maxVol) * volH);
+                ctx.fillStyle = c.close >= c.open ? 'rgba(8, 153, 129, 0.45)' : 'rgba(242, 54, 69, 0.45)';
+                ctx.fillRect(Math.round(cx(start + i) - bodyW / 2), y1 - h, bodyW, h);
+            });
+        }
+
+        // ---- 均线（先画，让K线压在上面）----
+        const drawLine = (arr, color) => {
+            if (!arr) return;
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            let started = false;
+            for (let i = start; i <= end; i++) {
+                const v = arr[i];
+                if (v == null) { started = false; continue; }
+                const x = cx(i);
+                const y = priceY(v);
+                if (!started) { ctx.moveTo(x, y); started = true; }
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        };
+        drawLine(opt.ma7, this.MA7);
+        drawLine(opt.ma25, this.MA25);
+        drawLine(opt.ma99, this.MA99);
+
+        // ---- K线 ----
+        const bodyW = Math.max(1, Math.floor(slot * 0.62));
+        view.forEach((c, i) => {
+            const x = cx(start + i);
+            const up = c.close >= c.open;
+            const color = up ? this.UP : this.DOWN;
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1;
+            // 影线
+            ctx.beginPath();
+            const wx = Math.round(x) + 0.5;
+            ctx.moveTo(wx, priceY(c.high));
+            ctx.lineTo(wx, priceY(c.low));
+            ctx.stroke();
+            // 实体（开收相同也画一条细线，否则会看不见）
+            const top = priceY(Math.max(c.open, c.close));
+            const bottom = priceY(Math.min(c.open, c.close));
+            ctx.fillStyle = color;
+            ctx.fillRect(Math.round(x - bodyW / 2), Math.round(top), bodyW, Math.max(1, Math.round(bottom - top)));
+        });
+
+        // ---- 买卖点标注：与界面同源，形状/颜色/文案都照搬 ----
+        const timeToIndex = {};
+        candles.forEach((c, i) => { timeToIndex[c.time] = i; });
+        (opt.markers || []).forEach(m => {
+            const i = timeToIndex[m.time];
+            if (i === undefined || i < start || i > end) return;
+            const c = candles[i];
+            const below = m.position === 'belowBar';
+            const x = cx(i);
+            const y = below ? priceY(c.low) + 9 : priceY(c.high) - 9;
+            const dir = below ? 1 : -1;
+            const s = m.size === 2 ? 7 : 5.5;
+
+            ctx.fillStyle = m.color || (below ? this.UP : this.DOWN);
+            ctx.beginPath();
+            if (below) {
+                ctx.moveTo(x, y);
+                ctx.lineTo(x - s * 0.72, y + dir * s);
+                ctx.lineTo(x + s * 0.72, y + dir * s);
+            } else {
+                ctx.moveTo(x, y);
+                ctx.lineTo(x - s * 0.72, y + dir * s);
+                ctx.lineTo(x + s * 0.72, y + dir * s);
+            }
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.font = (m.size === 2 ? '700 11px ' : '600 10px ') + this.FONT;
+            ctx.textAlign = 'center';
+            const ty = below ? y + s + 8 : y - s - 8;
+            ctx.fillText(m.text, Math.max(x0 + 24, Math.min(x1 - 24, x)), ty);
+        });
+
+        // ---- 本次提醒所在的那根K线：竖虚线标出来 ----
+        const fi = opt.focusTime !== undefined ? timeToIndex[opt.focusTime] : undefined;
+        if (fi !== undefined && fi >= start && fi <= end) {
+            const x = Math.round(cx(fi)) + 0.5;
+            ctx.save();
+            ctx.setLineDash([4, 3]);
+            ctx.strokeStyle = 'rgba(74, 79, 92, 0.55)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(x, priceTop);
+            ctx.lineTo(x, y1);
+            ctx.stroke();
+            ctx.restore();
+            const label = '本次买卖点';
+            ctx.font = '600 10px ' + this.FONT;
+            const tw = ctx.measureText(label).width + 12;
+            let bx = Math.min(Math.max(x - tw / 2, x0), x1 - tw);
+            ctx.fillStyle = '#4a4f5c';
+            ctx.fillRect(bx, priceTop + 2, tw, 16);
+            ctx.fillStyle = '#ffffff';
+            ctx.textAlign = 'center';
+            ctx.fillText(label, bx + tw / 2, priceTop + 10);
+        }
+
+        // ---- 底部时间轴 ----
+        ctx.font = '11px ' + this.FONT;
+        ctx.fillStyle = '#848e9c';
+        ctx.textAlign = 'center';
+        const fmt = t => {
+            const d = new Date(t * 1000);
+            const p = n => String(n).padStart(2, '0');
+            return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+        };
+        const step = Math.max(1, Math.floor(bars / 5));
+        for (let i = start; i <= end; i += step) {
+            ctx.fillText(fmt(candles[i].time), Math.max(x0 + 28, Math.min(x1 - 28, cx(i))), y1 + 13);
+        }
+
+        // ---- 标题区 ----
+        ctx.textAlign = 'left';
+        ctx.font = '700 15px ' + this.FONT;
+        ctx.fillStyle = '#111827';
+        ctx.fillText(opt.title || '', x0, 17);
+
+        // 均线图例：颜色与图上那条线一致
+        let lx = x0 + ctx.measureText(opt.title || '').width + 14;
+        ctx.font = '11px ' + this.FONT;
+        [['MA7', this.MA7], ['MA25', this.MA25], ['MA99', this.MA99]].forEach(([name, color]) => {
+            ctx.fillStyle = color;
+            ctx.fillRect(lx, 12, 12, 3);
+            ctx.fillStyle = '#6b7280';
+            ctx.fillText(name, lx + 16, 14);
+            lx += 16 + ctx.measureText(name).width + 12;
+        });
+
+        if (opt.note) {
+            ctx.font = '12px ' + this.FONT;
+            ctx.fillStyle = '#6b7280';
+            ctx.fillText(opt.note, x0, 35);
+        }
+
+        ctx.strokeStyle = '#e8ecf3';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, titleH - 0.5);
+        ctx.lineTo(W, titleH - 0.5);
+        ctx.stroke();
+
+        const base64 = canvas.toDataURL('image/png').split(',')[1] || '';
+        if (!base64) return null;
+        return { base64, width: W, height: H, bars };
+    }
+};
